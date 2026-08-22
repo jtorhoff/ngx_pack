@@ -31,10 +31,14 @@
    response size. There is no point deferring longer than the window
    the encoder would use anyway - zstd_window's compiled-in default,
    below - since committing beyond it cannot change the window choice
-   any further. Unlike Brotli's equivalent constant this is not
-   derived from the encoder's own internal block size (zstd's differs
-   and is not a single fixed number the way Brotli's is); it is
-   derived from this module's own default instead. */
+   any further.
+
+   That also happens to be one zstd block: a block is
+   MIN(windowSize, ZSTD_BLOCKSIZE_MAX) and the window default is the
+   smaller of the two, so at 64 KB the two coincide. Brotli's
+   equivalent constant was derived from its fixed internal block size
+   and this one is derived from the window, but they land on the same
+   bound. Both follow zstd_window, so move them together. */
 #define NGX_HTTP_ZSTD_DEFER_INPUT (64 * 1024)
 
 /* The largest windowLog zstd_window accepts. ZSTD_WINDOWLOG_MAX is
@@ -53,10 +57,26 @@
    zstd has no equivalent of Brotli's BrotliEncoderTakeOutput, which
    returned a pointer into encoder-owned memory and so needed no
    buffer of the filter's own - see PORTING.md - so this exists
-   purely because we now own that memory. A first-pass choice, well
-   under the compiled-in 64 KB window so it does not dominate
-   per-request memory; not yet load-tested against script/corpus at
-   different sizes the way the level and window defaults below are. */
+   purely because we now own that memory.
+
+   Deliberately far below ZSTD_CStreamOutSize(), and not for memory
+   reasons alone: that value is 128.5 KB because it is sized from
+   ZSTD_BLOCKSIZE_MAX rather than from the window actually set, and a
+   block is MIN(windowSize, ZSTD_BLOCKSIZE_MAX), so at the 64 KB
+   window default one block needs ZSTD_compressBound(64 KB) = 64.3 KB
+   at worst - half the recommendation.
+
+   Raising it does not buy throughput. zstd emits at most one block
+   per ZSTD_compressStream2 call, so the number of trips through
+   send_output has a floor the buffer cannot lower: measured on
+   script/corpus prose.txt (five 64 KB blocks) the count falls 28 ->
+   15 -> 8 as this goes 4K -> 8K -> 16K, then sits at 5 for 32K, 64K
+   and 128.5K alike. Past 32K it also costs CPU - 64.3K measured ~10%
+   slower per request than 16K across repeated release-build runs,
+   most likely cache residency against the encoder's own tables.
+   16K is therefore a choice, not a placeholder. Re-measure if
+   zstd_window's default moves, since the block size follows the
+   window and the plateau follows the block. */
 #define NGX_HTTP_ZSTD_OUT_SIZE (16 * 1024)
 
 /* Module configuration. */
@@ -1084,12 +1104,20 @@ ngx_http_zstd_merge_conf(ngx_conf_t *cf, void *parent, void *child)
     /* 16 bits (64 KB), matching the Brotli filter's compiled-in
        default and for the same reason: per-request memory outranks
        compression ratio - see PORTING.md section 1. Confirmed rather
-       than assumed: peak live encoder bytes for a 1.5 MB response
-       measured 333 KB at a 16 KB window, 1.25 MB at 64 KB, 1.83 MB at
-       256 KB and 2.61 MB at 1 MB - climbing with the window here,
-       unlike Brotli's own flat curve, which makes staying at the
-       smaller end of that range matter rather than being merely
-       carried over unexamined. */
+       than assumed, since zstd's memory climbs with the window where
+       Brotli's own curve was flat. Against script/corpus at level 3,
+       compressed bytes versus peak live encoder bytes: 265,093 /
+       0.32 MB at 16 KB, 241,626 / 1.20 MB here, 234,205 / 1.62 MB at
+       128 KB, 230,211 / 1.74 MB at 256 KB, 230,210 / 2.49 MB at 1 MB.
+
+       So 128 KB would buy 3.1% in ratio for +0.42 MB per request -
+       1.2 GB against 1.6 GB at a thousand concurrent requests, which
+       section 1 decides against. It is the one alternative worth
+       knowing about, being the largest window that is still free in
+       block terms: a block is MIN(window, ZSTD_BLOCKSIZE_MAX), so
+       past 128 KB the window buffer grows alone. The apparent
+       flattening past 256 KB is an artifact of corpus files being
+       110-270 KB, not a property of zstd. */
     ngx_conf_merge_size_value(conf->window_bits, prev->window_bits,
         16);
 

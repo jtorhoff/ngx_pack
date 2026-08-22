@@ -373,15 +373,49 @@ a single-threaded compression call actually runs, but "obviously
 shouldn't matter" is exactly the kind of claim this document
 otherwise insists on measuring rather than taking on faith.
 
-**Output buffer size: 16 KB, still a first pass.** `NGX_HTTP_ZSTD_OUT_SIZE`
-in the filter. `ZSTD_CStreamOutSize()` is the recommended size and
-guarantees at least one complete block flushes, but it is around
-128 KB and now lives per request for the whole response — straight
-into the §1 constraint. 16 KB is well clear of that and the full
-suite passes at that size, including the TTFB test, but it has not
-been swept the way the level and window below were. A smaller buffer
-is legal either way — you simply round-trip through `send_output`
-more often.
+**Output buffer size: 16 KB, and bigger is measurably worse.**
+`NGX_HTTP_ZSTD_OUT_SIZE` in the filter. `ZSTD_CStreamOutSize()` is the
+size zstd recommends, and the obvious expectation is that a buffer
+that small costs throughput in extra round-trips through
+`send_output`. Swept, it does not — the expectation is wrong in
+three separate ways.
+
+*The recommended size does not apply to this module.*
+`ZSTD_CStreamOutSize()` is 128.5 KB, but it is derived from
+`ZSTD_BLOCKSIZE_MAX` (128 KB), not from the window actually
+configured. Blocks are `MIN(windowSize, ZSTD_BLOCKSIZE_MAX)` —
+zstd.h says so at `ZSTD_DECOMPRESSION_MARGIN` — so at the 64 KB
+window default the block is 64 KB, and the size that guarantees a
+full block flush here is `ZSTD_compressBound(64 KB)` = 64.3 KB.
+Half the recommendation. The §1 worry about "around 128 KB per
+request" was aimed at a number that never applied.
+
+*Round-trips are bounded by blocks, not by the buffer.* zstd emits at
+most one block per `ZSTD_compressStream2` call, so the round-trip
+count has a floor no buffer size can beat. Measured on `prose.txt`
+(268 KB in, 105,664 out, therefore five 64 KB blocks): 28 round-trips
+at 4 KB, 15 at 8 KB, 8 at 16 KB, then **5 at 32 KB, 5 at 64 KB and 5
+at 128.5 KB**. It plateaus at 32 KB. Every byte of buffer past that
+is per-request memory bought for zero fewer downstream calls.
+
+*And past 32 KB it costs CPU.* ms/request on `prose.txt`, release
+build, three independent runs each: 16 KB gave 1.33 / 1.33 / 1.34,
+32 KB gave 1.53 / 1.34 / 1.31, 64.3 KB gave 1.47 / 1.47 / 1.46. The
+64 KB figure is ~10% slower than 16 KB, consistent within its own
+runs and reproduced across a separate earlier sweep where 64 KB and
+128 KB both sat at 1.45-1.49 while 16 KB and 32 KB sat at 1.31-1.34.
+Compressed output was byte-identical at every size, so nothing but
+the buffer changed. The likely mechanism is cache residency: 16 KB
+stays live beside the encoder's match-finder tables where 64 KB
+evicts them.
+
+So 16 KB is kept deliberately, not provisionally. 32 KB is the only
+defensible alternative — it reaches the five-round-trip floor for
++16 KB per request — but those three saved calls never showed up in
+wall time, which makes it memory spent on a metric that does not
+move. Anything larger is worse on both axes at once. Measure again if
+the window default ever changes, since the block size, and with it
+the plateau, follows the window.
 
 **Custom allocator: used, and cheaper than it looked.** The filter
 defines `ZSTD_STATIC_LINKING_ONLY` and calls
@@ -417,6 +451,15 @@ would use anyway cannot change the window choice any further, so
 `zstd_window` default (also 64 KB). The two happen to be the same
 number for a different reason, not the same reason.
 
+Established afterwards, and worth recording because it makes the
+coincidence less of one: zstd's block *is* derivable, just not
+constant. `ZSTD_BLOCKSIZE_MAX` is 128 KB and the real block is
+`MIN(windowSize, ZSTD_BLOCKSIZE_MAX)`. At the 64 KB window default
+the block is therefore exactly 64 KB, so this constant does line up
+with an internal block size after all — it simply follows the window
+instead of being fixed. Which means the two must move together: if
+`zstd_window`'s default ever changes, this changes with it.
+
 **Compression level default: 3, measured rather than assumed.**
 `script/bench_corpus.py` (adapted, see §5) against `script/corpus/`
 with a `--with-debug` build: level 3 (zstd's own documented default)
@@ -439,6 +482,30 @@ measured against a 1.5 MB response, peak live encoder bytes were
 makes staying at the small end of the range a real, checked decision
 here rather than an assumption carried over from a module where it
 happened not to matter.
+
+Re-measured later against `script/corpus` with the ratio side
+included, since the memory numbers alone do not price the trade. At
+level 3, corpus bytes against peak per-request memory: 16 KB gives
+265,093 / 0.32 MB, **64 KB gives 241,626 / 1.20 MB**, 128 KB gives
+234,205 / 1.62 MB, 256 KB gives 230,211 / 1.74 MB, 1 MB gives
+230,210 / 2.49 MB. Those peaks agree with zstd's own
+`ZSTD_estimateCStreamSize_usingCCtxParams` to two decimal places at
+128 KB and above, so they are not an artifact of scraping the debug
+log.
+
+Read as a trade: 128 KB buys 3.1% in ratio for +0.42 MB per
+request — at a thousand concurrent compressing requests, 1.2 GB
+against 1.6 GB.
+§1 settles it, and 64 KB stays. 128 KB remains the defensible
+alternative for anyone weighing it differently, because it is the
+largest window that is still structurally free: the block is
+`MIN(window, 128 KB)`, so 128 KB is the last size where the block
+grows with the window rather than the window buffer growing alone.
+Note also that the flattening past 256 KB above is an artifact of
+corpus files being 110-270 KB, not a property of zstd — and that
+with a known Content-Length the filter already shrinks the window to
+fit the response, so this default only bites on large files and
+unknown-length streams.
 
 **Compressed-response minimum length: 256, re-derived rather than
 copied.** zstd's per-frame overhead is a handful of bytes against
