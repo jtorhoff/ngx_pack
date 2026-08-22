@@ -1,0 +1,11 @@
+# Build trees, none of which belong in the repository.
+nginx/
+objs/
+objs-dyn/
+deps/
+script/test/
+script/fuzz/out/
+__pycache__/
+*.o
+*.a
+.DS_Store

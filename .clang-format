@@ -1,0 +1,64 @@
+# Formatting for this project's own C sources: module/common,
+# module/filter, module/static and the fuzz targets under
+# script/fuzz.
+#
+# Approximates the nginx coding style, so these modules read like
+# the server they are built into: four-space indent, "type *name"
+# pointers, the return type of a definition on its own line with
+# the brace under it, and braces on the same line for everything
+# else. The column limit is 70 rather than nginx's own 80, which
+# keeps a line readable in a side-by-side diff.
+#
+# clang-format cannot reach nginx style exactly. Two known gaps:
+#
+#   * nginx aligns the names in a declaration block into a column,
+#     with the width chosen per function. AlignConsecutiveDeclarations
+#     aligns them, but to clang-format's own width rather than
+#     nginx's, so blocks look close rather than identical.
+#
+#   * nginx separates top-level definitions by two blank lines.
+#     MaxEmptyLinesToKeep preserves two where they are written but
+#     will not insert them, so that spacing is maintained by hand.
+#
+# AlignFunctionDeclarations needs clang-format 19 or newer; an older
+# one rejects the key and the whole file with it, so the CI job that
+# checks formatting pins a distribution new enough to have it.
+#
+# Caveat: clang-format searches upwards from the file it is
+# formatting, so this file also covers deps/brotli. That is a
+# vendored submodule with its own conventions - do not reformat
+# anything under deps/.
+---
+BasedOnStyle: LLVM
+AlignAfterOpenBracket: DontAlign
+AlignConsecutiveDeclarations:
+  Enabled:                   true
+  # Keep the alignment to declaration blocks inside functions, which
+  # is what nginx aligns. Without this, clang-format also pads
+  # function prototypes and the wrapped parameters of a definition
+  # into a column, which nginx does not.
+  AlignFunctionDeclarations: false
+  AlignFunctionPointers:     false
+AlignTrailingComments:
+  Kind:           Always
+  # Blank lines separate the slots of a module context by kind, not
+  # into unrelated groups, so keep one column across them.
+  OverEmptyLines: 1
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+BreakAfterReturnType: AllDefinitions
+BreakBeforeBraces: Linux
+ColumnLimit: 70
+ContinuationIndentWidth: 4
+DerivePointerAlignment: false
+IndentCaseLabels: true
+IndentWidth: 4
+InsertBraces: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+PointerAlignment: Right
+SortIncludes: Never
+SpaceAfterCStyleCast: true

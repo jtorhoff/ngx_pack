@@ -1,0 +1,191 @@
+name: CI
+
+env:
+  NGINX_REF: stable-1.30
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build with ${{ matrix.cc }}
+    runs-on: ubuntu-24.04
+    strategy:
+      # One compiler failing should not hide the other.
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+
+    env:
+      CC: ${{ matrix.cc }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libpcre3-dev zlib1g-dev
+
+      - name: Build Brotli and nginx
+        run: script/build.sh
+
+      - name: Prepare fixtures
+        run: script/prepare-tests.sh
+
+      - name: Static files and Accept-Encoding
+        run: script/run-tests.sh
+
+      - name: Streaming responses and encoder lifetime
+        run: python3 script/test_stream.py --nginx nginx/objs/nginx
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          for log in script/test/logs/*.log script/test/*.log; do
+            [ -s "$log" ] || continue
+            echo "===== $log"
+            tail -n 100 "$log"
+          done
+
+  sanitizers:
+    name: Run tests with address sanitizer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libpcre3-dev zlib1g-dev
+
+      - name: Build Brotli
+        run: |
+          cmake -S deps/brotli -B deps/brotli/out \
+                -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+          cmake --build deps/brotli/out --target brotli -j "$(nproc)"
+
+      - name: Build nginx with AddressSanitizer
+        run: |
+          git clone --depth 1 --branch $NGINX_REF \
+              https://github.com/nginx/nginx.git nginx
+          cd nginx
+          CC_OPT="-fsanitize=address -fno-omit-frame-pointer -g -O1"
+          ./auto/configure \
+              --prefix="$GITHUB_WORKSPACE/script/test" \
+              --with-http_v2_module \
+              --with-debug \
+              --with-cc-opt="$CC_OPT" \
+              --with-ld-opt="-fsanitize=address" \
+              --add-module="$GITHUB_WORKSPACE"
+          make -j "$(nproc)"
+
+      - name: Streaming suite under AddressSanitizer
+        # Leaks are nginx's pools rather than anything this module
+        # owns, and the module's own balance is asserted by the
+        # suite itself.
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: python3 script/test_stream.py --nginx nginx/objs/nginx
+
+  fuzz:
+    name: Fuzz the Accept-Encoding parser
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # libclang-rt-dev carries the sanitizer and libFuzzer
+      # runtimes. The clang package alone accepts -fsanitize=fuzzer
+      # and then fails at link with
+      # "cannot find .../libclang_rt.fuzzer-<arch>.a".
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang libclang-rt-dev cmake libpcre3-dev zlib1g-dev
+
+      # The targets include nginx's headers and compile its
+      # ngx_string.c, so they need a configured tree. Reusing
+      # build.sh keeps this job on the same nginx as the rest of the
+      # workflow, at the cost of also building Brotli, which the
+      # fuzzers do not link.
+      - name: Build Brotli and nginx
+        run: script/build.sh
+
+      - name: Build the fuzz targets
+        env:
+          CC: clang
+        run: script/fuzz/build.sh
+
+      # Deterministic, and the part that is a regression test: every
+      # seed is replayed once and a crash fails the job. -runs=0
+      # replays without mutating, so it never writes to the tracked
+      # seed corpus.
+      - name: Replay the seed corpus
+        run: |
+          script/fuzz/out/fuzz_accept_encoding -runs=0 \
+            script/fuzz/corpus
+
+      # Exploratory, and time-boxed. New inputs go to a scratch
+      # directory given first, so a run cannot rewrite the seeds.
+      - name: Fuzz for two minutes
+        run: |
+          mkdir -p script/fuzz/out/corpus
+          script/fuzz/out/fuzz_accept_encoding \
+            -max_total_time=120 -print_final_stats=1 \
+            -dict=script/fuzz/accept_encoding.dict \
+            script/fuzz/out/corpus script/fuzz/corpus
+
+      # A finding is only useful if it can be reproduced, and
+      # libFuzzer writes the input beside the binary as
+      # crash-<sha1>.
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+            oom-*
+          if-no-files-found: ignore
+
+  format:
+    name: Check formatting with clang-format
+    # Newer than the other jobs on purpose: .clang-format sets
+    # AlignFunctionDeclarations, added in clang-format 19, and
+    # 24.04 ships 18.
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format
+
+      - name: Check formatting
+        run: |
+          # Printed so a failing run shows the version. The config
+          # needs 19 or newer; an unknown key is rejected outright
+          # rather than ignored.
+          clang-format --version
+          # deps/ is vendored and formats to its own conventions.
+          clang-format --dry-run --Werror \
+            module/common/*.h module/filter/*.c module/static/*.c \
+            script/fuzz/*.c
