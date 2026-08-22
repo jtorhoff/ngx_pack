@@ -1,10 +1,10 @@
 # Tokens libFuzzer should splice in rather than discover byte by byte.
 # The grammar is RFC 9110's Accept-Encoding: a comma separated list of
 # codings, each optionally carrying a ";q=" weight.
-"br"
+"zstd"
 "gzip"
 "deflate"
-"zstd"
+"br"
 "identity"
 "compress"
 "*"
@@ -21,6 +21,6 @@
 ";q=0"
 " "
 "\x09"
-"BR"
-"brotli"
-"x-br"
+"ZSTD"
+"zstdlib"
+"x-zstd"

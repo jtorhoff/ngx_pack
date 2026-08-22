@@ -1,0 +1,101 @@
+# Copyright (C) Google Inc.
+# Copyright (C) 2026 Juri Torhoff
+
+# Either the repository root was added as the module (the top-level
+# config sources this, having set ngx_addon_name), or this directory
+# was added directly. ZSTD_ROOT_DIR has to reach the repository root
+# either way, since the zstd submodule lives there rather than beside
+# the sources.
+if [ "$ngx_addon_name" = "ngx_zstd" ]; then
+  ZSTD_MODULE_SRC_DIR="$ngx_addon_dir/module/filter"
+  ZSTD_ROOT_DIR="$ngx_addon_dir"
+else
+  ZSTD_MODULE_SRC_DIR="$ngx_addon_dir"
+  ZSTD_ROOT_DIR="$ngx_addon_dir/../.."
+fi
+
+ngx_addon_name=ngx_zstd_filter
+
+if [ -z "$ngx_module_link" ]; then
+cat << END
+
+$0: error: Zstandard module requires recent version of NGINX (1.9.11+).
+
+END
+    exit 1
+fi
+
+ngx_module_type=HTTP_FILTER
+ngx_module_name=ngx_http_zstd_filter_module
+
+# Vendored rather than taken from the system: some distributions ship
+# a zstd old enough to be missing API this module relies on, and
+# pinning the submodule keeps the version the same everywhere this
+# builds. See PORTING.md.
+zstd="$ZSTD_ROOT_DIR/deps/zstd"
+if [ ! -f "$zstd/lib/zstd.h" ]; then
+cat << END
+
+$0: error: \
+zstd library is missing from the $zstd directory.
+
+Please make sure that the git submodule has been checked out:
+
+    cd $ZSTD_ROOT_DIR && git submodule update --init && cd $PWD
+
+END
+    exit 1
+fi
+
+ZSTD_OUTPUT_DIRECTORY="$zstd/out"
+ZSTD_H="$zstd/lib/zstd.h"
+
+# Shared with the static module. Listed as a dependency so that
+# editing it actually rebuilds this module.
+ZSTD_COMMON_DIR="$ZSTD_MODULE_SRC_DIR/../common"
+ZSTD_COMMON_H="$ZSTD_COMMON_DIR/ngx_http_zstd_headers.h"
+
+ngx_module_incs="$zstd/lib"
+ngx_module_deps="$ZSTD_H $ZSTD_COMMON_H"
+ngx_module_srcs="$ZSTD_MODULE_SRC_DIR/ngx_http_zstd_filter_module.c"
+ngx_module_libs="-L$ZSTD_OUTPUT_DIRECTORY/lib -lzstd"
+ngx_module_order="$ngx_module_name \
+                  ngx_pagespeed \
+                  ngx_http_postpone_filter_module \
+                  ngx_http_ssi_filter_module \
+                  ngx_http_charset_filter_module \
+                  ngx_http_xslt_filter_module \
+                  ngx_http_image_filter_module \
+                  ngx_http_sub_filter_module \
+                  ngx_http_addition_filter_module \
+                  ngx_http_gunzip_filter_module \
+                  ngx_http_userid_filter_module \
+                  ngx_http_headers_filter_module \
+                  ngx_http_copy_filter_module \
+                  ngx_http_range_body_filter_module \
+                  ngx_http_not_modified_filter_module \
+                  ngx_http_slice_filter_module"
+
+. auto/module
+
+if [ "$ngx_module_link" != DYNAMIC ]; then
+    # ngx_module_order doesn't work with static modules,
+    # so we must re-order filters here.
+
+    if [ "$HTTP_GZIP" = YES ]; then
+        next=ngx_http_gzip_filter_module
+    elif echo $HTTP_FILTER_MODULES |
+        grep pagespeed_etag_filter >/dev/null; then
+        next=ngx_pagespeed_etag_filter
+    else
+        next=ngx_http_range_header_filter_module
+    fi
+
+    HTTP_FILTER_MODULES=`echo $HTTP_FILTER_MODULES \
+                         | sed "s/$ngx_module_name//" \
+                         | sed "s/$next/$next $ngx_module_name/"`
+fi
+
+CFLAGS="$CFLAGS -Wno-deprecated-declarations"
+
+have=NGX_HTTP_ZSTD_FILTER_MODULE . auto/have

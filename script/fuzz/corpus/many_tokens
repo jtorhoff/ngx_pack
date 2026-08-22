@@ -1,1 +1,1 @@
-gzip, deflate, compress, identity, br
+gzip, deflate, compress, identity, zstd

@@ -2,10 +2,16 @@
 nginx/
 objs/
 objs-dyn/
-deps/
+# Build output from the vendored zstd; the submodule itself is
+# tracked.
+deps/zstd/out/
 script/test/
 script/fuzz/out/
 __pycache__/
 *.o
 *.a
 .DS_Store
+
+# Artifacts left behind by script/run-tests.sh: response bodies and
+# the decompressed copies it compares them against.
+tmp/

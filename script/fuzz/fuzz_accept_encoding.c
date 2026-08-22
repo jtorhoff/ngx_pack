@@ -1,9 +1,10 @@
 /*
  * Copyright (C) Google Inc.
+ * Copyright (C) 2026 Juri Torhoff
  */
 
 /* libFuzzer target for the Accept-Encoding parser in
- * module/common/ngx_http_brotli_headers.h.
+ * module/common/ngx_http_zstd_headers.h.
  *
  * That parser is the only code in this repository that reads attacker
  * controlled bytes. It walks the header with ngx_strlcasestrn,
@@ -41,7 +42,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-#include "../../module/common/ngx_http_brotli_headers.h"
+#include "../../module/common/ngx_http_zstd_headers.h"
 
 /* ngx_string.c is linked for ngx_strlcasestrn and refers to these.
    Nothing on the path under test reaches them; they exist to satisfy
@@ -94,7 +95,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     r.http_version = NGX_HTTP_VERSION_11;
     r.headers_in.accept_encoding = &accept_encoding;
 
-    ngx_http_brotli_claim_request(&r);
+    ngx_http_zstd_claim_request(&r);
 
     free(value);
 

@@ -3,10 +3,10 @@
 
 Reports what the filter actually achieves on real HTML, CSS, JavaScript and
 prose - compressed size, ratio, and time per request - optionally across a
-range of brotli_comp_level and brotli_window settings.
+range of zstd_comp_level and zstd_window settings.
 
 This is a measurement tool, not a test: a compression ratio has no pass or
-fail, and the numbers move with the vendored Brotli version. Run it by hand
+fail, and the numbers move with the linked zstd version. Run it by hand
 when tuning a default, and put the table in the commit message. test_stream.py
 is what asserts correctness.
 
@@ -25,7 +25,7 @@ Two traps worth knowing before trusting any number this prints:
 
 Usage:
     python3 script/bench_corpus.py
-    python3 script/bench_corpus.py --quality 4,5,6 --window 16k,64k
+    python3 script/bench_corpus.py --level 1,3,6 --window 16k,64k
     python3 script/bench_corpus.py --nginx /path/to/nginx --repeat 40
 """
 
@@ -48,16 +48,16 @@ MIME = {
 }
 
 
-def render_conf(work, port, qualities, windows):
-    """One location per (quality, window) pair, so a sweep needs one nginx."""
+def render_conf(work, port, levels, windows):
+    """One location per (level, window) pair, so a sweep needs one nginx."""
     locations = []
-    for quality in qualities:
+    for level in levels:
         for window in windows:
-            window_directive = f"brotli_window {window};" if window else ""
+            window_directive = f"zstd_window {window};" if window else ""
             locations.append(
-                f"    location /q{quality}w{window or 'default'}/ {{\n"
+                f"    location /q{level}w{window or 'default'}/ {{\n"
                 f"      root html;\n"
-                f"      brotli_comp_level {quality};\n"
+                f"      zstd_comp_level {level};\n"
                 f"      {window_directive}\n"
                 f"    }}"
             )
@@ -84,8 +84,8 @@ http {{
   }}
   default_type application/octet-stream;
 
-  brotli on;
-  brotli_types text/html text/css application/javascript text/plain;
+  zstd on;
+  zstd_types text/html text/css application/javascript text/plain;
 
   server {{
     listen 127.0.0.1:{port};
@@ -122,14 +122,14 @@ def main():
     parser.add_argument("--nginx", help="path to the nginx binary under test")
     parser.add_argument("--port", type=int, default=T.PORT)
     parser.add_argument(
-        "--quality",
-        default="6",
-        help="comma-separated brotli_comp_level values (default: 6)",
+        "--level",
+        default="3",
+        help="comma-separated zstd_comp_level values (default: 3)",
     )
     parser.add_argument(
         "--window",
         default="",
-        help="comma-separated brotli_window values; empty means the "
+        help="comma-separated zstd_window values; empty means the "
         "compiled-in default",
     )
     parser.add_argument(
@@ -147,7 +147,7 @@ def main():
             f"clone or a stray delete is the usual cause."
         )
 
-    qualities = [q.strip() for q in args.quality.split(",") if q.strip()]
+    levels = [lv.strip() for lv in args.level.split(",") if lv.strip()]
     windows = [w.strip() for w in args.window.split(",")] if args.window else [""]
 
     nginx_bin = T.locate_nginx(args.nginx)
@@ -164,28 +164,28 @@ def main():
         )
     print()
 
-    work = tempfile.mkdtemp(prefix="ngx-brotli-bench-")
+    work = tempfile.mkdtemp(prefix="ngx-zstd-bench-")
     html = os.path.join(work, "html")
     os.makedirs(os.path.join(work, "logs"), exist_ok=True)
-    for quality in qualities:
+    for level in levels:
         for window in windows:
-            directory = os.path.join(html, f"q{quality}w{window or 'default'}")
+            directory = os.path.join(html, f"q{level}w{window or 'default'}")
             os.makedirs(directory, exist_ok=True)
             for name, blob in corpus.items():
                 with open(os.path.join(directory, name), "wb") as handle:
                     handle.write(blob)
 
-    conf = render_conf(work, args.port, qualities, windows)
+    conf = render_conf(work, args.port, levels, windows)
     nginx = T.Nginx(nginx_bin, work, conf, args.port)
     nginx.start()
 
     names = sorted(corpus, key=lambda n: MIME.get(os.path.splitext(n)[1], ""))
     try:
-        for quality in qualities:
+        for level in levels:
             for window in windows:
-                label = f"brotli_comp_level {quality}"
+                label = f"zstd_comp_level {level}"
                 if window:
-                    label += f", brotli_window {window}"
+                    label += f", zstd_window {window}"
                 print(f"### {label}")
                 print(
                     f"{'file':>12} {'raw':>9} {'compressed':>11} "
@@ -194,10 +194,10 @@ def main():
                 print("-" * 52)
                 total_raw = total_out = 0
                 for name in names:
-                    path = f"/q{quality}w{window or 'default'}/{name}"
+                    path = f"/q{level}w{window or 'default'}/{name}"
                     _, headers, body = T.fetch(args.port, path)
-                    if headers.get("content-encoding") != "br":
-                        print(f"{name:>12}   not compressed - check brotli_types")
+                    if headers.get("content-encoding") != "zstd":
+                        print(f"{name:>12}   not compressed - check zstd_types")
                         continue
                     raw = len(corpus[name])
                     total_raw += raw

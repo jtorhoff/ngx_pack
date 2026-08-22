@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Regression harness for the ngx_brotli filter module.
+"""Regression harness for the ngx_zstd filter module.
 
 script/run-tests.sh already covers Accept-Encoding parsing against static
 files. This harness covers the two areas it does not:
 
   * streaming responses, where Content-Length is unknown and the body reaches
     the filter as a chunked stream (the proxy_pass case), and
-  * the lifetime of the BrotliEncoderState instance, which owns heap memory
+  * the lifetime of the ZSTD_CCtx instance, which owns heap memory
     that the request pool does not release on its own.
 
 The memory tests read the encoder's own allocator tracing out of the debug
@@ -43,7 +43,7 @@ CONF = os.path.join(ROOT, "script", "test_stream.conf")
 PORT = 8899
 UPSTREAM_PORT = 8901
 
-# The compiled-in brotli_window default, which test_stream.conf deliberately
+# The compiled-in zstd_window default, which test_stream.conf deliberately
 # does not override.
 FULL_WINDOW = 64 * 1024
 
@@ -118,16 +118,9 @@ def nginx_build_info(nginx):
 
 
 def locate_decoder():
-    """Returns a callable bytes->bytes, or None if brotli cannot be decoded."""
-    try:
-        import brotli  # type: ignore
-
-        return brotli.decompress
-    except ImportError:
-        pass
-
-    bundled = os.path.join(ROOT, "deps", "brotli", "out", "brotli")
-    cli = shutil.which("brotli")
+    """Returns a callable bytes->bytes, or None if zstd cannot be decoded."""
+    bundled = os.path.join(ROOT, "deps", "zstd", "out", "programs", "zstd")
+    cli = shutil.which("zstd")
     if not cli and os.path.isfile(bundled) and os.access(bundled, os.X_OK):
         cli = bundled
     if not cli:
@@ -135,13 +128,13 @@ def locate_decoder():
 
     def decode_with_cli(data):
         # The CLI is happiest with a real file; this also keeps us clear of
-        # stdin-buffering differences between brotli releases.
-        with tempfile.NamedTemporaryFile(suffix=".br", delete=False) as handle:
+        # stdin-buffering differences between zstd releases.
+        with tempfile.NamedTemporaryFile(suffix=".zst", delete=False) as handle:
             handle.write(data)
             path = handle.name
         try:
             return subprocess.run(
-                [cli, "-d", "-c", path], capture_output=True, check=True
+                [cli, "-d", "-c", "-f", path], capture_output=True, check=True
             ).stdout
         finally:
             os.unlink(path)
@@ -150,20 +143,14 @@ def locate_decoder():
 
 
 def locate_encoder():
-    """Returns a callable bytes->bytes, or None if brotli cannot be encoded.
+    """Returns a callable bytes->bytes, or None if zstd cannot be encoded.
 
-    Only the brotli_static tests need this: they have to lay down a real ".br"
-    sibling for the module to find, and nginx will not make one for them.
+    Only the zstd_static tests need this: they have to lay down a real
+    ".zst" sibling for the module to find, and nginx will not make one for
+    them.
     """
-    try:
-        import brotli  # type: ignore
-
-        return brotli.compress
-    except ImportError:
-        pass
-
-    bundled = os.path.join(ROOT, "deps", "brotli", "out", "brotli")
-    cli = shutil.which("brotli")
+    bundled = os.path.join(ROOT, "deps", "zstd", "out", "programs", "zstd")
+    cli = shutil.which("zstd")
     if not cli and os.path.isfile(bundled) and os.access(bundled, os.X_OK):
         cli = bundled
     if not cli:
@@ -175,7 +162,7 @@ def locate_encoder():
             path = handle.name
         try:
             return subprocess.run(
-                [cli, "-c", path], capture_output=True, check=True
+                [cli, "-c", "-f", path], capture_output=True, check=True
             ).stdout
         finally:
             os.unlink(path)
@@ -197,14 +184,14 @@ def port_is_free(port):
 # Fixtures
 # ---------------------------------------------------------------------------
 
-# Comfortably over the default brotli_min_length, so a status code is the
+# Comfortably over the default zstd_min_length, so a status code is the
 # only thing that can stop these responses being compressed.
 STATUS_BODY = ("<html><body>" + "status guard body " * 40 + "</body></html>").encode()
 
 # Same, for the Vary dedupe cases below.
 VARY_BODY = ("<html><body>" + "vary dedupe body " * 40 + "</body></html>").encode()
 
-# Headers the upstream sends so ngx_http_brotli_check_vary can be reached with
+# Headers the upstream sends so ngx_http_zstd_check_vary can be reached with
 # something to compare against. The module adds "Vary: Accept-Encoding" itself,
 # so what each case checks is whether it recognises what is already there.
 #
@@ -225,7 +212,7 @@ VARY_CASES = {
 }
 
 WORDS = [
-    "brotli",
+    "zstd",
     "nginx",
     "filter",
     "compression",
@@ -272,20 +259,20 @@ def build_fixtures(work):
     os.makedirs(os.path.join(work, "logs"), exist_ok=True)
 
     files = {
-        # Large enough to span many meta-blocks, so the encoder performs the
+        # Large enough to span many blocks, so the encoder performs the
         # short-lived per-block allocations the memory tests care about, and
-        # large enough that lg_win is not reduced below brotli_window.
+        # large enough that windowLog is not reduced below zstd_window.
         "big.html": f"<html><body>{make_text(200000, 1)}</body></html>",
-        # Over brotli_min_length, but small enough that a known Content-Length
-        # drives lg_win well below brotli_window.
+        # Over zstd_min_length, but small enough that a known Content-Length
+        # drives windowLog well below zstd_window.
         "small.html": f"<html><body>{make_text(200, 2)}</body></html>",
-        # Under any sane brotli_min_length.
+        # Under any sane zstd_min_length.
         "tiny.html": "<html>hi</html>",
-        # Bracket the compiled-in brotli_min_length default: the first must be
+        # Bracket the compiled-in zstd_min_length default: the first must be
         # too small to be worth compressing, the second comfortably worth it.
         "under_min.html": ("<html><body>" + "x" * 176 + "</body></html>"),
         "over_min.html": ("<html><body>" + "y" * 376 + "</body></html>"),
-        # Not in brotli_types.
+        # Not in zstd_types.
         "data.bin": make_text(500, 3),
     }
     for name, content in files.items():
@@ -294,17 +281,17 @@ def build_fixtures(work):
 
     fixtures = {name: content.encode() for name, content in files.items()}
 
-    # A pre-compressed sibling for brotli_static to find. Written only when an
+    # A pre-compressed sibling for zstd_static to find. Written only when an
     # encoder is available; the tests skip otherwise.
     encode = locate_encoder()
     if encode:
         precompressed = f"<html><body>{make_text(2000, 5)}</body></html>".encode()
         with open(os.path.join(html, "precompressed.html"), "wb") as handle:
             handle.write(precompressed)
-        with open(os.path.join(html, "precompressed.html.br"), "wb") as handle:
+        with open(os.path.join(html, "precompressed.html.zst"), "wb") as handle:
             handle.write(encode(precompressed))
         fixtures["precompressed.html"] = precompressed
-        # No ".br" sibling, so brotli_static has to fall through to it.
+        # No ".zst" sibling, so zstd_static has to fall through to it.
         with open(os.path.join(html, "plain_only.html"), "wb") as handle:
             handle.write(precompressed)
         fixtures["plain_only.html"] = precompressed
@@ -399,7 +386,7 @@ class Upstream:
             )
 
             if path.startswith("/slow"):
-                filler = b"<html>" + b"brotli nginx filter stream " * 400
+                filler = b"<html>" + b"zstd nginx filter stream " * 400
                 for _ in range(3):
                     conn.sendall(self._chunk(filler))
                     time.sleep(0.2)
@@ -424,7 +411,7 @@ class Upstream:
             b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
             b"Transfer-Encoding: chunked\r\n\r\n"
         )
-        chunk = b"<html><body>" + b"dribbled brotli payload " * 340
+        chunk = b"<html><body>" + b"dribbled zstd payload " * 340
         for _ in range(20):
             conn.sendall(self._chunk(chunk))
             time.sleep(0.05)
@@ -543,7 +530,7 @@ class Nginx:
 # ---------------------------------------------------------------------------
 
 
-def fetch(port, path, accept_encoding: str | None = "br", method="GET", timeout=30):
+def fetch(port, path, accept_encoding: str | None = "zstd", method="GET", timeout=30):
     """Returns (status, lowercased headers, raw body). No auto-decompression.
 
     accept_encoding of None sends no Accept-Encoding header at all, which is a
@@ -562,7 +549,7 @@ def fetch(port, path, accept_encoding: str | None = "br", method="GET", timeout=
         conn.close()
 
 
-def fetch_repeated(port, path, name, accept_encoding="br", timeout=30):
+def fetch_repeated(port, path, name, accept_encoding="zstd", timeout=30):
     """Returns (status, every value sent for `name`, the collapsed headers).
 
     fetch() folds the headers into a dict, which is exactly wrong here: one
@@ -595,7 +582,7 @@ def fetch_and_abort(port, path, settle=1.5):
     try:
         sock.sendall(
             (
-                f"GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: br\r\n\r\n"
+                f"GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: zstd\r\n\r\n"
             ).encode()
         )
         time.sleep(settle)
@@ -611,10 +598,10 @@ def fetch_and_abort(port, path, settle=1.5):
 # Debug log analysis
 # ---------------------------------------------------------------------------
 
-ALLOC_RE = re.compile(r"\*(\d+) brotli alloc: (?:0x)?([0-9A-Fa-f]+), size:(\d+)")
-FREE_RE = re.compile(r"\*(\d+) brotli free: (?:0x)?([0-9A-Fa-f]+)")
+ALLOC_RE = re.compile(r"\*(\d+) zstd alloc: (?:0x)?([0-9A-Fa-f]+), size:(\d+)")
+FREE_RE = re.compile(r"\*(\d+) zstd free: (?:0x)?([0-9A-Fa-f]+)")
 CLOSE_RE = re.compile(r"\*(\d+) http close request")
-INIT_RE = re.compile(r"\*(\d+) brotli encoder initialized: lvl:(-?\d+) win:(\d+)")
+INIT_RE = re.compile(r"\*(\d+) zstd encoder initialized: lvl:(-?\d+) win:(\d+)")
 
 
 def encoder_windows(log):
@@ -666,7 +653,7 @@ def allocator_events(log):
         if match:
             entry = slot(match.group(1))
             ptr = match.group(2).lstrip("0")
-            if not ptr:  # free(NULL); brotli does this for unset fields
+            if not ptr:  # free(NULL), if the allocator ever does that
                 entry["null_frees"] += 1
                 continue
             entry["frees"] += 1
@@ -691,9 +678,13 @@ def wait_for_encoder_release(nginx, timeout=10.0):
     A client can hold the whole response before the worker has released the
     encoder. The last output block is written to the socket from inside the
     body filter's output branch, and the encoder is only destroyed on the loop
-    iteration after that - once BrotliEncoderIsFinished is reached with no
-    output outstanding. It cannot be destroyed any earlier: ctx->out_buf points
-    into memory owned by the encoder, handed out by BrotliEncoderTakeOutput.
+    iteration after that - once ctx->output is back to IDLE (the filters below
+    have taken everything) and a fresh call finds ctx->frame_closed already
+    set. It is not destroyed any earlier even though, unlike Brotli's
+    BrotliEncoderTakeOutput, out_buf here is memory the filter allocated
+    itself rather than encoder-owned memory: out_chain still has to reach
+    the filters below intact, and closing early would tear it down under
+    them.
 
     So reading the log the instant fetch() returns races the teardown. The race
     is almost never lost on an idle machine and lost regularly on a loaded CI
@@ -754,8 +745,8 @@ def test_static_roundtrip(ctx):
     status, headers, body = fetch(ctx.port, "/big.html")
     check(status == 200, f"expected 200, got {status}")
     check(
-        headers.get("content-encoding") == "br",
-        f"expected Content-Encoding: br, got {headers.get('content-encoding')!r}",
+        headers.get("content-encoding") == "zstd",
+        f"expected Content-Encoding: zstd, got {headers.get('content-encoding')!r}",
     )
     original = ctx.fixtures["big.html"]
     check(
@@ -774,8 +765,8 @@ def check_corpus_roundtrip(ctx, name, path=None):
     status, headers, body = fetch(ctx.port, path)
     check(status == 200, f"{path}: expected 200, got {status}")
     check(
-        headers.get("content-encoding") == "br",
-        f"{path}: expected Content-Encoding: br, got "
+        headers.get("content-encoding") == "zstd",
+        f"{path}: expected Content-Encoding: zstd, got "
         f"{headers.get('content-encoding')!r}",
     )
     check(
@@ -786,20 +777,20 @@ def check_corpus_roundtrip(ctx, name, path=None):
     check(ctx.decode(body) == original, f"{path}: decoded body differs")
 
 
-@test("brotli_static serves a pre-compressed sibling", needs_decoder=True)
-def test_static_module_serves_br(ctx):
+@test("zstd_static serves a pre-compressed sibling", needs_decoder=True)
+def test_static_module_serves_zst(ctx):
     if "precompressed.html" not in ctx.fixtures:
-        raise Failure("no brotli encoder available to build the .br fixture")
+        raise Failure("no zstd encoder available to build the .zst fixture")
 
     status, headers, body = fetch(ctx.port, "/static/precompressed.html")
     check(status == 200, f"expected 200, got {status}")
     check(
-        headers.get("content-encoding") == "br",
-        f"brotli_static did not serve the .br sibling; headers: {headers!r}",
+        headers.get("content-encoding") == "zstd",
+        f"zstd_static did not serve the .zst sibling; headers: {headers!r}",
     )
     check(
         ctx.decode(body) == ctx.fixtures["precompressed.html"],
-        "the served .br did not decode back to the original",
+        "the served .zst did not decode back to the original",
     )
     # Twice, so the second request is answered from open_file_cache. That is
     # the path that hashes the constructed name over its length.
@@ -807,14 +798,14 @@ def test_static_module_serves_br(ctx):
     check(status == 200, f"cached request: expected 200, got {status}")
     check(
         ctx.decode(body) == ctx.fixtures["precompressed.html"],
-        "the cached .br did not decode back to the original",
+        "the cached .zst did not decode back to the original",
     )
 
 
-@test("brotli_static declines a client that will not take br")
+@test("zstd_static declines a client that will not take zstd")
 def test_static_module_declines_plain_client(ctx):
     if "precompressed.html" not in ctx.fixtures:
-        raise Failure("no brotli encoder available to build the .br fixture")
+        raise Failure("no zstd encoder available to build the .zst fixture")
 
     status, headers, body = fetch(
         ctx.port, "/static/precompressed.html", accept_encoding=None
@@ -830,16 +821,16 @@ def test_static_module_declines_plain_client(ctx):
     )
 
 
-@test("brotli_static falls through when there is no .br sibling")
+@test("zstd_static falls through when there is no .zst sibling")
 def test_static_module_without_sibling(ctx):
     if "plain_only.html" not in ctx.fixtures:
-        raise Failure("no brotli encoder available to build the fixtures")
+        raise Failure("no zstd encoder available to build the fixtures")
 
     status, headers, body = fetch(ctx.port, "/static/plain_only.html")
     check(status == 200, f"expected 200, got {status}")
     check(
         "content-encoding" not in headers,
-        f"a file with no .br sibling was served as {headers!r}",
+        f"a file with no .zst sibling was served as {headers!r}",
     )
     check(
         body == ctx.fixtures["plain_only.html"],
@@ -857,7 +848,7 @@ def check_vary_dedupe(ctx, case, expected):
     status, vary, headers = fetch_repeated(ctx.port, f"/vary/{case}", "Vary")
     check(status == 200, f"/vary/{case}: expected 200, got {status}")
     check(
-        headers.get("content-encoding") == "br",
+        headers.get("content-encoding") == "zstd",
         f"/vary/{case} came back uncompressed, so set_vary never ran and this "
         f"test proves nothing; headers: {headers!r}",
     )
@@ -912,7 +903,7 @@ def test_vary_lookalike_header(ctx):
     # ETag's key is four characters and this value fifteen, so both length
     # guards pass and only the string comparison stands between it and a
     # false match. When that comparison was once inverted, this response
-    # went out with no Vary at all - a cache would then serve the Brotli
+    # went out with no Vary at all - a cache would then serve the Zstandard
     # body to a client that never asked for one.
     vary = check_vary_dedupe(ctx, "etag", 1)
     check(
@@ -969,8 +960,8 @@ def test_stream_roundtrip(ctx):
     status, headers, body = fetch(ctx.port, "/stream/big.html")
     check(status == 200, f"expected 200, got {status}")
     check(
-        headers.get("content-encoding") == "br",
-        f"expected Content-Encoding: br, got {headers.get('content-encoding')!r}",
+        headers.get("content-encoding") == "zstd",
+        f"expected Content-Encoding: zstd, got {headers.get('content-encoding')!r}",
     )
     check(
         "content-length" not in headers,
@@ -985,14 +976,14 @@ def test_stream_roundtrip(ctx):
 @test("small-but-eligible response round-trips", needs_decoder=True)
 def test_small_roundtrip(ctx):
     _, headers, body = fetch(ctx.port, "/small.html")
-    check(headers.get("content-encoding") == "br", "small.html was not compressed")
+    check(headers.get("content-encoding") == "zstd", "small.html was not compressed")
     check(
         ctx.decode(body) == ctx.fixtures["small.html"],
         "decoded small.html differs from the original",
     )
 
 
-@test("response below brotli_min_length is left alone")
+@test("response below zstd_min_length is left alone")
 def test_min_length(ctx):
     _, headers, body = fetch(ctx.port, "/tiny.html")
     check(
@@ -1003,7 +994,7 @@ def test_min_length(ctx):
     check(body == ctx.fixtures["tiny.html"], "tiny.html body was altered")
 
 
-@test("default brotli_min_length leaves a 200 byte response alone")
+@test("default zstd_min_length leaves a 200 byte response alone")
 def test_min_length_default_lower(ctx):
     """Guards the compiled-in default, which the test config deliberately does
     not override. A response this small costs more to compress than it saves."""
@@ -1011,21 +1002,21 @@ def test_min_length_default_lower(ctx):
     _, headers, body = fetch(ctx.port, "/under_min.html")
     check(
         "content-encoding" not in headers,
-        f"a {body_len} byte response was compressed; brotli_min_length has "
+        f"a {body_len} byte response was compressed; zstd_min_length has "
         f"dropped below it",
     )
     check(body == ctx.fixtures["under_min.html"], "under_min.html was altered")
 
 
 @test(
-    "default brotli_min_length still compresses a 400 byte response", needs_decoder=True
+    "default zstd_min_length still compresses a 400 byte response", needs_decoder=True
 )
 def test_min_length_default_upper(ctx):
     body_len = len(ctx.fixtures["over_min.html"])
     _, headers, body = fetch(ctx.port, "/over_min.html")
     check(
-        headers.get("content-encoding") == "br",
-        f"a {body_len} byte response was not compressed; brotli_min_length has "
+        headers.get("content-encoding") == "zstd",
+        f"a {body_len} byte response was not compressed; zstd_min_length has "
         f"risen above it",
     )
     check(
@@ -1050,7 +1041,7 @@ def test_ttfb_on_buffered_stream(ctx):
         started = time.perf_counter()
         sock.sendall(
             b"GET /dribble HTTP/1.1\r\nHost: localhost\r\n"
-            b"Connection: close\r\nAccept-Encoding: br\r\n\r\n"
+            b"Connection: close\r\nAccept-Encoding: zstd\r\n\r\n"
         )
         head, first_body, total = b"", None, 0
         while True:
@@ -1082,7 +1073,7 @@ def test_ttfb_on_buffered_stream(ctx):
     )
 
 
-@test("brotli_min_length applies to responses of unknown length too")
+@test("zstd_min_length applies to responses of unknown length too")
 def test_min_length_on_stream(ctx):
     """The header filter cannot compare against min_length when it has no
     Content-Length, so it holds the headers until the body has answered the
@@ -1104,7 +1095,7 @@ def test_min_length_on_stream(ctx):
 def test_min_length_on_stream_upper(ctx):
     _, headers, body = fetch(ctx.port, "/buffered/over_min.html")
     check(
-        headers.get("content-encoding") == "br",
+        headers.get("content-encoding") == "zstd",
         f"a {len(ctx.fixtures['over_min.html'])} byte streamed response should "
         f"be compressed, got {headers.get('content-encoding')!r}",
     )
@@ -1118,7 +1109,7 @@ def test_min_length_on_stream_upper(ctx):
 def test_status_guard(ctx):
     """204 and 304 have no body to encode, and a 206 body is a byte range whose
     Content-Range still describes the uncompressed entity. Labelling any of
-    them "br" corrupts the response."""
+    them "zstd" corrupts the response."""
     for code in (204, 304, 206):
         status, headers, _ = fetch(ctx.port, f"/status/{code}")
         check(status == code, f"expected {code} to reach the client, got {status}")
@@ -1137,7 +1128,7 @@ def test_status_guard_not_too_broad(ctx):
         status, headers, body = fetch(ctx.port, f"/status/{code}")
         check(status == code, f"expected {code} to reach the client, got {status}")
         check(
-            headers.get("content-encoding") == "br",
+            headers.get("content-encoding") == "zstd",
             f"a {code} response should still be compressed, got "
             f"{headers.get('content-encoding')!r}",
         )
@@ -1147,12 +1138,12 @@ def test_status_guard_not_too_broad(ctx):
         )
 
 
-@test("MIME type outside brotli_types is left alone")
+@test("MIME type outside zstd_types is left alone")
 def test_mime_filtering(ctx):
     _, headers, body = fetch(ctx.port, "/data.bin")
     check(
         "content-encoding" not in headers,
-        "data.bin is not in brotli_types but was compressed",
+        "data.bin is not in zstd_types but was compressed",
     )
     check(body == ctx.fixtures["data.bin"], "data.bin body was altered")
 
@@ -1167,59 +1158,59 @@ def test_no_accept_encoding(ctx):
     check(body == ctx.fixtures["big.html"], "uncompressed body was altered")
 
 
-@test("Accept-Encoding: br;q=0 is honoured")
+@test("Accept-Encoding: zstd;q=0 is honoured")
 def test_q_zero(ctx):
     for value in [
-        "br;q=0",
-        "br;q=0.0",
-        "br;q=0.00",
-        "br;q=0.000",
-        "br ; q = 0.00",
-        "br\t;\tq\t=\t0",
-        "gzip, br;q=0",
+        "zstd;q=0",
+        "zstd;q=0.0",
+        "zstd;q=0.00",
+        "zstd;q=0.000",
+        "zstd ; q = 0.00",
+        "zstd\t;\tq\t=\t0",
+        "gzip, zstd;q=0",
     ]:
         _, headers, _ = fetch(ctx.port, "/big.html", accept_encoding=value)
         check(
             "content-encoding" not in headers,
-            f"{value!r} should decline brotli, but the response was compressed",
+            f"{value!r} should decline zstd, but the response was compressed",
         )
 
 
-@test("tokens that merely contain 'br' do not select brotli")
+@test("tokens that merely contain 'zstd' do not select zstd")
 def test_partial_token(ctx):
-    for value in ["bro", "brotli", "bar", "b", "gzip, deflate", "x-br", "br-x"]:
+    for value in ["zstdx", "zstdlib", "bar", "b", "gzip, deflate", "x-zstd", "zstd-x"]:
         _, headers, _ = fetch(ctx.port, "/big.html", accept_encoding=value)
         check(
             "content-encoding" not in headers,
-            f"{value!r} should not select brotli, but the response was compressed",
+            f"{value!r} should not select zstd, but the response was compressed",
         )
 
 
-@test("Accept-Encoding lists that do select brotli", needs_decoder=True)
+@test("Accept-Encoding lists that do select zstd", needs_decoder=True)
 def test_encoding_lists(ctx):
     for value in [
-        "br",
-        "gzip, br",
-        "gzip, br, deflate",
-        "gzip, br;q=1, deflate",
-        "br;q=0.001",
-        "identity, br",
-        # Relative weights are ignored: naming br at all is enough, even when
-        # something else is weighted higher.
-        "gzip;q=1.0, br;q=0.1",
-        "gzip;q=0.9, br;q=0.2, deflate",
+        "zstd",
+        "gzip, zstd",
+        "gzip, zstd, deflate",
+        "gzip, zstd;q=1, deflate",
+        "zstd;q=0.001",
+        "identity, zstd",
+        # Relative weights are ignored: naming zstd at all is enough, even
+        # when something else is weighted higher.
+        "gzip;q=1.0, zstd;q=0.1",
+        "gzip;q=0.9, zstd;q=0.2, deflate",
         # Tab is valid optional whitespace around a list separator.
-        "br\t,gzip",
-        "gzip,\tbr",
-        "gzip, br ",
+        "zstd\t,gzip",
+        "gzip,\tzstd",
+        "gzip, zstd ",
         # Token matching is case-insensitive.
-        "BR",
-        "Br",
+        "ZSTD",
+        "Zstd",
     ]:
         _, headers, body = fetch(ctx.port, "/small.html", accept_encoding=value)
         check(
-            headers.get("content-encoding") == "br",
-            f"{value!r} should select brotli, got {headers.get('content-encoding')!r}",
+            headers.get("content-encoding") == "zstd",
+            f"{value!r} should select zstd, got {headers.get('content-encoding')!r}",
         )
         check(
             ctx.decode(body) == ctx.fixtures["small.html"],
@@ -1227,7 +1218,7 @@ def test_encoding_lists(ctx):
         )
 
 
-@test("HTTP/1.0 clients are not served Brotli")
+@test("HTTP/1.0 clients are not served Zstandard")
 def test_http_version_gate(ctx):
     """Mirrors gzip_http_version, whose default is 1.1. Declining still leaves
     Vary advertised, as the gzip filter does, so a cache in front keeps the
@@ -1238,7 +1229,7 @@ def test_http_version_gate(ctx):
         try:
             sock.sendall(
                 f"GET /big.html HTTP/{version}\r\nHost: localhost\r\n"
-                f"Accept-Encoding: br\r\nConnection: close\r\n\r\n".encode()
+                f"Accept-Encoding: zstd\r\nConnection: close\r\n\r\n".encode()
             )
             data = b""
             while True:
@@ -1251,21 +1242,21 @@ def test_http_version_gate(ctx):
         head = data.split(b"\r\n\r\n", 1)[0].decode("latin-1")
         lower = [line.lower() for line in head.split("\r\n")]
         return (
-            any(line.startswith("content-encoding: br") for line in lower),
+            any(line.startswith("content-encoding: zstd") for line in lower),
             any(line.startswith("vary:") for line in lower),
         )
 
     compressed, vary = raw("1.0")
-    check(not compressed, "an HTTP/1.0 request was served Brotli")
+    check(not compressed, "an HTTP/1.0 request was served Zstandard")
     check(vary, "Vary was dropped for the declined HTTP/1.0 request")
 
     compressed, _ = raw("1.1")
-    check(compressed, "an HTTP/1.1 request was not served Brotli")
+    check(compressed, "an HTTP/1.1 request was not served Zstandard")
 
 
 @test("Vary: Accept-Encoding is advertised to every client")
 def test_vary(ctx):
-    for accept in ["br", "gzip", None]:
+    for accept in ["zstd", "gzip", None]:
         _, headers, _ = fetch(ctx.port, "/big.html", accept_encoding=accept)
         vary = headers.get("vary", "")
         check(
@@ -1291,7 +1282,7 @@ def test_head(ctx):
 def test_deferred_window_for_buffered_stream(ctx):
     """A small response of unknown length still reaches the filter whole, just
     without last_buf on the first call. Holding it briefly lets the filter size
-    the window from the real total instead of falling back to brotli_window."""
+    the window from the real total instead of falling back to zstd_window."""
     ctx.nginx.truncate_log()
     fetch(ctx.port, "/buffered/small.html")
     windows = encoder_windows(ctx.nginx.read_log())
@@ -1310,8 +1301,8 @@ def test_buffered_stream_roundtrip(ctx):
     status, headers, body = fetch(ctx.port, "/buffered/big.html")
     check(status == 200, f"expected 200, got {status}")
     check(
-        headers.get("content-encoding") == "br",
-        f"expected Content-Encoding: br, got {headers.get('content-encoding')!r}",
+        headers.get("content-encoding") == "zstd",
+        f"expected Content-Encoding: zstd, got {headers.get('content-encoding')!r}",
     )
     check(
         ctx.decode(body) == ctx.fixtures["big.html"],
@@ -1357,7 +1348,7 @@ def test_window_tuning(ctx):
     )
     check(
         big[0] == FULL_WINDOW,
-        f"a response larger than brotli_window should use the full "
+        f"a response larger than zstd_window should use the full "
         f"{FULL_WINDOW} window, got {big[0]}",
     )
 
@@ -1365,7 +1356,7 @@ def test_window_tuning(ctx):
 @test("stream of unknown length falls back to the full window", needs_debug=True)
 def test_stream_uses_full_window(ctx):
     """Same payload as test_window_tuning's small case, but delivered chunked.
-    With no Content-Length to tune from, the filter must use brotli_window -
+    With no Content-Length to tune from, the filter must use zstd_window -
     which is also what proves this really is the unknown-length path."""
     ctx.nginx.truncate_log()
     fetch(ctx.port, "/stream/small.html")
@@ -1428,7 +1419,7 @@ def test_cleanup_handler_on_abort(ctx):
     # The point of this test. The encoder must be released by the pool cleanup
     # handler, which runs inside ngx_destroy_pool - after nginx has logged
     # "http close request". If every free landed before that line, the request
-    # drained through ngx_http_brotli_filter_close instead, and the cleanup
+    # drained through ngx_http_zstd_filter_close instead, and the cleanup
     # handler went untested even though the balance check passed.
     check(
         any(entry["frees_after_close"] for entry in active.values()),
@@ -1445,7 +1436,7 @@ def test_cleanup_handler_on_abort(ctx):
 
 class Context:
     """Everything a test needs: the server, the port, the fixture bytes and a
-    brotli decoder."""
+    zstd decoder."""
 
     def __init__(self, port, decode, fixtures, nginx):
         self.port = port
@@ -1491,14 +1482,13 @@ def main():
         print("         window and memory tests need --with-debug; skipping them.")
     if not decode:
         print(
-            "         round-trip tests need a brotli decoder: install the "
-            "python 'brotli'\n         module, or build the CLI with\n"
-            "           cd deps/brotli && mkdir -p out && cd out && "
-            "cmake .. && make brotli"
+            "         round-trip tests need a zstd decoder: install the "
+            "zstd CLI, or build the bundled one with\n"
+            "           script/build.sh"
         )
     print()
 
-    work = tempfile.mkdtemp(prefix="ngx-brotli-test-")
+    work = tempfile.mkdtemp(prefix="ngx-zstd-test-")
     fixtures = build_fixtures(work)
     conf = render_conf(work, args.port, args.upstream_port)
 
@@ -1513,7 +1503,7 @@ def main():
         for entry in REGISTRY:
             name = entry["name"]
             if entry["needs_decoder"] and not decode:
-                results.append((SKIP, name, "no brotli decoder available"))
+                results.append((SKIP, name, "no zstd decoder available"))
             elif entry["needs_debug"] and not has_debug:
                 results.append((SKIP, name, "nginx lacks --with-debug"))
             elif entry["needs_corpus"] and not has_corpus:

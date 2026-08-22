@@ -6,8 +6,8 @@
 # Overridable:
 #   NGINX_BIN  nginx binary to exercise (default: the one
 #              script/build.sh makes)
-#   BROTLI     brotli CLI used to decompress (default: the one it
-#              makes, else PATH)
+#   ZSTD       zstd CLI used to decompress (default: the one
+#              script/build.sh makes, else PATH)
 #
 # Note NGINX_BIN rather than NGINX: nginx reserves the NGINX
 # environment variable for socket inheritance, and reads a binary
@@ -17,7 +17,7 @@
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NGINX="${NGINX_BIN:-$ROOT/nginx/objs/nginx}"
-BROTLI="${BROTLI:-$ROOT/deps/brotli/out/brotli}"
+ZSTD="${ZSTD:-$ROOT/deps/zstd/out/programs/zstd}"
 SERVER=http://localhost:8080
 FILES=$ROOT/script/test
 HR="-----------------------------------------------------------------"
@@ -26,11 +26,11 @@ if [ ! -x "$NGINX" ]; then
 	echo "no nginx at $NGINX; run script/build.sh or set NGINX" >&2
 	exit 1
 fi
-if [ ! -x "$BROTLI" ]; then
-	BROTLI="$(command -v brotli || true)"
+if [ ! -x "$ZSTD" ]; then
+	ZSTD="$(command -v zstd || true)"
 fi
-if [ -z "$BROTLI" ] || [ ! -x "$BROTLI" ]; then
-	echo "no brotli CLI; run script/build.sh or set BROTLI" >&2
+if [ -z "$ZSTD" ] || [ ! -x "$ZSTD" ]; then
+	echo "no zstd CLI; install it or set ZSTD" >&2
 	exit 1
 fi
 
@@ -65,11 +65,11 @@ expect_equal() {
 	fi
 }
 
-expect_br_equal() {
+expect_zst_equal() {
 	expected=$1
-	actual_br=$2
-	if $BROTLI -dfk "./${actual_br}.br"; then
-		expect_equal "$expected" "$actual_br"
+	actual_zst=$2
+	if $ZSTD -dfk "./${actual_zst}.zst"; then
+		expect_equal "$expected" "$actual_zst"
 	else
 		add_result "FAIL (decompression)"
 	fi
@@ -89,61 +89,61 @@ CURL="curl -s"
 echo $HR
 
 echo "Test: long file with rate limit"
-$CURL -H 'Accept-encoding: br' -o tmp/war-and-peace.br \
+$CURL -H 'Accept-encoding: zstd' -o tmp/war-and-peace.zst \
 	--limit-rate 300K $SERVER/war-and-peace.txt
-expect_br_equal "$FILES/war-and-peace.txt" tmp/war-and-peace
+expect_zst_equal "$FILES/war-and-peace.txt" tmp/war-and-peace
 
 echo "Test: compressed 404"
-$CURL -H 'Accept-encoding: br' -o tmp/notfound.br $SERVER/notfound
-expect_br_equal tmp/notfound.txt tmp/notfound
+$CURL -H 'Accept-encoding: zstd' -o tmp/notfound.zst $SERVER/notfound
+expect_zst_equal tmp/notfound.txt tmp/notfound
 
-echo "Test: A-E: 'gzip, br'"
-$CURL -H 'Accept-encoding: gzip, br' -o tmp/ae-01.br $SERVER/small.txt
-expect_br_equal "$FILES/small.txt" tmp/ae-01
+echo "Test: A-E: 'gzip, zstd'"
+$CURL -H 'Accept-encoding: gzip, zstd' -o tmp/ae-01.zst $SERVER/small.txt
+expect_zst_equal "$FILES/small.txt" tmp/ae-01
 
-echo "Test: A-E: 'gzip, br, deflate'"
-$CURL -H 'Accept-encoding: gzip, br, deflate' -o tmp/ae-02.br \
+echo "Test: A-E: 'gzip, zstd, deflate'"
+$CURL -H 'Accept-encoding: gzip, zstd, deflate' -o tmp/ae-02.zst \
 	$SERVER/small.txt
-expect_br_equal "$FILES/small.txt" tmp/ae-02
+expect_zst_equal "$FILES/small.txt" tmp/ae-02
 
-echo "Test: A-E: 'gzip, br;q=1, deflate'"
-$CURL -H 'Accept-encoding: gzip, br;q=1, deflate' -o tmp/ae-03.br \
+echo "Test: A-E: 'gzip, zstd;q=1, deflate'"
+$CURL -H 'Accept-encoding: gzip, zstd;q=1, deflate' -o tmp/ae-03.zst \
 	$SERVER/small.txt
-expect_br_equal "$FILES/small.txt" tmp/ae-03
+expect_zst_equal "$FILES/small.txt" tmp/ae-03
 
-echo "Test: A-E: 'br;q=0.001'"
-$CURL -H 'Accept-encoding: br;q=0.001' -o tmp/ae-04.br \
+echo "Test: A-E: 'zstd;q=0.001'"
+$CURL -H 'Accept-encoding: zstd;q=0.001' -o tmp/ae-04.zst \
 	$SERVER/small.txt
-expect_br_equal "$FILES/small.txt" tmp/ae-04
+expect_zst_equal "$FILES/small.txt" tmp/ae-04
 
-echo "Test: A-E: 'bro'"
-$CURL -H 'Accept-encoding: bro' -o tmp/ae-05.txt $SERVER/small.txt
+echo "Test: A-E: 'zstdx'"
+$CURL -H 'Accept-encoding: zstdx' -o tmp/ae-05.txt $SERVER/small.txt
 expect_equal "$FILES/small.txt" tmp/ae-05.txt
 
-echo "Test: A-E: 'bo'"
-$CURL -H 'Accept-encoding: bo' -o tmp/ae-06.txt $SERVER/small.txt
+echo "Test: A-E: 'zsdt'"
+$CURL -H 'Accept-encoding: zsdt' -o tmp/ae-06.txt $SERVER/small.txt
 expect_equal "$FILES/small.txt" tmp/ae-06.txt
 
-echo "Test: A-E: 'br;q=0'"
-$CURL -H 'Accept-encoding: br;q=0' -o tmp/ae-07.txt $SERVER/small.txt
+echo "Test: A-E: 'zstd;q=0'"
+$CURL -H 'Accept-encoding: zstd;q=0' -o tmp/ae-07.txt $SERVER/small.txt
 expect_equal "$FILES/small.txt" tmp/ae-07.txt
 
-echo "Test: A-E: 'br;q=0.'"
-$CURL -H 'Accept-encoding: br;q=0.' -o tmp/ae-08.txt $SERVER/small.txt
+echo "Test: A-E: 'zstd;q=0.'"
+$CURL -H 'Accept-encoding: zstd;q=0.' -o tmp/ae-08.txt $SERVER/small.txt
 expect_equal "$FILES/small.txt" tmp/ae-08.txt
 
-echo "Test: A-E: 'br;q=0.0'"
-$CURL -H 'Accept-encoding: br;q=0.0' -o tmp/ae-09.txt \
+echo "Test: A-E: 'zstd;q=0.0'"
+$CURL -H 'Accept-encoding: zstd;q=0.0' -o tmp/ae-09.txt \
 	$SERVER/small.txt
 expect_equal "$FILES/small.txt" tmp/ae-09.txt
 
-echo "Test: A-E: 'br;q=0.00'"
-$CURL -H 'Accept-encoding: br;q=0.00' -o tmp/ae-10.txt \
+echo "Test: A-E: 'zstd;q=0.00'"
+$CURL -H 'Accept-encoding: zstd;q=0.00' -o tmp/ae-10.txt \
 	$SERVER/small.txt
 expect_equal "$FILES/small.txt" tmp/ae-10.txt
 
-echo "Test: A-E: 'br ; q = 0.000'"
-$CURL -H 'Accept-encoding: br ; q = 0.000' -o tmp/ae-11.txt \
+echo "Test: A-E: 'zstd ; q = 0.000'"
+$CURL -H 'Accept-encoding: zstd ; q = 0.000' -o tmp/ae-11.txt \
 	$SERVER/small.txt
 expect_equal "$FILES/small.txt" tmp/ae-11.txt
 
@@ -172,14 +172,14 @@ CURL="curl --http2-prior-knowledge -s"
 echo $HR
 
 echo "Test: long file with rate limit"
-$CURL -H 'Accept-encoding: br' -o tmp/h2-war-and-peace.br \
+$CURL -H 'Accept-encoding: zstd' -o tmp/h2-war-and-peace.zst \
 	--limit-rate 300K $SERVER/war-and-peace.txt
-expect_br_equal "$FILES/war-and-peace.txt" tmp/h2-war-and-peace
+expect_zst_equal "$FILES/war-and-peace.txt" tmp/h2-war-and-peace
 
-echo "Test: A-E: 'gzip, br'"
-$CURL -H 'Accept-encoding: gzip, br' -o tmp/h2-ae-01.br \
+echo "Test: A-E: 'gzip, zstd'"
+$CURL -H 'Accept-encoding: gzip, zstd' -o tmp/h2-ae-01.zst \
 	$SERVER/small.txt
-expect_br_equal "$FILES/small.txt" tmp/h2-ae-01
+expect_zst_equal "$FILES/small.txt" tmp/h2-ae-01
 
 echo "Test: A-E: 'b'"
 $CURL -H 'Accept-encoding: b' -o tmp/h2-ae-13.txt $SERVER/small.html

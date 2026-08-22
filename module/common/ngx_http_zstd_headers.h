@@ -1,5 +1,6 @@
 /*
  * Copyright (C) Google Inc.
+ * Copyright (C) 2026 Juri Torhoff
  */
 
 /* HTTP header handling shared by the filter and the static module:
@@ -150,7 +151,7 @@ ngx_http_zstd_check_accept_encoding(ngx_http_request_t *r)
             }
 
             /* The token has to stand alone; reject a match inside a
-               longer one such as "zstd" or "x-br". A match at
+               longer one such as "zstdandard" or "x-zstd". A match at
                either edge of the header is treated as if a separator
                sat beside it. */
             if (cursor == start) {
