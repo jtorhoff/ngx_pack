@@ -19,6 +19,16 @@ proposing any encoder tuning that buys ratio. The Brotli module this
 derives from defaults to a 64 KB window (`lg_win` 16) for exactly this
 reason, not because larger windows were untested.
 
+Measure it **on a stream**, not on a static file. With a known
+Content-Length the filter shrinks the window to fit and
+`ZSTD_CCtx_setPledgedSrcSize` shrinks the encoder's tables to the
+body, which together hide the cost of a bad setting almost entirely:
+level 22 on a 1.5 MB static file peaks at 1.90 MB, and the same level
+on a chunked response of unknown length peaks at **640.90 MB**. A
+static-file measurement is not evidence about the configuration this
+module is most used in. §7 has the numbers and the comparison against
+Brotli.
+
 **`ZSTD_c_nbWorkers` stays at 0.** zstd's built-in multithreading is a
 tempting knob and it is the wrong one here. nginx already parallelises
 across worker processes, one per core, so under load every core is
@@ -263,8 +273,13 @@ Deliberate departures from the example:
 - **No input buffer.** The example reads into `buffIn`. Point
   `ZSTD_inBuffer` at `buf->pos` directly and let the chain own the
   bytes.
-- **`ZSTD_CCtx_setPledgedSrcSize`** when the length is known: it writes
-  the size into the frame header, helping the decoder allocate.
+- **`ZSTD_CCtx_setPledgedSrcSize`** when the length is known: it
+  writes the size into the frame header, helping the decoder
+  allocate. It also
+  turns out to be the module's main defence against a high
+  `zstd_comp_level` — it caps the *encoder's* tables to the body as
+  well — which is why the memory numbers look so different between a
+  static file and a stream. See §7.
 
 ---
 
@@ -472,10 +487,69 @@ time (256,640 bytes / 0.58 ms), so 3 is the actual elbow of the
 curve, matching the "CPU over ratio" reasoning that set Brotli's
 quality-4 default without inheriting Brotli's specific number.
 
+**Memory against Brotli: better at the defaults, worse on streams,
+and the difference is one API call.** Measured head to head, each
+module at its own compiled-in defaults, same corpus, same allocator
+tracing, against the `ngx_brotli` build this repository derives from.
+
+On known-length responses zstd wins comfortably. Mean peak encoder
+memory across `script/corpus` against total compressed bytes: Brotli
+q4 costs 1.80 MB for 228,062 bytes, zstd level 3 costs 0.97 MB for
+241,626 — 46% less memory for 6% larger output. Matched on ratio
+rather than on defaults it is better still: zstd level 5 produces
+225,033 bytes at 1.07 MB, beating Brotli's default on *both* axes.
+(The 228,062 figure reproduces the number recorded for quality 4
+above, which is the cross-check that the two measurements are
+comparable at all.)
+
+The reason is `ZSTD_CCtx_setPledgedSrcSize`, listed in §4 as a
+frame-header nicety for the decoder. It does considerably more than
+that: told the source size, zstd sizes its match-finder tables to the
+body rather than to the window, so memory *plateaus* — 1.07 MB at
+level 5, 6 and 9 alike on corpus-sized files. Brotli has no
+equivalent and climbs past its default, to 2.55 MB at q9 and 5.55 MB
+at q11.
+
+That protection does not extend to streams, and there the comparison
+inverts. Same `prose.txt`, chunked with no Content-Length, peak
+memory against output: Brotli q4 0.95 MB / 101,626 bytes, q6
+0.95 MB / 96,143, q11 2.29 MB / 88,213; zstd level 3 1.20 MB /
+102,581, level 6 2.95 MB / 97,092, level 9 **10.45 MB** / 96,050.
+Brotli is essentially flat at ~0.95 MB across q4-q6 and reaches its
+best ratio at 2.29 MB. zstd at level 9 spends more than four times
+that to produce output Brotli beats. Raising `zstd_comp_level` on a
+`proxy_pass` location with buffering off — the configuration this
+module is most useful in — is therefore a far more expensive
+move than the equivalent Brotli one, and nothing in the directive
+says so.
+
+**Worst case per request: 641 MB, and the window barely matters.**
+The far end of that same effect. The directives permit
+`zstd_comp_level` 1-22 and `zstd_window` up to 128 MB, and with no
+pledged size the level alone dominates: measured on a chunked
+response at the *default* 64 KB window, level 22 peaks at 640.90 MB,
+matching `ZSTD_estimateCStreamSize_usingCCtxParams` exactly. Opening
+the window to 128 MB only takes it to 834 MB, so shrinking the window
+is nearly useless as a defence up there. The top of the range doubles
+per step - 80.9 MB at 19, 160.9 at 20, 320.9 at 21, 640.9 at 22 -
+where gzip stops at 9 and Brotli at 11 (5.55 MB). A one-line config
+change reaches ~530x the default's footprint with no warning. Left
+as-is deliberately rather than capped, because a cap is a real
+restriction on a legitimate setting, but it is the sharpest edge in
+the module and any future work on directive validation should start
+here.
+
 **Window default: 64 KB, and confirmed to cost memory here unlike
-Brotli.** Brotli's own window/memory curve was flat — quality had no
-effect on peak encoder memory, only `lg_win` did, and even then only
-up to where the hasher changed at 64 KB. zstd's does not stay flat:
+Brotli.** Brotli's own window/memory curve was flat where it was
+measured — quality appeared to have no effect on peak encoder
+memory, only `lg_win` did, and even then only up to where the hasher
+changed at 64 KB. Worth narrowing that claim, since it was later
+measured across Brotli's whole range rather than just the two
+qualities either side of its default: flat is true of q4 against q6
+(1.80 MB against 1.80 MB on `script/corpus`) and false outside that
+band — 0.36 MB at q1, 2.55 MB at q9, 5.55 MB at q11. So "quality
+does not cost memory" holds only near the default. zstd's window curve
+does not stay flat either:
 measured against a 1.5 MB response, peak live encoder bytes were
 333 KB at a 16 KB window, 1.25 MB at 64 KB, 1.83 MB at 256 KB and
 2.61 MB at 1 MB — climbing steadily rather than plateauing. That
