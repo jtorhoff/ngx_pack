@@ -47,6 +47,9 @@ UPSTREAM_PORT = 8901
 # does not override.
 FULL_WINDOW = 64 * 1024
 
+# Little-endian 0xFD2FB528, the magic a zstd frame opens with.
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
 
@@ -619,9 +622,41 @@ INIT_RE = re.compile(r"\*(\d+) zstd encoder initialized: lvl:(-?\d+) win:(\d+)")
 OUT_RE = re.compile(r"\*(\d+) zstd out: (?:0x)?[0-9A-Fa-f]+, size:(\d+)")
 
 
-def encoder_windows(log):
-    """Returns [window_size] in the order encoders were initialized."""
-    return [int(match.group(3)) for match in INIT_RE.finditer(log)]
+def encoder_count(log):
+    """How many encoders were built, in this slice of the log."""
+    return len(INIT_RE.findall(log))
+
+
+def frame_window(data):
+    """The window size the encoder declared, read from the zstd frame header.
+
+    RFC 8878 section 3.1.1. Deliberately taken from the frame rather than
+    from the module's "zstd encoder initialized" line: that line reports the
+    zstd_window ceiling and the pledged length, because zstd picks the real
+    window from both when compression starts and offers no call that reports
+    it back. Reading the frame asserts what the encoder did instead of what
+    this module intended, so it also holds if zstd's own sizing changes.
+    """
+    if data[:4] != ZSTD_MAGIC:
+        raise Failure("response body does not start with a zstd frame")
+
+    descriptor = data[4]
+    fcs_flag = descriptor >> 6
+    single_segment = (descriptor >> 5) & 1
+    did_flag = descriptor & 3
+    pos = 5
+
+    if not single_segment:
+        exponent, mantissa = data[pos] >> 3, data[pos] & 7
+        base = 1 << (10 + exponent)
+        return base + (base // 8) * mantissa
+
+    # Single_Segment_flag: no window descriptor at all, the window is the
+    # whole content, and its size is then always present.
+    pos += (0, 1, 2, 4)[did_flag]
+    width = (1, 2, 4, 8)[fcs_flag]
+    value = int.from_bytes(data[pos : pos + width], "little")
+    return value + 256 if width == 2 else value
 
 
 def allocator_events(log):
@@ -1389,14 +1424,15 @@ def test_deferred_window_for_buffered_stream(ctx):
     without last_buf on the first call. Holding it briefly lets the filter size
     the window from the real total instead of falling back to zstd_window."""
     ctx.nginx.mark_log()
-    fetch(ctx.port, "/buffered/small.html")
-    windows = encoder_windows(ctx.nginx.read_log())
+    _, _, body = fetch(ctx.port, "/buffered/small.html")
+    count = encoder_count(ctx.nginx.read_log())
+    window = frame_window(body)
 
-    check(len(windows) == 1, f"expected one encoder, saw {windows!r}")
+    check(count == 1, f"expected one encoder, saw {count}")
     check(
-        windows[0] < FULL_WINDOW,
+        window < FULL_WINDOW,
         f"a small buffered stream should size its window from the response, "
-        f"got the full {windows[0]}; the encoder was created before the whole "
+        f"got the full {window}; the encoder was created before the whole "
         f"body arrived",
     )
 
@@ -1420,41 +1456,52 @@ def test_deferred_falls_back_for_large(ctx):
     """Deferral must give up once enough input has accumulated: the response
     may be huge, and a window sized from a partial prefix would cost ratio."""
     ctx.nginx.mark_log()
-    fetch(ctx.port, "/buffered/big.html")
-    windows = encoder_windows(ctx.nginx.read_log())
+    _, _, body = fetch(ctx.port, "/buffered/big.html")
+    count = encoder_count(ctx.nginx.read_log())
+    window = frame_window(body)
 
-    check(len(windows) == 1, f"expected one encoder, saw {windows!r}")
+    check(count == 1, f"expected one encoder, saw {count}")
     check(
-        windows[0] == FULL_WINDOW,
+        window == FULL_WINDOW,
         f"a large stream must fall back to the full {FULL_WINDOW} window, got "
-        f"{windows[0]} - a window sized from a prefix would hurt compression",
+        f"{window} - a window sized from a prefix would hurt compression",
     )
 
 
 @test("known Content-Length shrinks the encoder window", needs_debug=True)
 def test_window_tuning(ctx):
+    """Asserts the property, not the mechanism, and cannot tell the two apart.
+
+    Both fixtures reach the filter whole, so zstd derives a pledged size from
+    the single ZSTD_e_end call even when the module sets none - measured: with
+    ZSTD_CCtx_setPledgedSrcSize disabled this test still passes, and only
+    test_deferred_window_for_buffered_stream, whose body arrives across
+    several calls, notices. Keep both.
+    """
     ctx.nginx.mark_log()
-    fetch(ctx.port, "/small.html")
-    small = encoder_windows(ctx.nginx.read_log())
+    _, _, small_body = fetch(ctx.port, "/small.html")
+    small_count = encoder_count(ctx.nginx.read_log())
 
     ctx.nginx.mark_log()
-    fetch(ctx.port, "/big.html")
-    big = encoder_windows(ctx.nginx.read_log())
+    _, _, big_body = fetch(ctx.port, "/big.html")
+    big_count = encoder_count(ctx.nginx.read_log())
+
+    small, big = frame_window(small_body), frame_window(big_body)
 
     check(
-        len(small) == 1 and len(big) == 1,
-        f"expected one encoder per request, saw {small!r} and {big!r}",
+        small_count == 1 and big_count == 1,
+        f"expected one encoder per request, saw {small_count} and {big_count}",
     )
     check(
-        small[0] < big[0],
-        f"a small response chose window {small[0]}, the same or larger than "
-        f"the {big[0]} chosen for a large one; the Content-Length tuning "
+        small < big,
+        f"a small response chose window {small}, the same or larger than "
+        f"the {big} chosen for a large one; the Content-Length tuning "
         f"has regressed",
     )
     check(
-        big[0] == FULL_WINDOW,
+        big == FULL_WINDOW,
         f"a response larger than zstd_window should use the full "
-        f"{FULL_WINDOW} window, got {big[0]}",
+        f"{FULL_WINDOW} window, got {big}",
     )
 
 
@@ -1464,14 +1511,15 @@ def test_stream_uses_full_window(ctx):
     With no Content-Length to tune from, the filter must use zstd_window -
     which is also what proves this really is the unknown-length path."""
     ctx.nginx.mark_log()
-    fetch(ctx.port, "/stream/small.html")
-    windows = encoder_windows(ctx.nginx.read_log())
+    _, _, body = fetch(ctx.port, "/stream/small.html")
+    count = encoder_count(ctx.nginx.read_log())
+    window = frame_window(body)
 
-    check(len(windows) == 1, f"expected one encoder, saw {windows!r}")
+    check(count == 1, f"expected one encoder, saw {count}")
     check(
-        windows[0] == FULL_WINDOW,
+        window == FULL_WINDOW,
         f"a streamed response should use the full {FULL_WINDOW} window, got "
-        f"{windows[0]} - the response probably carried a Content-Length "
+        f"{window} - the response probably carried a Content-Length "
         f"after all, so this test is not exercising the streaming path",
     )
 

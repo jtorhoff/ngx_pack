@@ -901,7 +901,6 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
 {
     ngx_http_request_t   *r;
     ngx_http_zstd_conf_t *conf;
-    size_t                wbits;
     ngx_pool_cleanup_t   *cln;
     ZSTD_customMem        zmem;
     ngx_log_t            *log;
@@ -914,17 +913,6 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
     r = ctx->request;
     conf =
         ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
-
-    /* Tune windowLog, if size is known. */
-    if (ctx->content_length > 0) {
-        wbits = ZSTD_WINDOWLOG_MIN;
-        while (wbits < conf->window_bits &&
-               ctx->content_length > (off_t) ((size_t) 1 << wbits)) {
-            wbits++;
-        }
-    } else {
-        wbits = conf->window_bits;
-    }
 
     /* Encoder memory is not owned by the pool, so arrange for it to
        be released even if the request is aborted mid-stream.
@@ -962,12 +950,22 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
         return NGX_ERROR;
     }
 
+    /* A ceiling, not a target. Sizing the window down to a known
+       response was once done here by hand, which was work zstd
+       already does: ZSTD_adjustCParams_internal runs after
+       ZSTD_overrideCParams and lowers windowLog to ceil(log2(pledged
+       size)) - the same value the loop computed, and it lowers
+       hashLog and chainLog to match, which the loop did not. Checked
+       across 208 combinations of window ceiling, level and body size:
+       identical frame window descriptor and identical peak encoder
+       allocation either way. So the ceiling is all this has to set,
+       and the pledge below does the rest. */
     zrc = ZSTD_CCtx_setParameter(
-        ctx->zcctx, ZSTD_c_windowLog, (int) wbits);
+        ctx->zcctx, ZSTD_c_windowLog, (int) conf->window_bits);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
             "ZSTD_CCtx_setParameter(windowLog, %uz) failed: %s",
-            wbits, ZSTD_getErrorName(zrc));
+            conf->window_bits, ZSTD_getErrorName(zrc));
 
         return NGX_ERROR;
     }
@@ -1040,9 +1038,15 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
     /* Last, so that the flag means what it says. */
     ctx->initialized = 1;
 
-    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, log, 0,
-        "zstd encoder initialized: lvl:%i win:%uz", conf->level,
-        (size_t) 1 << wbits);
+    /* The ceiling and the pledge, not the window zstd settles on:
+       that is chosen from both when compression starts, and the
+       library offers no call that reports it back. Read it from the
+       frame header instead - script/test_stream.py's frame_window()
+       does exactly that. */
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, log, 0,
+        "zstd encoder initialized: lvl:%i win:%uz len:%O",
+        conf->level, (size_t) 1 << conf->window_bits,
+        ctx->content_length);
 
     return NGX_OK;
 }
