@@ -553,21 +553,28 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
 
     r = ctx->request;
 
-    if (ctx->in == NULL) {
-        if (ctx->frame_closed) {
-            /* The final buffer - the one carrying last_buf - has
-               already been handed to the next filter by the time
-               this is reached: it is only reachable once ctx->output
-               is back to IDLE, and send_output does not clear it
-               until the filters below have taken everything. Freeing
-               here rather than waiting for the request pool to be
-               destroyed is what keeps the encoder's memory from
-               outliving the response it belongs to - see PORTING.md
-               section 1. */
-            ngx_http_zstd_filter_close(ctx);
-            return NGX_HTTP_ZSTD_STEP_DONE;
-        }
+    /* Tested ahead of the input, not inside the branch that finds
+       none left. A closed frame means the response is over whatever
+       is still queued: anything after the buffer carrying last_buf
+       would otherwise be compressed into a second frame and committed
+       with last_buf set again, since that flag is copied from
+       frame_closed. nginx does not produce a chain like that, so this
+       guards an assumption rather than an observed case.
 
+       The final buffer has already been handed to the next filter by
+       the time this is reached: it is only reachable once ctx->output
+       is back to IDLE, and send_output does not clear it until the
+       filters below have taken everything. Freeing here rather than
+       waiting for the request pool to be destroyed is what keeps the
+       encoder's memory from outliving the response it belongs to -
+       see PORTING.md section 1. */
+    if (ctx->frame_closed) {
+        ngx_http_zstd_filter_close(ctx);
+
+        return NGX_HTTP_ZSTD_STEP_DONE;
+    }
+
+    if (ctx->in == NULL) {
         if (ctx->zpending_mode != ZSTD_e_continue) {
             /* Finishing what was started takes priority over asking
                whether the caller wants output - see pending_mode. */
