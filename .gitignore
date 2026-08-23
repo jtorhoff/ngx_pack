@@ -1,9 +1,10 @@
 # Build trees, none of which belong in the repository.
 nginx/
-# The second nginx tree script/test-small-buffer.sh builds, kept
-# apart from nginx/ so a stress binary cannot be mistaken for the one
-# the normal suites run against.
+# The nginx trees the purpose-built suites make, each kept apart from
+# nginx/ so a binary carrying a stress setting or a test-only module
+# cannot be mistaken for the one the normal suites run against.
 nginx-small-buffer/
+nginx-fault/
 objs/
 objs-dyn/
 # Build output from the vendored zstd; the submodule itself is

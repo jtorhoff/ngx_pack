@@ -48,6 +48,16 @@ jobs:
       - name: Streaming responses and encoder lifetime
         run: python3 script/test_stream.py --nginx nginx/objs/nginx
 
+      # Builds a second nginx of its own, carrying script/fault_filter
+      # alongside this module: the filter sends held headers from
+      # inside the body filter, and nothing in nginx's tree can return
+      # a status to that call - ngx_http_image_filter_module is the
+      # only header filter that returns one, and only when
+      # Content-Length is known, which this path never is. The driver
+      # makes its own fixtures.
+      - name: Rejected-header handling
+        run: script/test-header-status.sh
+
       - name: Collect logs on failure
         if: failure()
         run: |
