@@ -677,7 +677,12 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
                allowance on nothing. */
             folded = ngx_http_zstd_filter_may_fold_flush(
                 ctx->in->next, ctx->coalesced_flushes);
-            zmode = folded ? ZSTD_e_continue : ZSTD_e_flush;
+
+            if (folded) {
+                zmode = ZSTD_e_continue;
+            } else {
+                zmode = ZSTD_e_flush;
+            }
         } else {
             zmode = ZSTD_e_continue;
         }
@@ -1275,7 +1280,13 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
                 ngx_http_zstd_filter_close(ctx);
             }
 
-            return ctx->busy ? NGX_AGAIN : NGX_OK;
+            /* Buffers still outstanding mean the response is not
+               finished, whatever the encoder has to say about it. */
+            if (ctx->busy != NULL) {
+                return NGX_AGAIN;
+            }
+
+            return NGX_OK;
         }
 
         /* Stopped for want of a buffer. If the send handed one back,
