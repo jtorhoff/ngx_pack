@@ -648,6 +648,14 @@ FREE_RE = re.compile(r"\*(\d+) zstd free: (?:0x)?([0-9A-Fa-f]+)")
 CLOSE_RE = re.compile(r"\*(\d+) http close request")
 INIT_RE = re.compile(r"\*(\d+) zstd encoder initialized: lvl:(-?\d+) win:(\d+)")
 OUT_RE = re.compile(r"\*(\d+) zstd out: (?:0x)?[0-9A-Fa-f]+, size:(\d+)")
+BUF_RE = re.compile(
+    r"\*(\d+) zstd buffer created: (?:0x)?[0-9A-Fa-f]+, total:(\d+)"
+)
+
+
+def buffers_created(log):
+    """Most output buffers any one response was seen to create."""
+    return max((int(m.group(2)) for m in BUF_RE.finditer(log)), default=0)
 
 
 def encoder_count(log):
@@ -1486,6 +1494,71 @@ def test_head(ctx):
     status, _, body = fetch(ctx.port, "/big.html", method="HEAD")
     check(status == 200, f"expected 200, got {status}")
     check(body == b"", f"HEAD returned a {len(body)} byte body")
+
+
+# ---------------------------------------------------------------------------
+# Output buffers
+# ---------------------------------------------------------------------------
+
+# module/filter/ngx_http_zstd_filter_module.c, the zstd_buffers default.
+DEFAULT_BUFFERS = 4
+
+
+def stall_a_response(port, path, seconds=0.6):
+    """Asks for a rate-limited response and deliberately does not read it.
+
+    Reading it would let the write filter drain, which is exactly what must
+    not happen: the encoder only reaches for a second buffer once the first
+    is still outstanding. Returns once nginx has had time to fill what it
+    is going to fill.
+    """
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        sock.sendall(
+            f"GET {path} HTTP/1.1\r\nHost: localhost\r\n"
+            f"Accept-Encoding: zstd\r\n\r\n".encode()
+        )
+        time.sleep(seconds)
+    finally:
+        sock.close()
+
+
+@test("a stalled write does not stop the encoder", needs_debug=True)
+def test_multiple_output_buffers(ctx):
+    """With one buffer the encoder had to stop until it came back, so a slow
+    client throttled compression as well as delivery. Several buffers let it
+    run on, and zstd_buffers is the bound on how far."""
+    ctx.nginx.mark_log()
+    stall_a_response(ctx.port, "/throttled/wiki.html")
+    created = buffers_created(ctx.nginx.read_log())
+
+    check(
+        created > 1,
+        f"a stalled response created {created} output buffer(s), so the "
+        f"encoder still stops on the first one and zstd_buffers buys "
+        f"nothing",
+    )
+    check(
+        created <= DEFAULT_BUFFERS,
+        f"a stalled response created {created} output buffers, past the "
+        f"zstd_buffers default of {DEFAULT_BUFFERS}",
+    )
+
+
+@test("zstd_buffers 1 holds the encoder to a single buffer", needs_debug=True)
+def test_buffers_directive_is_honoured(ctx):
+    """The same stall against a location that allows only one buffer. This is
+    what tells a failure of the test above apart: if this one also reports
+    more than one, the directive is being ignored rather than the stall
+    failing to happen."""
+    ctx.nginx.mark_log()
+    stall_a_response(ctx.port, "/throttled-one/wiki.html")
+    created = buffers_created(ctx.nginx.read_log())
+
+    check(
+        created == 1,
+        f"zstd_buffers 1 still created {created} output buffers",
+    )
 
 
 # ---------------------------------------------------------------------------

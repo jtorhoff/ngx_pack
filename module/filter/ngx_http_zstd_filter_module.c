@@ -66,8 +66,8 @@
    at worst - half the recommendation.
 
    Raising it does not buy throughput. zstd emits at most one block
-   per ZSTD_compressStream2 call, so the number of trips through
-   send_output has a floor the buffer cannot lower: measured on
+   per ZSTD_compressStream2 call, so the number of rounds the encoder
+   needs has a floor the buffer cannot lower: measured on
    script/corpus prose.txt (five 64 KB blocks) the count falls 28 ->
    15 -> 8 as this goes 4K -> 8K -> 16K, then sits at 5 for 32K, 64K
    and 128.5K alike. Past 32K it also costs CPU - 64.3K measured ~10%
@@ -77,12 +77,14 @@
    zstd_window's default moves, since the block size follows the
    window and the plateau follows the block.
 
-   Overridable at build time only so that the test suite can shrink
-   it far below anything sane - see script/test-small-buffer.sh,
-   which uses 64 bytes to force the partial-drain and resend paths
-   that a 16 KB buffer reaches only rarely. Not a configuration
-   knob: there is no directive behind this, and nothing but the
-   stress build should set it. */
+   How many buffers of this size a response may hold at once is
+   zstd_buffers, and that one is configurable; this is the size of
+   each. Overridable at build time only so that the test suite can
+   shrink it far below anything sane - see
+   script/test-small-buffer.sh, which uses 64 bytes to force the
+   partial-drain paths that a 16 KB buffer reaches only rarely. Not a
+   configuration knob: there is no directive behind this, and nothing
+   but the stress build should set it. */
 #ifndef NGX_HTTP_ZSTD_OUT_SIZE
 #define NGX_HTTP_ZSTD_OUT_SIZE (16 * 1024)
 #endif
@@ -130,29 +132,22 @@ typedef struct {
 
     /* zstd encoder parameter: (max) ZSTD_c_windowLog, in bits */
     size_t window_bits;
+
+    /* How many output buffers one response may have in flight. Their
+       size is not configurable - see NGX_HTTP_ZSTD_OUT_SIZE. */
+    ngx_int_t buffers;
 } ngx_http_zstd_conf_t;
 
-/* What, if anything, the single output buffer is currently holding.
-   The three states are exclusive: output is taken from the encoder
-   only while the buffer is idle, and committing it moves it straight
-   from ready to busy. */
-typedef enum {
-    /* Nothing held; the encoder may be asked for more. */
-    NGX_HTTP_ZSTD_OUTPUT_IDLE = 0,
-    /* Filled from the encoder, not yet handed to the next filter. */
-    NGX_HTTP_ZSTD_OUTPUT_READY,
-    /* Handed on, and not yet fully consumed. */
-    NGX_HTTP_ZSTD_OUTPUT_BUSY
-} ngx_http_zstd_output_e;
-
-/* What one turn of the body filter's loop decided to do next. The
-   loop owns the returns; a step only says which one. */
+/* What one turn of the encoder decided to do next. The loop owns the
+   returns; a step only says which one. */
 typedef enum {
     /* Made progress; go round again. */
     NGX_HTTP_ZSTD_STEP_CONTINUE = 0,
-    /* Nothing more to do this call; return NGX_OK. */
+    /* The encoder has nothing more to give until it is fed again. */
     NGX_HTTP_ZSTD_STEP_DONE,
-    /* Blocked on the next filter; return NGX_AGAIN. */
+    /* Stopped for want of a free output buffer, with work still to
+       do. Whether that can be resolved depends on what the filters
+       below hand back, so the loop decides. */
     NGX_HTTP_ZSTD_STEP_AGAIN,
     /* Unrecoverable; the loop closes the stream and returns
        NGX_ERROR. */
@@ -190,13 +185,26 @@ typedef struct {
     /* Input buffer chain. */
     ngx_chain_t *in;
 
-    /* Output chain: a single link wrapping out_buf. */
-    ngx_chain_t *out_chain;
-    /* Output buffer. Unlike the Brotli filter this points at memory
-       *we* allocated (out_start/out_size below), not at anything the
-       encoder owns - see PORTING.md. */
-    ngx_buf_t *out_buf;
-    u_char    *out_start;
+    /* Output buffers, in the three states nginx's chain helpers keep
+       them in. Unlike the Brotli filter these point at memory *we*
+       allocated, not at anything the encoder owns - see PORTING.md.
+
+       "out" holds what has been filled this call and not yet handed
+       on, "busy" what has been handed on and not yet fully consumed,
+       and "free" what has come back and may be refilled.
+       ngx_chain_update_chains moves links from busy to free as the
+       filters below drain them, which is the whole reason a response
+       can have more than one buffer in flight: with a single buffer
+       the encoder has to stop until that one comes back. */
+    ngx_chain_t  *out;
+    ngx_chain_t **last_out;
+    ngx_chain_t  *busy;
+    ngx_chain_t  *free;
+
+    /* How many buffers have been created so far, against
+       zstd_buffers. Created on demand rather than up front, so a
+       response that never needs a second one never pays for it. */
+    ngx_uint_t buffers;
     size_t     out_size;
 
     /* 1 if the response headers are still ours to send. Set when the
@@ -257,9 +265,6 @@ typedef struct {
        ZSTD_e_continue is 0, so ngx_pcalloc starts this right. */
     ZSTD_EndDirective zpending_mode;
 
-    /* State of out_buf. ngx_pcalloc starts it at IDLE. */
-    ngx_http_zstd_output_e output;
-
     ngx_http_request_t *request;
 } ngx_http_zstd_ctx_t;
 
@@ -277,6 +282,8 @@ static ngx_int_t ngx_http_zstd_filter_send_headers(
 
 static ngx_uint_t ngx_http_zstd_filter_may_fold_flush(
     ngx_chain_t *rest, ngx_uint_t folded);
+static ngx_int_t ngx_http_zstd_filter_release_buf(
+    ngx_http_zstd_ctx_t *ctx, ngx_buf_t *buf);
 
 static void *ngx_http_zstd_create_conf(ngx_conf_t *cf);
 static char *ngx_http_zstd_merge_conf(
@@ -297,6 +304,14 @@ static char *ngx_http_zstd_parse_window(
 static ngx_conf_num_bounds_t ngx_http_zstd_comp_level_bounds = {
     ngx_conf_check_num_bounds, NGX_HTTP_ZSTD_LEVEL_MIN,
     NGX_HTTP_ZSTD_LEVEL_MAX};
+
+/* One buffer is enough to be correct - the filter simply stalls until
+   the filters below have taken it - so the floor is 1 rather than
+   anything larger. The ceiling is arbitrary but not unbounded: each
+   buffer costs NGX_HTTP_ZSTD_OUT_SIZE for the lifetime of the
+   response, and past a handful the win is gone anyway. */
+static ngx_conf_num_bounds_t ngx_http_zstd_buffers_bounds = {
+    ngx_conf_check_num_bounds, 1, 64};
 
 static ngx_conf_post_handler_pt ngx_http_zstd_parse_window_p =
     ngx_http_zstd_parse_window;
@@ -328,6 +343,13 @@ static ngx_command_t ngx_http_zstd_filter_commands[] = {
         ngx_conf_set_size_slot, NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_zstd_conf_t, window_bits),
         &ngx_http_zstd_parse_window_p},
+
+    {ngx_string("zstd_buffers"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE1,
+        ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_zstd_conf_t, buffers),
+        &ngx_http_zstd_buffers_bounds},
 
     {ngx_string("zstd_min_length"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -491,100 +513,91 @@ ngx_http_zstd_filter_send_headers(ngx_http_zstd_ctx_t *ctx)
     return ngx_http_next_header_filter(r);
 }
 
-/* Hands the committed output buffer to the next filter, and reports
-   whether the encoder may be touched again. The encoder must not be
-   while any of its output is still outstanding: out_buf is the one
-   buffer this filter owns, and it cannot be refilled while the
-   filters below still hold a reference to what is in it. */
-static ngx_http_zstd_step_e
-ngx_http_zstd_filter_send_output(ngx_http_zstd_ctx_t *ctx)
+/* Hands back a buffer to compress into.
+
+   NGX_OK with "*out" set, NGX_DECLINED when every buffer this
+   response is allowed is already in flight, or NGX_ERROR. DECLINED is
+   not a failure: it means the encoder has to wait for the filters
+   below to give one back, which is what the loop turns into a send.
+
+   Buffers are created on demand and then recycled through ctx->free
+   for the rest of the response, so a response that only ever needs
+   one never allocates a second. */
+static ngx_int_t
+ngx_http_zstd_filter_get_buf(
+    ngx_http_zstd_ctx_t *ctx, ngx_buf_t **out)
 {
-    ngx_uint_t          resend;
-    ngx_chain_t        *to_send;
-    off_t               outstanding;
-    ngx_http_request_t *r;
-    ngx_int_t           rc;
+    ngx_http_request_t   *r;
+    ngx_chain_t          *link;
+    ngx_http_zstd_conf_t *conf;
+    ngx_buf_t            *buf;
 
-    /* READY: freshly filled, so hand the chain over. BUSY: handed
-       over once already and not yet fully consumed, so offer nothing
-       new and see whether the filters below have moved any of it. */
-    resend      = (ctx->output == NGX_HTTP_ZSTD_OUTPUT_BUSY);
-    to_send     = resend ? NULL : ctx->out_chain;
-    outstanding = ngx_buf_size(ctx->out_buf);
+    r = ctx->request;
 
-    r  = ctx->request;
-    rc = ngx_http_next_body_filter(r, to_send);
+    if (ctx->free != NULL) {
+        link      = ctx->free;
+        ctx->free = link->next;
+        buf       = link->buf;
 
-    if (ngx_buf_size(ctx->out_buf) == 0) {
-        ctx->output = NGX_HTTP_ZSTD_OUTPUT_IDLE;
-    } else {
-        ctx->output = NGX_HTTP_ZSTD_OUTPUT_BUSY;
+        ngx_free_chain(r->pool, link);
+
+        /* ngx_chain_update_chains has already rewound pos and last to
+           start; the flags are this filter's to set per round. */
+        *out = buf;
+        return NGX_OK;
     }
 
-    if (rc == NGX_OK && resend &&
-        ngx_buf_size(ctx->out_buf) == outstanding) {
-        /* A resend that moved nothing means the filters below are
-           holding the buffer and will not take more of it now.
-           "outstanding" cannot be 0 here: a BUSY buffer with nothing
-           left in it was turned IDLE by the round that emptied it,
-           so a resend always starts with bytes still to place.
+    conf =
+        ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
 
-           Raising the buffered bit again is what keeps the response
-           alive, and it is not redundant with the one
-           zstd_filter_compress raises per round: that one is cleared
-           the moment the frame closes, so on the final buffer this is
-           all that still tells nginx the connection owes data. Drop
-           it and a stalled last write can be finalized as complete,
-           truncating the tail - on a socket too full to take it,
-           which loopback tests will not reproduce. */
-        r->connection->buffered |= NGX_HTTP_ZSTD_BUFFERED;
-        return NGX_HTTP_ZSTD_STEP_AGAIN;
+    if ((ngx_int_t) ctx->buffers >= conf->buffers) {
+        return NGX_DECLINED;
     }
 
-    if (rc == NGX_OK) {
-        return NGX_HTTP_ZSTD_STEP_CONTINUE;
+    buf = ngx_create_temp_buf(r->pool, ctx->out_size);
+    if (buf == NULL) {
+        return NGX_ERROR;
     }
 
-    if (rc == NGX_AGAIN && ctx->output == NGX_HTTP_ZSTD_OUTPUT_BUSY) {
-        /* Output still outstanding, and the filters below have just
-           said they cannot take more of it. Nothing to do but pass
-           the NGX_AGAIN up and wait to be called again. */
-        if (ctx->in != NULL) {
-            r->connection->buffered |= NGX_HTTP_ZSTD_BUFFERED;
-        }
-        return NGX_HTTP_ZSTD_STEP_AGAIN;
-    }
+    /* The tag is what lets ngx_chain_update_chains tell our buffers
+       apart from anything else on the busy list and hand them back
+       rather than dropping the link. "recycled" tells the filters
+       below that this memory is going to be reused, so they must not
+       sit on it. */
+    buf->tag      = (ngx_buf_tag_t) &ngx_http_zstd_filter_module;
+    buf->recycled = 1;
 
-    if (rc == NGX_AGAIN) {
-        /* The filters below took everything we gave them and only
-           then ran out of room downstream, so out_buf is free and the
-           encoder may be refilled. Their NGX_AGAIN is about their own
-           write, not about our buffer. */
-        return NGX_HTTP_ZSTD_STEP_CONTINUE;
-    }
+    ctx->buffers++;
 
-    return NGX_HTTP_ZSTD_STEP_FAILED;
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+        "zstd buffer created: %p, total:%ui", buf, ctx->buffers);
+
+    *out = buf;
+    return NGX_OK;
 }
 
-/* Runs the encoder once and, if it produced anything, wraps it in
-   out_buf. This is where the Brotli module's take_output and
-   feed_encoder merge into one step: ZSTD_compressStream2 moves input
-   and output in a single call, so there is no separate "does the
-   encoder have output ready" phase to ask about first - see
+/* Runs the encoder once and, if it produced anything, appends a
+   buffer to ctx->out. This is where the Brotli module's take_output
+   and feed_encoder merge into one step: ZSTD_compressStream2 moves
+   input and output in a single call, so there is no separate "does
+   the encoder have output ready" phase to ask about first - see
    PORTING.md section 3. */
 static ngx_http_zstd_step_e
 ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
 {
     ngx_http_request_t *r;
+    ngx_uint_t          folded;
     ZSTD_EndDirective   zmode;
     ZSTD_inBuffer       zin;
     ngx_buf_t          *buf;
     ngx_chain_t        *link;
+    ngx_buf_t          *out_buf;
+    ngx_int_t           rc;
     ZSTD_outBuffer      zout;
     size_t              zremaining;
-    ngx_buf_t          *out_buf;
 
-    r = ctx->request;
+    r      = ctx->request;
+    folded = 0;
 
     /* Tested ahead of the input, not inside the branch that finds
        none left. A closed frame means the response is over whatever
@@ -594,15 +607,11 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
        frame_closed. nginx does not produce a chain like that, so this
        guards an assumption rather than an observed case.
 
-       The final buffer has already been handed to the next filter by
-       the time this is reached: it is only reachable once ctx->output
-       is back to IDLE, and send_output does not clear it until the
-       filters below have taken everything. Freeing here rather than
-       waiting for the request pool to be destroyed is what keeps the
-       encoder's memory from outliving the response it belongs to -
-       see PORTING.md section 1. */
+       Closing the encoder is the loop's job rather than this one's:
+       the buffer carrying last_buf may still be sitting in ctx->out
+       or ctx->busy, and the encoder is not done with the response
+       until the filters below have taken it. */
     if (ctx->frame_closed) {
-        ngx_http_zstd_filter_close(ctx);
         return NGX_HTTP_ZSTD_STEP_DONE;
     }
 
@@ -662,13 +671,13 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
         if (buf->last_buf) {
             zmode = ZSTD_e_end;
         } else if (buf->flush) {
-            if (ngx_http_zstd_filter_may_fold_flush(
-                    ctx->in->next, ctx->coalesced_flushes)) {
-                ctx->coalesced_flushes++;
-                zmode = ZSTD_e_continue;
-            } else {
-                zmode = ZSTD_e_flush;
-            }
+            /* Counted below rather than here: acquiring an output
+               buffer can still fail, and a fold recorded on a round
+               that never reached the encoder would spend part of the
+               allowance on nothing. */
+            folded = ngx_http_zstd_filter_may_fold_flush(
+                ctx->in->next, ctx->coalesced_flushes);
+            zmode = folded ? ZSTD_e_continue : ZSTD_e_flush;
         } else {
             zmode = ZSTD_e_continue;
         }
@@ -685,7 +694,20 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
         zin.pos = 0;
     }
 
-    zout.dst  = ctx->out_start;
+    /* Last thing before the encoder runs, and nothing above it has
+       touched the input or the fold count yet, so giving up here
+       costs nothing and can simply be repeated once a buffer comes
+       back. */
+    rc = ngx_http_zstd_filter_get_buf(ctx, &out_buf);
+    if (rc == NGX_ERROR) {
+        return NGX_HTTP_ZSTD_STEP_FAILED;
+    }
+
+    if (rc == NGX_DECLINED) {
+        return NGX_HTTP_ZSTD_STEP_AGAIN;
+    }
+
+    zout.dst  = out_buf->start;
     zout.size = ctx->out_size;
     zout.pos  = 0;
 
@@ -698,7 +720,9 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
         return NGX_HTTP_ZSTD_STEP_FAILED;
     }
 
-    r->connection->buffered |= NGX_HTTP_ZSTD_BUFFERED;
+    if (folded) {
+        ctx->coalesced_flushes++;
+    }
 
     /* Record progress in the chain itself. It cannot be kept in
        "in.pos" alone, which does not survive returning to nginx.
@@ -766,8 +790,14 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
     /* Nothing produced this round, and not finished: go round again
        rather than returning - a flush or an end still being drained
        has to be retried, and the caller is otherwise not owed a
-       return yet. */
+       return yet. The buffer goes back unused, or the round would
+       spend one out of zstd_buffers on nothing. */
     if (zout.pos == 0 && !ctx->frame_closed) {
+        if (ngx_http_zstd_filter_release_buf(ctx, out_buf) !=
+            NGX_OK) {
+            return NGX_HTTP_ZSTD_STEP_FAILED;
+        }
+
         return NGX_HTTP_ZSTD_STEP_CONTINUE;
     }
 
@@ -791,28 +821,46 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
        and the full suite at a 64-byte output buffer never reached
        this branch. It is defence against a contract change, not a
        case seen in practice. */
-    out_buf = ctx->out_buf;
-
-    out_buf->start     = ctx->out_start;
-    out_buf->pos       = ctx->out_start;
-    out_buf->last      = ctx->out_start + zout.pos;
-    out_buf->end       = ctx->out_start + ctx->out_size;
+    out_buf->pos       = out_buf->start;
+    out_buf->last      = out_buf->start + zout.pos;
     out_buf->temporary = (zout.pos > 0);
     out_buf->sync      = (zout.pos == 0);
     out_buf->flush     = (zmode == ZSTD_e_flush);
     out_buf->last_buf  = ctx->frame_closed;
 
-    ctx->output = NGX_HTTP_ZSTD_OUTPUT_READY;
-
-    if (ctx->frame_closed) {
-        r->connection->buffered &= ~NGX_HTTP_ZSTD_BUFFERED;
+    link = ngx_alloc_chain_link(r->pool);
+    if (link == NULL) {
+        return NGX_HTTP_ZSTD_STEP_FAILED;
     }
 
+    link->buf      = out_buf;
+    link->next     = NULL;
+    *ctx->last_out = link;
+    ctx->last_out  = &link->next;
+
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-        "zstd out: %p, size:%O", ctx->out_buf,
-        ngx_buf_size(ctx->out_buf));
+        "zstd out: %p, size:%O", out_buf, ngx_buf_size(out_buf));
 
     return NGX_HTTP_ZSTD_STEP_CONTINUE;
+}
+
+/* Puts an unused buffer back where get_buf will find it again. */
+static ngx_int_t
+ngx_http_zstd_filter_release_buf(
+    ngx_http_zstd_ctx_t *ctx, ngx_buf_t *buf)
+{
+    ngx_chain_t *link;
+
+    link = ngx_alloc_chain_link(ctx->request->pool);
+    if (link == NULL) {
+        return NGX_ERROR;
+    }
+
+    link->buf  = buf;
+    link->next = ctx->free;
+    ctx->free  = link;
+
+    return NGX_OK;
 }
 
 /* Whether the flush on the buffer at the head of the chain may be
@@ -1092,29 +1140,12 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
         }
     }
 
-    ctx->out_size  = NGX_HTTP_ZSTD_OUT_SIZE;
-    ctx->out_start = ngx_palloc(r->pool, ctx->out_size);
-    if (ctx->out_start == NULL) {
-        return NGX_ERROR;
-    }
-
-    ctx->out_buf = ngx_calloc_buf(r->pool);
-    if (ctx->out_buf == NULL) {
-        return NGX_ERROR;
-    }
-
-    /* "temporary" is deliberately not set here: which of temporary
-       and sync the buffer carries depends on whether a given round
-       produced any bytes, so zstd_filter_compress sets both every
-       time it commits output. ngx_calloc_buf has zeroed them, and
-       nothing reads the buffer before that first commit. */
-    ctx->out_chain = ngx_alloc_chain_link(r->pool);
-    if (ctx->out_chain == NULL) {
-        return NGX_ERROR;
-    }
-
-    ctx->out_chain->buf  = ctx->out_buf;
-    ctx->out_chain->next = NULL;
+    /* The buffers themselves are created on demand by get_buf, up to
+       zstd_buffers of them; most responses never need a second. Only
+       the tail pointer has to exist before the first one is
+       committed, and ngx_pcalloc cannot set it. */
+    ctx->out_size = NGX_HTTP_ZSTD_OUT_SIZE;
+    ctx->last_out = &ctx->out;
 
     /* Last, so that the flag means what it says. */
     ctx->initialized = 1;
@@ -1184,39 +1215,78 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         return NGX_ERROR;
     }
 
-    /* Main loop, one phase per turn:
-       - output still outstanding - push it down, and do not touch
-       the encoder until it has all been consumed
-       - otherwise - run the encoder once: it advances the input,
-       fills out_buf if it produced anything, and reports whether the
-       stream just closed
+    /* Main loop, two phases per turn: fill every output buffer the
+       encoder can, then push the lot down in one chain.
 
-       Each phase returns what to do next rather than returning from
-       here itself. */
+       Running the encoder to a standstill before sending is the point
+       of having more than one buffer. With a single buffer the two
+       phases had to alternate, so a response was compressed and
+       written one buffer at a time; here a stalled write only costs
+       the encoder its remaining buffers, not its next byte. */
     for (;;) {
-        if (ctx->output != NGX_HTTP_ZSTD_OUTPUT_IDLE) {
-            step = ngx_http_zstd_filter_send_output(ctx);
-        } else {
+        do {
             step = ngx_http_zstd_filter_compress(ctx);
+        } while (step == NGX_HTTP_ZSTD_STEP_CONTINUE);
+
+        if (step == NGX_HTTP_ZSTD_STEP_FAILED) {
+            ngx_http_zstd_filter_close(ctx);
+            return NGX_ERROR;
         }
 
-        switch (step) {
-            case NGX_HTTP_ZSTD_STEP_CONTINUE:
-                break;
+        /* Nothing new to send and nothing outstanding: the encoder is
+           waiting for input rather than for the filters below. */
+        if (ctx->out == NULL && ctx->busy == NULL) {
+            return NGX_OK;
+        }
 
-            case NGX_HTTP_ZSTD_STEP_DONE:
-                return NGX_OK;
+        /* A NULL chain here is not a no-op: it is what asks the
+           filters below to make progress on buffers they are already
+           holding, which is the only way a busy buffer comes back. */
+        rc = ngx_http_next_body_filter(r, ctx->out);
+        if (rc == NGX_ERROR) {
+            ngx_http_zstd_filter_close(ctx);
+            return NGX_ERROR;
+        }
 
-            case NGX_HTTP_ZSTD_STEP_AGAIN:
-                return NGX_AGAIN;
+        ngx_chain_update_chains(r->pool, &ctx->free, &ctx->busy,
+            &ctx->out, (ngx_buf_tag_t) &ngx_http_zstd_filter_module);
+        ctx->last_out = &ctx->out;
 
-            default:
+        /* What nginx has to be told to come back for. Buffers the
+           filters below still hold count, and so does input not yet
+           compressed: drop the bit while either is outstanding and a
+           stalled last write can be finalized as complete, truncating
+           the tail - on a socket too full to take it, which loopback
+           tests will not reproduce. */
+        if (ctx->busy != NULL || ctx->in != NULL) {
+            r->connection->buffered |= NGX_HTTP_ZSTD_BUFFERED;
+        } else {
+            r->connection->buffered &= ~NGX_HTTP_ZSTD_BUFFERED;
+        }
+
+        if (step == NGX_HTTP_ZSTD_STEP_DONE) {
+            /* The frame is closed and its last buffer has been taken,
+               so the encoder has nothing left to do for this
+               response. Freeing here rather than waiting for the
+               request pool to be destroyed is what keeps its memory
+               from outliving the response - see PORTING.md section 1.
+             */
+            if (ctx->frame_closed && ctx->busy == NULL) {
                 ngx_http_zstd_filter_close(ctx);
-                return NGX_ERROR;
+            }
+
+            return ctx->busy ? NGX_AGAIN : NGX_OK;
+        }
+
+        /* Stopped for want of a buffer. If the send handed one back,
+           go round; if not, the filters below are full and there is
+           nothing more this call can do. */
+        if (ctx->free == NULL) {
+            return NGX_AGAIN;
         }
     }
 
-    /* Unreachable: the switch above either returns or goes round
+    /* Unreachable: the loop above either returns or goes round
        again. */
 }
 
@@ -1295,19 +1365,24 @@ ngx_http_zstd_filter_close(ngx_http_zstd_ctx_t *ctx)
 
     ngx_http_zstd_filter_cleanup(ctx);
 
-    if (ctx->out_chain) {
-        ngx_free_chain(ctx->request->pool, ctx->out_chain);
-        ctx->out_chain = NULL;
-    }
-    /* out_buf and out_start point into the request pool: nothing to
-       hand back, dropping them is the cleanup. Nulled rather than
-       left stale so that a use after close faults instead of quietly
-       writing into a buffer the pool still owns -
+    /* The buffers and their links point into the request pool:
+       nothing to hand back, dropping them is the cleanup. Dropped
+       rather than left stale so that a use after close faults instead
+       of quietly writing into memory the pool still owns -
        ensure_stream_inited guards on "initialized", which close does
-       not reset. out_size goes too, to keep the pair coherent. */
-    ctx->out_buf   = NULL;
-    ctx->out_start = NULL;
-    ctx->out_size  = 0;
+       not reset. out_size goes too, to keep it coherent with them.
+
+       "busy" is dropped along with the rest, which is safe because
+       nothing here owns those buffers any more:
+       ngx_http_write_filter copies the chain links it is given, so
+       what is downstream survives this. The list exists only to know
+       which buffers may be refilled, and after close none may. */
+    ctx->out      = NULL;
+    ctx->last_out = &ctx->out;
+    ctx->busy     = NULL;
+    ctx->free     = NULL;
+    ctx->buffers  = 0;
+    ctx->out_size = 0;
 }
 
 static void *
@@ -1327,6 +1402,7 @@ ngx_http_zstd_create_conf(ngx_conf_t *cf)
     conf->enable      = NGX_CONF_UNSET;
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
+    conf->buffers     = NGX_CONF_UNSET;
     conf->min_length  = NGX_CONF_UNSET;
 
     return conf;
@@ -1377,6 +1453,17 @@ ngx_http_zstd_merge_conf(ngx_conf_t *cf, void *parent, void *child)
        110-270 KB, not a property of zstd. */
     ngx_conf_merge_size_value(
         conf->window_bits, prev->window_bits, 16);
+
+    /* Four rather than nginx's gzip default of 32. The buffers exist
+       so that a stalled write does not stop the encoder, and past a
+       handful they stop buying that: zstd emits at most one block per
+       ZSTD_compressStream2 call, so at the 64 KB window default four
+       16 KB buffers already cover a whole block with room to spare.
+       They also cost - 4 x NGX_HTTP_ZSTD_OUT_SIZE, held for the life
+       of the response, against a per-request encoder that section 1
+       worked to keep near 1 MB - and gzip's 32 x 4K would be 128 KB
+       per response for a case this module does not have. */
+    ngx_conf_merge_value(conf->buffers, prev->buffers, 4);
 
     /* zstd's per-frame overhead is a handful of bytes against
        Brotli's roughly 560 KB encoder-instance cost, so the crossover

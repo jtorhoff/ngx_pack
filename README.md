@@ -86,6 +86,27 @@ being asked to opt into more - a larger window would produce responses some
 clients simply refuse to decode.
 
 
+### `zstd_buffers`
+
+- **syntax**: `zstd_buffers <number>`
+- **default**: `4`
+- **context**: `http`, `server`, `location`
+
+Sets the `number` of buffers a response may have compressed output waiting in
+at once. Their size is fixed at 16k and is not configurable.
+
+The buffers exist so that a client too slow to take the output does not also
+stop the encoder: with only one, compression proceeds a buffer at a time,
+each waiting for the previous to be written. `1` restores that behaviour.
+Each buffer costs 16k for the life of the response, so raising this trades
+memory for the ability to run further ahead of a stalled write.
+
+Note that this is deliberately far below nginx's `gzip_buffers` default of
+`32 4k`. zstd emits at most one block per call and a block is
+`min(zstd_window, 128k)`, so at the default window four buffers already cover
+a whole block.
+
+
 ### `zstd_min_length`
 
 - **syntax**: `zstd_min_length <length>`
