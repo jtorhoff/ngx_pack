@@ -687,6 +687,62 @@ def allocator_events(log):
     return stats
 
 
+REQUEST_LINE_RE = re.compile(r"\*(\d+) http request line")
+
+
+def allocator_timeline(log):
+    """Replays the allocator trace in order instead of grouping by connection.
+
+    allocator_events() sums per connection, which is what a test opening one
+    connection per request wants. On a keep-alive connection every request
+    shares a single id, so summing tells you nothing about whether an encoder
+    was released before the next request began - only walking the log in order
+    and recording live bytes at each request line does.
+    """
+    live, live_bytes, peak = {}, 0, 0
+    allocs = frees = unmatched = 0
+    at_request_start = []
+    connections = set()
+
+    for line in log.splitlines():
+        match = REQUEST_LINE_RE.search(line)
+        if match:
+            connections.add(match.group(1))
+            at_request_start.append(live_bytes)
+            continue
+
+        match = ALLOC_RE.search(line)
+        if match:
+            ptr, size = match.group(2).lstrip("0"), int(match.group(3))
+            live[ptr] = size
+            live_bytes += size
+            peak = max(peak, live_bytes)
+            allocs += 1
+            continue
+
+        match = FREE_RE.search(line)
+        if match:
+            ptr = match.group(2).lstrip("0")
+            if not ptr:
+                continue
+            frees += 1
+            if ptr in live:
+                live_bytes -= live.pop(ptr)
+            else:
+                unmatched += 1
+
+    return {
+        "allocs": allocs,
+        "frees": frees,
+        "unmatched": unmatched,
+        "peak": peak,
+        "live_at_end": live_bytes,
+        "blocks_at_end": len(live),
+        "at_request_start": at_request_start,
+        "connections": connections,
+    }
+
+
 def wait_for_encoder_release(nginx, timeout=10.0):
     """Polls the debug log until every traced request has been torn down.
 
@@ -1454,6 +1510,90 @@ def test_alloc_soak(ctx):
     check(
         len(counts) == 1,
         f"allocation count drifts between identical requests: {sorted(counts)}",
+    )
+
+
+def keepalive_soak(ctx, paths, rounds):
+    """Drives `rounds` passes over `paths` down one connection."""
+    conn = http.client.HTTPConnection("127.0.0.1", ctx.port, timeout=60)
+    try:
+        for _ in range(rounds):
+            for path in paths:
+                conn.request(
+                    "GET",
+                    path,
+                    headers={"Host": "localhost", "Accept-Encoding": "zstd"},
+                )
+                response = conn.getresponse()
+                response.read()
+                check(response.status == 200, f"{path} -> {response.status}")
+    finally:
+        conn.close()
+    wait_for_encoder_release(ctx.nginx)
+    return allocator_timeline(ctx.nginx.read_log())
+
+
+@test("one connection serving many requests holds nothing between them",
+      needs_debug=True)
+def test_keepalive_allocation_balance(ctx):
+    """The encoder's lifetime is the request, not the connection.
+
+    Every other memory test here opens a fresh connection per request,
+    so all of them would still pass if that were the other way round -
+    with one request per connection the request pool and the connection
+    pool are indistinguishable. This one puts thirty requests down a
+    single connection, and asks whether live memory is back to zero as
+    each of them starts.
+
+    Allocating out_start or the context from r->connection->pool, or
+    registering the cleanup handler there, is what it would catch:
+    each holds every request's encoder until the connection closes,
+    which on a keep-alive connection can be a very long time and many
+    megabytes. The peak is measured against one request of the most
+    expensive kind rather than a fixed figure, so it stays honest if
+    the vendored zstd changes what an encoder costs.
+    """
+    paths = ["/big.html", "/buffered/big.html", "/under_min.html"]
+
+    # what a single streamed response costs, as the yardstick
+    ctx.nginx.mark_log()
+    alone = keepalive_soak(ctx, ["/buffered/big.html"], 1)
+    check(alone["peak"] > 0, "no encoder allocation traced for one request")
+
+    rounds = 10
+    ctx.nginx.mark_log()
+    soak = keepalive_soak(ctx, paths, rounds)
+
+    check(
+        len(soak["connections"]) == 1,
+        f"the {rounds * len(paths)} requests used "
+        f"{len(soak['connections'])} connections, so keep-alive did not "
+        f"hold and this test proved nothing",
+    )
+    check(
+        soak["allocs"] == soak["frees"] and soak["unmatched"] == 0,
+        f"{soak['allocs']} allocations against {soak['frees']} frees "
+        f"({soak['unmatched']} unmatched)",
+    )
+    check(
+        soak["blocks_at_end"] == 0,
+        f"{soak['blocks_at_end']} blocks ({soak['live_at_end']} bytes) "
+        f"still live once the connection closed",
+    )
+
+    held = [n for n in soak["at_request_start"] if n != 0]
+    check(
+        not held,
+        f"{len(held)} of {len(soak['at_request_start'])} requests began "
+        f"with encoder memory still live from an earlier one - largest "
+        f"{max(held) if held else 0} bytes; the encoder is being held for "
+        f"the connection rather than the request",
+    )
+    check(
+        soak["peak"] <= alone["peak"] * 1.25,
+        f"peak live memory over {rounds * len(paths)} requests was "
+        f"{soak['peak'] / 1024:.0f} KB against {alone['peak'] / 1024:.0f} KB "
+        f"for a single one, so cost is accumulating across the connection",
     )
 
 
