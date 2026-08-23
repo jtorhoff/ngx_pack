@@ -930,10 +930,12 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
        1.07 MB across levels 5, 6 and 9 with it, where the same
        levels on a stream of unknown length cost 1.20, 2.95 and
        10.45 MB. Dropping it would not merely cost the decoder a
-       hint; it would remove the ceiling. */
+       hint; it would remove the ceiling. The cast must stay 64-bit:
+       content_length is an off_t, and "unsigned" would truncate a
+       body over 4 GiB into a pledge zstd then rejects. */
     if (ctx->content_length >= 0) {
         zrc = ZSTD_CCtx_setPledgedSrcSize(ctx->zcctx,
-            (unsigned) ctx->content_length);
+            (unsigned long long) ctx->content_length);
         if (ZSTD_isError(zrc)) {
             ngx_log_error(NGX_LOG_ALERT, log, 0,
                 "ZSTD_CCtx_setPledgedSrcSize(%O) failed: %s",
