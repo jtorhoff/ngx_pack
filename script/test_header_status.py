@@ -78,7 +78,7 @@ def main():
 
     def control_still_compresses():
         """The same upstream without the fault filter must be unaffected."""
-        status, headers, body = T.fetch(PORT, "/stream/big.html")
+        status, headers, _ = T.fetch(PORT, "/stream/big.html")
         check(status == 200, f"expected 200, got {status}")
         check(
             headers.get("content-encoding") == "zstd",
@@ -104,7 +104,7 @@ def main():
         started = time.time()
         try:
             T.fetch(PORT, "/fault/big.html", timeout=8)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass  # a reset or an empty reply is a fine way to end
         elapsed = time.time() - started
         check(
@@ -126,7 +126,7 @@ def main():
         nginx.mark_log()
         try:
             T.fetch(PORT, "/fault/big.html", timeout=8)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110
             pass  # the connection closing without a reply is the point
         stats = T.wait_for_encoder_release(nginx)
         for conn, entry in stats.items():
@@ -191,14 +191,18 @@ def main():
         )
 
     try:
-        record("control: the same stream without the fault compresses",
-               control_still_compresses)
-        record("a rejected response ends instead of hanging",
-               request_terminates_promptly)
-        record("the encoder does not outlive the rejected response",
-               context_is_closed)
-        record("no compressed frame reaches the wire after rejection",
-               no_frame_reaches_the_wire)
+        record(
+            "control: the same stream without the fault compresses",
+            control_still_compresses,
+        )
+        record(
+            "a rejected response ends instead of hanging", request_terminates_promptly
+        )
+        record("the encoder does not outlive the rejected response", context_is_closed)
+        record(
+            "no compressed frame reaches the wire after rejection",
+            no_frame_reaches_the_wire,
+        )
     finally:
         nginx.stop()
         upstream.shutdown()
