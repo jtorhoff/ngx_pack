@@ -704,10 +704,6 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
         }
     }
 
-    /* Nothing produced this round, and not finished: go round again
-       rather than returning - a flush or an end still being drained
-       has to be retried, and the caller is otherwise not owed a
-       return yet. */
     /* Draining with no input left, and the call neither wrote a byte
        nor finished: the next round repeats it with the same state and
        the worker spins. zstd should never do this - a flush or an end
@@ -723,6 +719,10 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
         return NGX_HTTP_ZSTD_STEP_FAILED;
     }
 
+    /* Nothing produced this round, and not finished: go round again
+       rather than returning - a flush or an end still being drained
+       has to be retried, and the caller is otherwise not owed a
+       return yet. */
     if (zout.pos == 0 && !ctx->frame_closed) {
         return NGX_HTTP_ZSTD_STEP_CONTINUE;
     }
