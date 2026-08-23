@@ -115,18 +115,18 @@ per-request encoder memory: 265,093 / 0.32 MB at `16k`, 241,626 / 1.20 MB at
 the `64k` default, 234,205 / 1.62 MB at `128k`, 230,211 / 1.74 MB at `256k`
 and 230,210 / 2.49 MB at `1m`.
 
-Whilte the default for `zstd_window` is set to `64k`, `128k` is the alternative
+While the default for `zstd_window` is set to `64k`, `128k` is the alternative
 worth knowing about: it buys 3.1% in ratio for +0.42 MB per request, and is the
 largest window still free in block terms, since a Zstandard block is
 `min(zstd_window, 128k)` and past that the window buffer grows on its own.
 
-`zstd_min_length`: Below roughly 90 to 106 bytes a small JSON-shaped response
-comes out larger than it started (default settings), and `256` clears that with
-a margin once the `Content-Encoding` header's own cost is counted.
-
 *When the response length is known the module already lowers the window to fit
 the body, `zstd_window` mainly affects streamed responses and bodies larger
 than the window.*
+
+`zstd_min_length`: Below roughly 90 to 106 bytes a small JSON-shaped response
+comes out larger than it started (default settings), and `256` clears that with
+a margin once the `Content-Encoding` header's own cost is counted.
 
 
 ## Static module
@@ -154,7 +154,7 @@ whether the client supports it. Nothing is added to `Vary`, since every client
 receives the same bytes.
 
 
-### Notes
+### Notes on the static module
 
 Every eligible request probes for `<path>.zst`. When that file does not exist
 the probe reaches the filesystem **on every request** unless negative results
