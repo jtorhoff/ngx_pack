@@ -668,8 +668,16 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
        unconsumed if the output buffer filled first - see the doc
        comment on ZSTD_compressStream2. */
     if (ctx->in != NULL) {
-        buf       = ctx->in->buf;
-        buf->pos += zin.pos;
+        buf = ctx->in->buf;
+
+        /* Guarded, not just for tidiness: a special buffer carries no
+           memory, so pos is NULL, and advancing a null pointer by
+           zero is undefined even though every compiler does the
+           obvious thing. UBSan reports it on the last_buf that
+           ngx_http_send_special emits. */
+        if (zin.pos > 0) {
+            buf->pos += zin.pos;
+        }
 
         if (ngx_buf_size(buf) == 0) {
             link    = ctx->in;
