@@ -585,6 +585,29 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
     } else {
         buf = ctx->in->buf;
 
+        /* Only what is in memory can be compressed, and zin.src can
+           only be the memory pointer - so the length has to come from
+           the same place. ngx_buf_size() would not: for a buffer
+           backed by a file it reports the file range, which paired
+           with buf->pos describes nothing. nginx's own gzip filter
+           takes "last - pos" for exactly this reason.
+
+           A buffer holding file bytes and none in memory should not
+           reach us at all: the header filter sets
+           main_filter_need_in_memory, and the copy filter above us in
+           the chain honours it. If one does, something between the
+           two ignored it, and there is nothing here that can encode
+           it - so say so rather than hand zstd a pointer that does
+           not describe the data. */
+        if (buf->in_file && !ngx_buf_in_memory(buf)) {
+            ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                "zstd got a buffer with file bytes and none in "
+                "memory: main_filter_need_in_memory was not "
+                "honoured");
+
+            return NGX_HTTP_ZSTD_STEP_FAILED;
+        }
+
         /* An empty buffer carries nothing to compress, but one
            marked last or flush still has to reach the encoder to
            close the stream or the block. Anything else is dropped. */
@@ -605,9 +628,16 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
             zmode = ZSTD_e_continue;
         }
 
-        zin.src  = buf->pos;
-        zin.size = ngx_buf_size(buf);
-        zin.pos  = 0;
+        zin.src = buf->pos;
+        /* "last > pos" as well as the in-memory test: the subtraction
+           is unsigned, so an inverted buffer would become an enormous
+           length and read far past the allocation. */
+        if (ngx_buf_in_memory(buf) && buf->last > buf->pos) {
+            zin.size = (size_t) (buf->last - buf->pos);
+        } else {
+            zin.size = 0;
+        }
+        zin.pos = 0;
     }
 
     zout.dst  = ctx->out_start;
