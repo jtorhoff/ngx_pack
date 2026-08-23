@@ -480,6 +480,7 @@ class Nginx:
         self.port = port
         self.proc = None
         self.error_log = os.path.join(work, "logs", "error.log")
+        self.log_mark = 0
 
     def start(self):
         self.proc = subprocess.Popen(
@@ -511,16 +512,29 @@ class Nginx:
                 self.proc.kill()
                 self.proc.wait(timeout=5)
 
-    def truncate_log(self):
-        # nginx holds the log open with O_APPEND, so truncating here is safe
-        # and everything read back belongs to the test that follows.
-        with open(self.error_log, "w"):
-            pass
+    def mark_log(self):
+        """Remembers how far the log has got, so read_log() returns only
+        what follows.
 
-    def read_log(self):
+        This used to truncate instead. That gave each test an isolated
+        view at the cost of destroying every earlier test's output, which
+        makes a late failure much harder to explain and quietly
+        invalidates any measurement taken across the whole run - a probe
+        counting events over a suite reads zero for everything a later
+        truncation erased. Marking costs nothing and keeps the file.
+        """
         try:
-            with open(self.error_log, errors="replace") as handle:
-                return handle.read()
+            self.log_mark = os.path.getsize(self.error_log)
+        except FileNotFoundError:
+            self.log_mark = 0
+
+    def read_log(self, whole=False):
+        """Everything logged since the last mark_log(), or the lot."""
+        try:
+            with open(self.error_log, "rb") as handle:
+                if not whole:
+                    handle.seek(self.log_mark)
+                return handle.read().decode(errors="replace")
         except FileNotFoundError:
             return ""
 
@@ -1074,12 +1088,16 @@ def test_ttfb_on_buffered_stream(ctx):
     )
 
 
-@test("zstd_min_length applies to responses of unknown length too")
+@test("zstd_min_length applies to a buffered stream of unknown length")
 def test_min_length_on_stream(ctx):
     """The header filter cannot compare against min_length when it has no
     Content-Length, so it holds the headers until the body has answered the
     question. Without that, a tiny chunked response still built a full
-    encoder - about 575 KB to compress 200 bytes."""
+    encoder - about 575 KB to compress 200 bytes.
+
+    Buffered specifically: see the unbuffered case below, where the answer
+    is the opposite.
+    """
     _, headers, body = fetch(ctx.port, "/buffered/under_min.html")
     check(
         "content-encoding" not in headers,
@@ -1089,6 +1107,36 @@ def test_min_length_on_stream(ctx):
     check(
         body == ctx.fixtures["under_min.html"],
         "the uncompressed streamed body was altered",
+    )
+
+
+@test("zstd_min_length is bypassed when a buffer asks to be flushed")
+def test_min_length_not_applied_when_urgent(ctx):
+    """The same body as the buffered case above, and the opposite outcome.
+
+    With proxy_buffering off every buffer carries a flush marker, and the
+    filter treats one as "something downstream is waiting": it decides
+    immediately rather than holding the headers any longer, and deciding
+    immediately means compressing. So zstd_min_length does not hold for an
+    unbuffered proxied response - a 200 byte body is compressed even though
+    the setting is 256.
+
+    That is deliberate, but it is the kind of thing a configuration is
+    written against, so it is asserted rather than left to be discovered.
+    Change this test only alongside the "urgent" branch in
+    ngx_http_zstd_filter_prepare.
+    """
+    body = ctx.fixtures["under_min.html"]
+    check(
+        len(body) < 256,
+        f"fixture is {len(body)} bytes, which no longer sits under the "
+        f"compiled-in zstd_min_length of 256 this test depends on",
+    )
+    _, headers, _ = fetch(ctx.port, "/stream/under_min.html")
+    check(
+        headers.get("content-encoding") == "zstd",
+        f"a {len(body)} byte unbuffered response was not compressed; the "
+        f"flush marker should have short-circuited zstd_min_length",
     )
 
 
@@ -1284,7 +1332,7 @@ def test_deferred_window_for_buffered_stream(ctx):
     """A small response of unknown length still reaches the filter whole, just
     without last_buf on the first call. Holding it briefly lets the filter size
     the window from the real total instead of falling back to zstd_window."""
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     fetch(ctx.port, "/buffered/small.html")
     windows = encoder_windows(ctx.nginx.read_log())
 
@@ -1315,7 +1363,7 @@ def test_buffered_stream_roundtrip(ctx):
 def test_deferred_falls_back_for_large(ctx):
     """Deferral must give up once enough input has accumulated: the response
     may be huge, and a window sized from a partial prefix would cost ratio."""
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     fetch(ctx.port, "/buffered/big.html")
     windows = encoder_windows(ctx.nginx.read_log())
 
@@ -1329,11 +1377,11 @@ def test_deferred_falls_back_for_large(ctx):
 
 @test("known Content-Length shrinks the encoder window", needs_debug=True)
 def test_window_tuning(ctx):
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     fetch(ctx.port, "/small.html")
     small = encoder_windows(ctx.nginx.read_log())
 
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     fetch(ctx.port, "/big.html")
     big = encoder_windows(ctx.nginx.read_log())
 
@@ -1359,7 +1407,7 @@ def test_stream_uses_full_window(ctx):
     """Same payload as test_window_tuning's small case, but delivered chunked.
     With no Content-Length to tune from, the filter must use zstd_window -
     which is also what proves this really is the unknown-length path."""
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     fetch(ctx.port, "/stream/small.html")
     windows = encoder_windows(ctx.nginx.read_log())
 
@@ -1379,14 +1427,14 @@ def test_stream_uses_full_window(ctx):
 
 @test("encoder allocations balance on a static response", needs_debug=True)
 def test_alloc_balance_static(ctx):
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     fetch(ctx.port, "/big.html")
     assert_balanced(wait_for_encoder_release(ctx.nginx), "static")
 
 
 @test("encoder allocations balance on a streamed response", needs_debug=True)
 def test_alloc_balance_stream(ctx):
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     fetch(ctx.port, "/stream/big.html")
     assert_balanced(wait_for_encoder_release(ctx.nginx), "stream")
 
@@ -1394,7 +1442,7 @@ def test_alloc_balance_stream(ctx):
 @test("repeated requests neither leak nor drift", needs_debug=True)
 def test_alloc_soak(ctx):
     rounds = 25
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     for _ in range(rounds):
         fetch(ctx.port, "/big.html")
     active = assert_balanced(wait_for_encoder_release(ctx.nginx), "soak")
@@ -1411,7 +1459,7 @@ def test_alloc_soak(ctx):
 
 @test("aborted request still releases the encoder", needs_debug=True)
 def test_cleanup_handler_on_abort(ctx):
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     fetch_and_abort(ctx.port, "/slow")
     # Polls rather than sleeping a fixed 2.5s for nginx to notice the reset:
     # faster here, and it does not give up early on a loaded runner.
@@ -1444,7 +1492,7 @@ def test_output_rounds_account_for_the_body(ctx):
     script/test-small-buffer.sh, where a 64-byte buffer makes almost every
     round a partial one and this count goes from single digits to ~1500.
     """
-    ctx.nginx.truncate_log()
+    ctx.nginx.mark_log()
     status, headers, body = fetch(ctx.port, "/big.html")
     check(status == 200, f"expected 200, got {status}")
     check(headers.get("content-encoding") == "zstd", "response was not compressed")
@@ -1601,7 +1649,7 @@ def main():
     if failed or args.keep:
         print(f"work directory kept at {work}")
         if args.verbose:
-            print(ctx.nginx.read_log()[-4000:])
+            print(ctx.nginx.read_log(whole=True)[-4000:])
     else:
         shutil.rmtree(work, ignore_errors=True)
 

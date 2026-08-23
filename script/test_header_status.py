@@ -123,7 +123,7 @@ def main():
         """
         if not has_debug:
             raise T.Failure("needs --with-debug to read the allocator trace")
-        nginx.truncate_log()
+        nginx.mark_log()
         try:
             T.fetch(PORT, "/fault/big.html", timeout=8)
         except Exception:
@@ -208,7 +208,7 @@ def main():
     print(f"\n{passed} passed, {failed} failed")
     if failed:
         print(f"work directory kept at {work}")
-        print(nginx.read_log()[-3000:])
+        print(nginx.read_log(whole=True)[-3000:])
     else:
         shutil.rmtree(work, ignore_errors=True)
     return failed

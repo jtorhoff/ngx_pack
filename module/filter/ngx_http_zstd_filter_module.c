@@ -1075,6 +1075,13 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         r->connection->buffered |= NGX_HTTP_ZSTD_BUFFERED;
     }
 
+    /* prepare sets rc on every path that does not accept, and this is
+       what those paths return. Seeded anyway: it is an out-parameter,
+       so a path that forgot would return whatever the stack held, and
+       being passed by pointer puts it beyond what
+       -Wconditional-uninitialized can see. */
+    rc = NGX_ERROR;
+
     if (ngx_http_zstd_filter_prepare(ctx, &rc) !=
         NGX_HTTP_ZSTD_PRE_ACCEPT) {
         return rc;
