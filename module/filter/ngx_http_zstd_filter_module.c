@@ -746,7 +746,6 @@ ngx_http_zstd_filter_pending_input(
 static ngx_http_zstd_prepare_e
 ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
 {
-    ngx_http_request_t   *r;
     size_t                pending;
     ngx_uint_t            complete;
     ngx_uint_t            urgent;
@@ -760,7 +759,6 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
         return NGX_HTTP_ZSTD_PRE_ACCEPT;
     }
 
-    r       = ctx->request;
     pending = ngx_http_zstd_filter_pending_input(
         ctx->in, &complete, &urgent);
 
@@ -770,7 +768,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
        downstream is waiting, so decide immediately and compress. */
     if (ctx->headers_postponed) {
         conf = ngx_http_get_module_loc_conf(
-            r, ngx_http_zstd_filter_module);
+            ctx->request, ngx_http_zstd_filter_module);
 
         if (complete) {
             ctx->accepted_for_compression =
@@ -783,13 +781,22 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
         }
 
         header_rc = ngx_http_zstd_filter_send_headers(ctx);
-        if (header_rc == NGX_ERROR) {
+
+        /* An error, or a filter below replacing the response with a
+           status. Not "!= NGX_OK": that would catch NGX_AGAIN too,
+           which only means the header is queued and the body must
+           still be produced. nginx spells the test this way as well.
+
+           Return NGX_ERROR rather than the status, since a body
+           filter's callers only understand NGX_ERROR and treat a
+           status as success - which left the request hanging. Close,
+           or a later call builds an encoder for the replaced response
+           and puts the held body on the wire. Both covered by
+           script/test-header-status.sh. */
+        if (header_rc == NGX_ERROR || header_rc > NGX_OK) {
             ngx_http_zstd_filter_close(ctx);
+
             *rc = NGX_ERROR;
-            return NGX_HTTP_ZSTD_PRE_REJECT;
-        }
-        if (header_rc > NGX_OK) {
-            *rc = header_rc;
             return NGX_HTTP_ZSTD_PRE_REJECT;
         }
 
@@ -798,9 +805,10 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
             link    = ctx->in;
             ctx->in = NULL;
 
-            r->connection->buffered &= ~NGX_HTTP_ZSTD_BUFFERED;
+            ctx->request->connection->buffered &=
+                ~NGX_HTTP_ZSTD_BUFFERED;
 
-            *rc = ngx_http_next_body_filter(r, link);
+            *rc = ngx_http_next_body_filter(ctx->request, link);
             return NGX_HTTP_ZSTD_PRE_REJECT;
         }
     }
@@ -816,7 +824,8 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
         } else if (!ctx->caller_wants_output && !urgent &&
                    ctx->content_length < 0 &&
                    pending < NGX_HTTP_ZSTD_DEFER_INPUT) {
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP,
+                ctx->request->connection->log, 0,
                 "zstd deferring encoder: pending:%uz", pending);
 
             *rc = NGX_OK;
@@ -1120,16 +1129,26 @@ ngx_http_zstd_filter_close(ngx_http_zstd_ctx_t *ctx)
 {
     ctx->closed = 1;
 
+    /* Closed means this instance owes the connection nothing, so the
+       bit goes with it - left set it tells nginx output is still
+       pending from a filter that has stopped producing any. */
+    ctx->request->connection->buffered &= ~NGX_HTTP_ZSTD_BUFFERED;
+
     ngx_http_zstd_filter_cleanup(ctx);
 
     if (ctx->out_chain) {
         ngx_free_chain(ctx->request->pool, ctx->out_chain);
         ctx->out_chain = NULL;
     }
-    /* out_buf and out_start are pool memory: nothing to hand back
-       explicitly. Dropping the pointer is the whole of the cleanup.
-     */
-    ctx->out_buf = NULL;
+    /* out_buf and out_start point into the request pool: nothing to
+       hand back, dropping them is the cleanup. Nulled rather than
+       left stale so that a use after close faults instead of quietly
+       writing into a buffer the pool still owns -
+       ensure_stream_inited guards on "initialized", which close does
+       not reset. out_size goes too, to keep the pair coherent. */
+    ctx->out_buf   = NULL;
+    ctx->out_start = NULL;
+    ctx->out_size  = 0;
 }
 
 static void *
