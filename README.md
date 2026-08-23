@@ -93,7 +93,10 @@ clients simply refuse to decode.
 - **context**: `http`, `server`, `location`
 
 Sets the minimum `length` of a response that will be compressed. The length is
-taken from the `Content-Length` response header field.
+taken from the `Content-Length` response header field, or, where there is
+none, from the body itself once enough of it has arrived to answer the
+question - except on a response whose buffers ask to be flushed, which is
+compressed whatever its size. See the notes below.
 
 
 ### Notes on above settings and performance
@@ -127,6 +130,15 @@ than the window.*
 `zstd_min_length`: Below roughly 90 to 106 bytes a small JSON-shaped response
 comes out larger than it started (default settings), and `256` clears that with
 a margin once the `Content-Encoding` header's own cost is counted.
+
+A response of unknown length is held briefly so the setting can still be
+applied to it, rather than being compressed regardless. The exception is a
+buffer marked for flushing, which is what `proxy_pass` with
+`proxy_buffering off` produces for every buffer: something downstream is
+waiting, so the filter decides at once instead of holding the headers any
+longer, and deciding at once means compressing. `zstd_min_length` therefore
+does not hold on an unbuffered proxied response - a 200 byte body is
+compressed even at the `256` default.
 
 
 ## Static module
