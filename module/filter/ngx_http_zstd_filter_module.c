@@ -76,8 +76,17 @@
    most likely cache residency against the encoder's own tables.
    16K is therefore a choice, not a placeholder. Re-measure if
    zstd_window's default moves, since the block size follows the
-   window and the plateau follows the block. */
+   window and the plateau follows the block.
+
+   Overridable at build time only so that the test suite can shrink
+   it far below anything sane - see script/test-small-buffer.sh,
+   which uses 64 bytes to force the partial-drain and resend paths
+   that a 16 KB buffer reaches only rarely. Not a configuration
+   knob: there is no directive behind this, and nothing but the
+   stress build should set it. */
+#ifndef NGX_HTTP_ZSTD_OUT_SIZE
 #define NGX_HTTP_ZSTD_OUT_SIZE (16 * 1024)
+#endif
 
 /* Module configuration. */
 typedef struct {

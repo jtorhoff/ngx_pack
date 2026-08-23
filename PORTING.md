@@ -294,7 +294,8 @@ Deliberate departures from the example:
 | `deps/zstd` | **submodule, pinned at `v1.5.7`** — see §7 for why it's vendored rather than taken from the system |
 | `script/build.sh` | **implemented** — was referenced by `run-tests.sh` and CI but missing from the initial commit; now builds `deps/zstd` before nginx |
 | `script/test.conf`, `script/test_h2.conf` | **implemented** — also missing from the initial commit; `run-tests.sh` needs both |
-| `script/test_stream.py`, `script/test_stream.conf` | **adapted** — directives, tokens, log lines, `.zst` extension; 44/44 passing against a `--with-debug` build |
+| `script/test_stream.py`, `script/test_stream.conf` | **adapted** — directives, tokens, log lines, `.zst` extension; 45/45 passing against a `--with-debug` build |
+| `script/test-small-buffer.sh` | **new** — re-runs both suites against a build whose output buffer is 64 bytes, to force the partial-drain paths; see §8 |
 | `script/run-tests.sh` | **adapted** — 18/18 passing over HTTP/1.1 and HTTP/2 |
 | `script/prepare-tests.sh` | verbatim copy (encoding-agnostic) |
 | `script/bench_corpus.py` | **adapted** — used to measure the §7 defaults below |
@@ -602,6 +603,47 @@ two bugs that code had actually had.
 **Check the build's exit status before reading test results.** With
 `-Werror`, a failed build leaves the old binary in place and the suite
 will happily pass against it.
+
+**Shrink the output buffer to reach the states that are hardest to get
+right.** How often a round only partly drains before the next filter
+takes over is set by `NGX_HTTP_ZSTD_OUT_SIZE`, so at the shipped 16 KB
+a large response takes single-digit rounds and the partial-drain,
+resend and mid-flush paths are reached rarely. At 64 bytes the same
+response takes ~1500 rounds and almost every one is partial.
+`script/test-small-buffer.sh` builds that binary — the constant is
+`#ifndef`-guarded for this and nothing else — and re-runs both suites
+unchanged, optionally under AddressSanitizer with `SANITIZE=1`. Their
+existing round-trip and allocator-balance checks are the assertions;
+only the conditions change.
+
+The one thing it must not do is silently become a second run of the
+normal suite, so `test_stream.py --max-out-size` makes "the `-D`
+reached the compiler" a checked precondition. That guard was
+validated the §8 way: asserting 64 against a default build fails with
+`largest committed round was 9264 bytes`, and asserting 63 against
+the stress build fails at 64.
+
+**Compressed output is not reproducible on a stream, so do not diff
+it.** The obvious way to test a small-buffer build is to compare its
+bytes against a normal one, and it does not work. A streamed
+response's flush points follow socket timing: the filter issues
+`ZSTD_e_flush` when nginx calls back with no new data, which depends
+on when the client drains the socket, and each flush closes a block.
+Two runs of the *same* binary against `/stream/prose.txt` produced
+97,171 and 97,092 bytes. The static, known-length case was stable
+across every run observed, but the stream is enough to rule the
+comparison out. What holds, and what the suites already assert, is
+that whatever comes out decompresses to the original.
+
+**The output-round trace is the accounting check on that path.** Every
+refill is logged with the size committed, so summing the trace for one
+request says whether a partial drain lost bytes or sent any twice —
+`sum(rounds) == len(body)`, verified at both buffer sizes. Injecting
+the bug it targets, by resending `out_chain` instead of `NULL` on a
+resend, is caught, but as a stalled connection rather than a clean
+assertion failure: the failure modes here tend to hang or corrupt the
+body, which the suite catches by other means. The value of the sum is
+that it names the problem precisely when something does diverge.
 
 **A green suite does not mean the code was reached.** `check_vary`
 lived for several commits with both suites green because no fixture

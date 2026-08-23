@@ -602,6 +602,7 @@ ALLOC_RE = re.compile(r"\*(\d+) zstd alloc: (?:0x)?([0-9A-Fa-f]+), size:(\d+)")
 FREE_RE = re.compile(r"\*(\d+) zstd free: (?:0x)?([0-9A-Fa-f]+)")
 CLOSE_RE = re.compile(r"\*(\d+) http close request")
 INIT_RE = re.compile(r"\*(\d+) zstd encoder initialized: lvl:(-?\d+) win:(\d+)")
+OUT_RE = re.compile(r"\*(\d+) zstd out: (?:0x)?[0-9A-Fa-f]+, size:(\d+)")
 
 
 def encoder_windows(log):
@@ -1429,6 +1430,55 @@ def test_cleanup_handler_on_abort(ctx):
     )
 
 
+@test("committed output rounds account for every byte of the body", needs_debug=True)
+def test_output_rounds_account_for_the_body(ctx):
+    """The filter owns one output buffer and refills it round after round.
+
+    Every refill is logged with the size committed, so the trace says exactly
+    how the body was cut up on the way out. Summing it is the accounting
+    check on the partial-drain path: that a round which only half-empties the
+    buffer neither drops bytes nor sends any of them twice.
+
+    Deliberately calibrated from the trace rather than against a hard-coded
+    16 KB, so that the same test tightens rather than breaks under
+    script/test-small-buffer.sh, where a 64-byte buffer makes almost every
+    round a partial one and this count goes from single digits to ~1500.
+    """
+    ctx.nginx.truncate_log()
+    status, headers, body = fetch(ctx.port, "/big.html")
+    check(status == 200, f"expected 200, got {status}")
+    check(headers.get("content-encoding") == "zstd", "response was not compressed")
+
+    rounds = {}
+    for conn, size in OUT_RE.findall(ctx.nginx.read_log()):
+        rounds.setdefault(conn, []).append(int(size))
+    check(len(rounds) == 1, f"expected one traced request, saw {len(rounds)}")
+    sizes = next(iter(rounds.values()))
+
+    check(
+        sum(sizes) == len(body),
+        f"the filter committed {sum(sizes)} bytes over {len(sizes)} rounds "
+        f"but the client received {len(body)}",
+    )
+    check(
+        len(sizes) > 1,
+        "the whole body was committed in a single round, so the multi-round "
+        "path this test exists for never ran",
+    )
+
+    # Only meaningful when the caller has said what the build should have.
+    # It is what stops the small-buffer run from passing as a plain re-run of
+    # the suite if -DNGX_HTTP_ZSTD_OUT_SIZE ever stops reaching the compiler.
+    cap = max(sizes)
+    if ctx.max_out_size is not None:
+        check(
+            cap <= ctx.max_out_size,
+            f"largest committed round was {cap} bytes, above the "
+            f"{ctx.max_out_size} this build was meant to be limited to: "
+            f"NGX_HTTP_ZSTD_OUT_SIZE did not reach the compiler",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -1438,11 +1488,14 @@ class Context:
     """Everything a test needs: the server, the port, the fixture bytes and a
     zstd decoder."""
 
-    def __init__(self, port, decode, fixtures, nginx):
+    def __init__(self, port, decode, fixtures, nginx, max_out_size=None):
         self.port = port
         self.decode = decode
         self.fixtures = fixtures
         self.nginx = nginx
+        # What NGX_HTTP_ZSTD_OUT_SIZE was built with, when the caller knows;
+        # None means "whatever the default is", and the check is skipped.
+        self.max_out_size = max_out_size
 
 
 def main():
@@ -1452,6 +1505,13 @@ def main():
     parser.add_argument("--nginx", help="path to the nginx binary under test")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--upstream-port", type=int, default=UPSTREAM_PORT)
+    parser.add_argument(
+        "--max-out-size",
+        type=int,
+        help="assert the module's output buffer is at most this many bytes, "
+        "i.e. that -DNGX_HTTP_ZSTD_OUT_SIZE reached the build "
+        "(see script/test-small-buffer.sh)",
+    )
     parser.add_argument(
         "--keep",
         action="store_true",
@@ -1478,6 +1538,8 @@ def main():
     print(f"build:   {version}{'' if has_debug else '   (no --with-debug)'}")
     print(f"decoder: {'available' if decode else 'MISSING'}")
     print(f"corpus:  {'present' if has_corpus else 'MISSING (script/corpus)'}")
+    if args.max_out_size is not None:
+        print(f"buffer:  asserting at most {args.max_out_size} bytes per round")
     if not has_debug:
         print("         window and memory tests need --with-debug; skipping them.")
     if not decode:
@@ -1494,7 +1556,13 @@ def main():
 
     upstream = Upstream(args.upstream_port, fixtures)
     upstream.start()
-    ctx = Context(args.port, decode, fixtures, Nginx(nginx_bin, work, conf, args.port))
+    ctx = Context(
+        args.port,
+        decode,
+        fixtures,
+        Nginx(nginx_bin, work, conf, args.port),
+        args.max_out_size,
+    )
     ctx.nginx.start()
 
     results = []

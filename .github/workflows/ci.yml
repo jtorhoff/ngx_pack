@@ -104,6 +104,48 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: python3 script/test_stream.py --nginx nginx/objs/nginx
 
+  small-buffer:
+    name: Run tests with a 64-byte output buffer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libpcre3-dev zlib1g-dev
+
+      # For libzstd and the zstd CLI the suites decompress with;
+      # test-small-buffer.sh builds only its own nginx tree.
+      - name: Build zstd and nginx
+        run: script/build.sh
+
+      - name: Prepare fixtures
+        run: script/prepare-tests.sh
+
+      # Under AddressSanitizer, since the point of the tiny buffer is
+      # to make the partial-drain and resend paths dense and those are
+      # where a buffer overrun would live. Leaks are nginx's pools
+      # rather than anything this module owns, and the module's own
+      # balance is asserted by the suite itself.
+      - name: Both suites at a 64-byte output buffer
+        env:
+          SANITIZE: "1"
+          ASAN_OPTIONS: detect_leaks=0
+        run: script/test-small-buffer.sh
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          for log in script/test/logs/*.log script/test/*.log; do
+            [ -s "$log" ] || continue
+            echo "===== $log"
+            tail -n 100 "$log"
+          done
+
   fuzz:
     name: Fuzz the Accept-Encoding parser
     runs-on: ubuntu-24.04
