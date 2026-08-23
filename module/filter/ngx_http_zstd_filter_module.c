@@ -240,7 +240,7 @@ static void ngx_http_zstd_filter_close(ngx_http_zstd_ctx_t *ctx);
 
 static void *ngx_http_zstd_filter_alloc(void *opaque, size_t size);
 static void ngx_http_zstd_filter_free(void *opaque, void *address);
-static void ngx_http_zstd_filter_cleanup(ngx_http_zstd_ctx_t *ctx);
+static void ngx_http_zstd_filter_cleanup(void *data);
 
 static ngx_int_t ngx_http_zstd_filter_send_headers(
     ngx_http_zstd_ctx_t *ctx);
@@ -694,6 +694,21 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
        rather than returning - a flush or an end still being drained
        has to be retried, and the caller is otherwise not owed a
        return yet. */
+    /* Draining with no input left, and the call neither wrote a byte
+       nor finished: the next round repeats it with the same state and
+       the worker spins. zstd should never do this - a flush or an end
+       against a whole free output buffer either writes or reports
+       nothing remaining - so this is a guard against a spin, which is
+       a far worse way to fail than an error. */
+    if (ctx->in == NULL && zout.pos == 0 && zremaining != 0) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+            "ZSTD_compressStream2() made no progress: mode:%d "
+            "remaining:%uz",
+            (int) zmode, zremaining);
+
+        return NGX_HTTP_ZSTD_STEP_FAILED;
+    }
+
     if (zout.pos == 0 && !ctx->frame_closed) {
         return NGX_HTTP_ZSTD_STEP_CONTINUE;
     }
@@ -736,7 +751,7 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
     }
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-        "zstd out: %p, size:%uz", ctx->out_buf,
+        "zstd out: %p, size:%O", ctx->out_buf,
         ngx_buf_size(ctx->out_buf));
 
     return NGX_HTTP_ZSTD_STEP_CONTINUE;
@@ -906,7 +921,7 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
         return NGX_ERROR;
     }
 
-    cln->handler = (void *) ngx_http_zstd_filter_cleanup;
+    cln->handler = ngx_http_zstd_filter_cleanup;
     cln->data    = ctx;
 
     zmem.customAlloc = ngx_http_zstd_filter_alloc;
@@ -1142,9 +1157,17 @@ ngx_http_zstd_filter_free(void *opaque, void *address)
    compression is finished, i.e. when ngx_http_zstd_filter_close is
    never reached. */
 static void
-ngx_http_zstd_filter_cleanup(ngx_http_zstd_ctx_t *ctx)
+ngx_http_zstd_filter_cleanup(void *data)
 {
-    /* Normally the encoder is already gone:
+    ngx_http_zstd_ctx_t *ctx = data;
+
+    /* Takes void * because that is what ngx_pool_cleanup_pt is.
+       Declaring the argument typed and casting the function pointer
+       at the registration compiles, and works on every ABI this
+       targets, but it is undefined behaviour and it turns off the
+       one check that would catch the signature drifting.
+
+       Normally the encoder is already gone:
        ngx_http_zstd_filter_close resets the field.
        This is the abort path. */
     if (ctx->zcctx != NULL) {
