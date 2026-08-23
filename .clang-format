@@ -20,12 +20,13 @@
 #     MaxEmptyLinesToKeep preserves two where they are written but
 #     will not insert them, so that spacing is maintained by hand.
 #
-# And one deliberate departure, as opposed to those two gaps: runs of
-# assignments are aligned into a column too, which nginx does not do.
-# AlignConsecutiveAssignments groups them exactly as the declaration
-# blocks are grouped - a blank line or a comment ends a run - so a set
-# of related stores reads as a table of what is being set rather than
-# as a list of statements:
+# And two deliberate departures, as opposed to those two gaps.
+#
+# Runs of assignments are aligned into a column, which nginx does not
+# do. AlignConsecutiveAssignments groups them exactly as the
+# declaration blocks are grouped - a blank line or a comment ends a
+# run - so a set of related stores reads as a table of what is being
+# set rather than as a list of statements:
 #
 #     file_info.read_ahead = core_loc_cfg->read_ahead;
 #     file_info.directio   = core_loc_cfg->directio;
@@ -34,6 +35,19 @@
 # The cost is that the whole run reformats whenever the longest name
 # in it changes, so a one-line edit can show up as a several-line
 # diff. Worth knowing before blaming the reviewer.
+#
+# And a call too long for one line puts all of its arguments on the
+# next line, where nginx keeps the first one up with the callee.
+# AllowAllArgumentsOnNextLine turns that on, with
+# AllowAllParametersOfDeclarationOnNextLine doing the same for a
+# function's parameter list:
+#
+#     pending = ngx_http_zstd_filter_pending_input(
+#         ctx->in, &complete, &urgent);
+#
+# rather than leaving "ctx->in" on the first line with the rest
+# beneath it. Neither option touches a call that already fits, so
+# what they change is only where an unavoidable wrap falls.
 #
 # Local declarations are ordered by where each name is first assigned
 # rather than grouped by type. clang-format has no say in that - it
@@ -90,8 +104,8 @@ AlignTrailingComments:
   # Blank lines separate the slots of a module context by kind, not
   # into unrelated groups, so keep one column across them.
   OverEmptyLines: 1
-AllowAllArgumentsOnNextLine: false
-AllowAllParametersOfDeclarationOnNextLine: false
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
 AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: false
 AllowShortLoopsOnASingleLine: false

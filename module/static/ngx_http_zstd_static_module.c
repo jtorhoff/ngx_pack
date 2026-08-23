@@ -30,8 +30,8 @@ static ngx_conf_enum_t ngx_http_zstd_static[] = {
 
 static ngx_int_t ngx_http_zstd_static_handler(ngx_http_request_t *r);
 static void *ngx_http_zstd_static_create_conf(ngx_conf_t *conf_ctx);
-static char *ngx_http_zstd_static_merge_conf(ngx_conf_t *conf_ctx,
-    void *parent, void *child);
+static char *ngx_http_zstd_static_merge_conf(
+    ngx_conf_t *conf_ctx, void *parent, void *child);
 static ngx_int_t ngx_http_zstd_static_init(ngx_conf_t *conf_ctx);
 
 static ngx_command_t ngx_http_zstd_static_commands[] = {
@@ -124,8 +124,8 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
        suffix length to what it returned would overshoot the string by
        four and the allocation itself by three. ngx_cpystrn returns
        the terminating zero it wrote, which is that pointer. */
-    last = ngx_http_map_uri_to_path(r, &path, &root_len,
-        sizeof(".zst") - 1);
+    last = ngx_http_map_uri_to_path(
+        r, &path, &root_len, sizeof(".zst") - 1);
     if (last == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -149,15 +149,15 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     file_info.errors     = core_loc_cfg->open_file_cache_errors;
     file_info.events     = core_loc_cfg->open_file_cache_events;
 
-    rc = ngx_http_set_disable_symlinks(r, core_loc_cfg, &path,
-        &file_info);
+    rc = ngx_http_set_disable_symlinks(
+        r, core_loc_cfg, &path, &file_info);
     if (rc != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     /* Try to fetch file and process errors. */
-    rc = ngx_open_cached_file(core_loc_cfg->open_file_cache, &path,
-        &file_info, r->pool);
+    rc = ngx_open_cached_file(
+        core_loc_cfg->open_file_cache, &path, &file_info, r->pool);
     if (rc != NGX_OK) {
         switch (file_info.err) {
             case 0:
@@ -267,8 +267,8 @@ ngx_http_zstd_static_create_conf(ngx_conf_t *conf_ctx)
 {
     ngx_http_zstd_static_conf_t *zstd_cfg;
 
-    zstd_cfg = ngx_palloc(conf_ctx->pool,
-        sizeof(ngx_http_zstd_static_conf_t));
+    zstd_cfg = ngx_palloc(
+        conf_ctx->pool, sizeof(ngx_http_zstd_static_conf_t));
     if (zstd_cfg == NULL) {
         return NULL;
     }
@@ -279,8 +279,8 @@ ngx_http_zstd_static_create_conf(ngx_conf_t *conf_ctx)
 }
 
 static char *
-ngx_http_zstd_static_merge_conf(ngx_conf_t *conf_ctx, void *parent,
-    void *child)
+ngx_http_zstd_static_merge_conf(
+    ngx_conf_t *conf_ctx, void *parent, void *child)
 {
     ngx_http_zstd_static_conf_t *prev_cfg;
     ngx_http_zstd_static_conf_t *zstd_cfg;
@@ -288,8 +288,8 @@ ngx_http_zstd_static_merge_conf(ngx_conf_t *conf_ctx, void *parent,
     prev_cfg = parent;
     zstd_cfg = child;
 
-    ngx_conf_merge_uint_value(zstd_cfg->enable, prev_cfg->enable,
-        NGX_HTTP_ZSTD_STATIC_OFF);
+    ngx_conf_merge_uint_value(
+        zstd_cfg->enable, prev_cfg->enable, NGX_HTTP_ZSTD_STATIC_OFF);
 
     return NGX_CONF_OK;
 }
@@ -300,8 +300,8 @@ ngx_http_zstd_static_init(ngx_conf_t *conf_ctx)
     ngx_http_core_main_conf_t *core_main_cfg;
     ngx_http_handler_pt       *handler_slot;
 
-    core_main_cfg = ngx_http_conf_get_module_main_conf(conf_ctx,
-        ngx_http_core_module);
+    core_main_cfg = ngx_http_conf_get_module_main_conf(
+        conf_ctx, ngx_http_core_module);
 
     handler_slot = ngx_array_push(
         &core_main_cfg->phases[NGX_HTTP_CONTENT_PHASE].handlers);

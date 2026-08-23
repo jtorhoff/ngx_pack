@@ -246,12 +246,12 @@ static ngx_int_t ngx_http_zstd_filter_send_headers(
     ngx_http_zstd_ctx_t *ctx);
 
 static void *ngx_http_zstd_create_conf(ngx_conf_t *cf);
-static char *ngx_http_zstd_merge_conf(ngx_conf_t *cf, void *parent,
-    void *child);
+static char *ngx_http_zstd_merge_conf(
+    ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_zstd_filter_init(ngx_conf_t *cf);
 
-static char *ngx_http_zstd_parse_window(ngx_conf_t *cf, void *post,
-    void *data);
+static char *ngx_http_zstd_parse_window(
+    ngx_conf_t *cf, void *post, void *data);
 
 /* Configuration literals. */
 
@@ -716,8 +716,8 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
    response ("complete") and whether anything in it demands to be
    pushed out now ("urgent"). */
 static size_t
-ngx_http_zstd_filter_pending_input(ngx_chain_t *in,
-    ngx_uint_t *complete, ngx_uint_t *urgent)
+ngx_http_zstd_filter_pending_input(
+    ngx_chain_t *in, ngx_uint_t *complete, ngx_uint_t *urgent)
 {
     size_t total;
 
@@ -761,16 +761,16 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
     }
 
     r       = ctx->request;
-    pending = ngx_http_zstd_filter_pending_input(ctx->in, &complete,
-        &urgent);
+    pending = ngx_http_zstd_filter_pending_input(
+        ctx->in, &complete, &urgent);
 
     /* Headers held back because the length was unknown. Decide as
        soon as the body answers the only question zstd_min_length
        asks - is it at least that big. A flush marker means something
        downstream is waiting, so decide immediately and compress. */
     if (ctx->headers_postponed) {
-        conf = ngx_http_get_module_loc_conf(r,
-            ngx_http_zstd_filter_module);
+        conf = ngx_http_get_module_loc_conf(
+            r, ngx_http_zstd_filter_module);
 
         if (complete) {
             ctx->accepted_for_compression =
@@ -878,14 +878,14 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
 
     ctx->zcctx = ZSTD_createCCtx_advanced(zmem);
     if (ctx->zcctx == NULL) {
-        ngx_log_error(NGX_LOG_ALERT, log, 0,
-            "OOM / ZSTD_createCCtx_advanced");
+        ngx_log_error(
+            NGX_LOG_ALERT, log, 0, "OOM / ZSTD_createCCtx_advanced");
 
         return NGX_ERROR;
     }
 
-    zrc = ZSTD_CCtx_setParameter(ctx->zcctx, ZSTD_c_compressionLevel,
-        (int) conf->level);
+    zrc = ZSTD_CCtx_setParameter(
+        ctx->zcctx, ZSTD_c_compressionLevel, (int) conf->level);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
             "ZSTD_CCtx_setParameter(compressionLevel, %i) failed: %s",
@@ -894,8 +894,8 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
         return NGX_ERROR;
     }
 
-    zrc = ZSTD_CCtx_setParameter(ctx->zcctx, ZSTD_c_windowLog,
-        (int) wbits);
+    zrc = ZSTD_CCtx_setParameter(
+        ctx->zcctx, ZSTD_c_windowLog, (int) wbits);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
             "ZSTD_CCtx_setParameter(windowLog, %uz) failed: %s",
@@ -934,8 +934,8 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
        content_length is an off_t, and "unsigned" would truncate a
        body over 4 GiB into a pledge zstd then rejects. */
     if (ctx->content_length >= 0) {
-        zrc = ZSTD_CCtx_setPledgedSrcSize(ctx->zcctx,
-            (unsigned long long) ctx->content_length);
+        zrc = ZSTD_CCtx_setPledgedSrcSize(
+            ctx->zcctx, (unsigned long long) ctx->content_length);
         if (ZSTD_isError(zrc)) {
             ngx_log_error(NGX_LOG_ALERT, log, 0,
                 "ZSTD_CCtx_setPledgedSrcSize(%O) failed: %s",
@@ -1092,8 +1092,8 @@ ngx_http_zstd_filter_free(void *opaque, void *address)
     pool = opaque;
     log  = pool->log;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "zstd free: %p",
-        address);
+    ngx_log_debug1(
+        NGX_LOG_DEBUG_HTTP, log, 0, "zstd free: %p", address);
 #endif
 
     ngx_free(address);
@@ -1197,8 +1197,8 @@ ngx_http_zstd_merge_conf(ngx_conf_t *cf, void *parent, void *child)
        past 128 KB the window buffer grows alone. The apparent
        flattening past 256 KB is an artifact of corpus files being
        110-270 KB, not a property of zstd. */
-    ngx_conf_merge_size_value(conf->window_bits, prev->window_bits,
-        16);
+    ngx_conf_merge_size_value(
+        conf->window_bits, prev->window_bits, 16);
 
     /* zstd's per-frame overhead is a handful of bytes against
        Brotli's roughly 560 KB encoder-instance cost, so the crossover
