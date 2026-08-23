@@ -24,6 +24,9 @@ including CI that compiles the modules with both GCC and Clang. The tests are
 executed against the latest stable branch of nginx
 (1.30.x at the time of writing).
 
+If you're interested how this fork was created off the Brotli fork,
+check out [PORTING.md](PORTING.md).
+
 
 ## Filter module
 
@@ -92,18 +95,8 @@ clients simply refuse to decode.
 Sets the minimum `length` of a response that will be compressed. The length is
 taken from the `Content-Length` response header field.
 
-Below roughly 90 to 106 bytes a small JSON-shaped response comes out larger
-than it started, and `256` clears that with a margin once the
-`Content-Encoding` header's own cost is counted. Unlike Brotli there is no
-large fixed encoder instance to amortise - Zstandard's per-frame overhead is a
-handful of bytes - so the threshold is about the response, not the encoder.
 
-A response whose length is unknown when the headers are sent is held briefly
-so this setting can still be applied to it, rather than being compressed
-regardless.
-
-
-### Important performance notes
+### Notes on above settings and performance
 
 `zstd_comp_level` of `3` is where the ratio-versus-CPU elbow actually sits,
 rather than being merely zstd's own default carried over. Over `script/corpus`,
@@ -127,6 +120,10 @@ worth knowing about: it buys 3.1% in ratio for +0.42 MB per request, and is the
 largest window still free in block terms, since a Zstandard block is
 `min(zstd_window, 128k)` and past that the window buffer grows on its own.
 
+`zstd_min_length`: Below roughly 90 to 106 bytes a small JSON-shaped response
+comes out larger than it started (default settings), and `256` clears that with
+a margin once the `Content-Encoding` header's own cost is counted.
+
 *When the response length is known the module already lowers the window to fit
 the body, `zstd_window` mainly affects streamed responses and bodies larger
 than the window.*
@@ -137,18 +134,6 @@ than the window.*
 Serves a pre-compressed `.zst` file from disk in place of the original,
 without creating an encoder. The request costs neither compression CPU nor
 encoder memory, so prefer it wherever the content is static.
-
-The catch is that every eligible request probes for `<path>.zst`, and when
-that file does not exist the probe reaches the filesystem **on every request**
-unless negative results are cached. Caching them requires both directives:
-
-```nginx
-open_file_cache        max=1000 inactive=60s;
-open_file_cache_errors on;      # without this the miss is never cached
-```
-
-`open_file_cache` on its own is not enough - it caches the file that was
-found, not the one that was missing.
 
 
 ### `zstd_static`
@@ -167,3 +152,19 @@ up serving the request - what varies is the resource, not the one request.
 With `always`, the pre-compressed file is used in all cases, without checking
 whether the client supports it. Nothing is added to `Vary`, since every client
 receives the same bytes.
+
+
+### Notes
+
+Every eligible request probes for `<path>.zst`. When that file does not exist
+the probe reaches the filesystem **on every request** unless negative results
+are cached too. Caching both requires the following directives:
+
+```nginx
+open_file_cache        max=1000 inactive=60s;
+open_file_cache_errors on; # without this the miss is never cached
+```
+
+`open_file_cache` on its own is not enough. Second directive caches the misses
+in addition to cache hits, so that nginx doesn't have to check the filesystem
+on every request.
