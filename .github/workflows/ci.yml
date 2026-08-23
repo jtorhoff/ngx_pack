@@ -114,6 +114,74 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: python3 script/test_stream.py --nginx nginx/objs/nginx
 
+  undefined-behavior:
+    name: Run tests with undefined behavior sanitizer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libpcre3-dev zlib1g-dev
+
+      - name: Build zstd
+        run: |
+          cmake -S deps/zstd/build/cmake -B deps/zstd/out \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_SHARED=OFF \
+                -DZSTD_BUILD_PROGRAMS=OFF \
+                -DZSTD_MULTITHREAD_SUPPORT=OFF \
+                -DZSTD_LEGACY_SUPPORT=OFF
+          cmake --build deps/zstd/out --target libzstd_static -j "$(nproc)"
+
+      - name: Build nginx with UndefinedBehaviorSanitizer
+        run: |
+          git clone --depth 1 --branch $NGINX_REF \
+              https://github.com/nginx/nginx.git nginx
+          cd nginx
+          CC_OPT="-fsanitize=undefined -fno-omit-frame-pointer -g -O1"
+          ./auto/configure \
+              --prefix="$GITHUB_WORKSPACE/script/test" \
+              --with-http_v2_module \
+              --with-debug \
+              --with-cc-opt="$CC_OPT" \
+              --with-ld-opt="-fsanitize=undefined" \
+              --add-module="$GITHUB_WORKSPACE"
+          make -j "$(nproc)"
+
+      # log_path rather than stderr: nginx redirects stderr into its own
+      # error log, which the driver deletes with the work directory when
+      # everything passes - so reports would vanish exactly when nothing
+      # else failed. This writes them beside the workspace instead.
+      # halt_on_error stays off so one report does not hide the rest.
+      - name: Streaming suite under UndefinedBehaviorSanitizer
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=0:log_path=/tmp/ubsan
+        run: python3 script/test_stream.py --nginx nginx/objs/nginx
+
+      - name: Fail on undefined behavior in this module
+        run: |
+          reports=$(cat /tmp/ubsan.* 2>/dev/null | grep "runtime error" || true)
+          if [ -z "$reports" ]; then
+            echo "no reports at all"
+            exit 0
+          fi
+          echo "$reports"
+          # nginx raises a few of its own - ngx_http_huff_encode, and a
+          # version shift in ngx_posix_init and ngx_process_cycle - so
+          # the gate is reports naming this module, not any report.
+          mine=$(printf '%s\n' "$reports" \
+                 | grep -e ngx_http_zstd -e ngx_http_fault || true)
+          if [ -n "$mine" ]; then
+            echo "::error::undefined behavior reported in this module"
+            exit 1
+          fi
+          echo "none of them name this module"
+
   release:
     name: Build and test without --with-debug
     runs-on: ubuntu-24.04
