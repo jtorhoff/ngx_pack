@@ -37,8 +37,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import test_stream as T  # noqa: E402
-
+import test_stream as T
 
 MIME = {
     ".html": "text/html",
@@ -129,8 +128,7 @@ def main():
     parser.add_argument(
         "--window",
         default="",
-        help="comma-separated zstd_window values; empty means the "
-        "compiled-in default",
+        help="comma-separated zstd_window values; empty means the compiled-in default",
     )
     parser.add_argument(
         "--repeat",
@@ -188,8 +186,7 @@ def main():
                     label += f", zstd_window {window}"
                 print(f"### {label}")
                 print(
-                    f"{'file':>12} {'raw':>9} {'compressed':>11} "
-                    f"{'ratio':>7} {'ms':>8}"
+                    f"{'file':>12} {'raw':>9} {'compressed':>11} {'ratio':>7} {'ms':>8}"
                 )
                 print("-" * 52)
                 total_raw = total_out = 0
