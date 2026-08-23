@@ -570,7 +570,6 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
        see PORTING.md section 1. */
     if (ctx->frame_closed) {
         ngx_http_zstd_filter_close(ctx);
-
         return NGX_HTTP_ZSTD_STEP_DONE;
     }
 
