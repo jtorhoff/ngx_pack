@@ -108,13 +108,13 @@ ngx_http_zstd_check_accept_encoding(ngx_http_request_t *r)
     ngx_table_elt_t *accept_encoding_entry;
     ngx_str_t       *accept_encoding;
     u_char          *start;
-    u_char          *cursor;
     u_char          *end;
-    u_char           before;
-    u_char           after;
+    ngx_uint_t       pass;
     u_char          *token;
     size_t           token_len;
-    ngx_uint_t       pass;
+    u_char          *cursor;
+    u_char           before;
+    u_char           after;
 
     accept_encoding_entry = r->headers_in.accept_encoding;
     if (accept_encoding_entry == NULL) {
@@ -123,16 +123,16 @@ ngx_http_zstd_check_accept_encoding(ngx_http_request_t *r)
     accept_encoding = &accept_encoding_entry->value;
 
     start = accept_encoding->data;
-    end = start + accept_encoding->len;
+    end   = start + accept_encoding->len;
 
     /* Pass 0 looks for "zstd", pass 1 for the wildcard - either is
        enough to accept. */
     for (pass = 0; pass < 2; pass++) {
         if (pass == 0) {
-            token = (u_char *) "zstd";
+            token     = (u_char *) "zstd";
             token_len = 4;
         } else {
-            token = (u_char *) "*";
+            token     = (u_char *) "*";
             token_len = 1;
         }
 
@@ -224,7 +224,7 @@ ngx_http_zstd_claim_request(ngx_http_request_t *r)
 static ngx_int_t
 ngx_http_zstd_check_vary(ngx_table_elt_t *header)
 {
-    static const u_char vary[] = "Vary";
+    static const u_char vary[]     = "Vary";
     static const u_char encoding[] = "Accept-Encoding";
 
     ngx_str_t *key;
@@ -266,9 +266,9 @@ ngx_http_zstd_check_vary(ngx_table_elt_t *header)
 static ngx_int_t
 ngx_http_zstd_set_vary(ngx_http_request_t *r)
 {
-    ngx_uint_t       i;
     ngx_list_part_t *part;
     ngx_table_elt_t *header;
+    ngx_uint_t       i;
     ngx_table_elt_t *vary;
 
 #if (NGX_HTTP_GZIP)
@@ -288,7 +288,7 @@ ngx_http_zstd_set_vary(ngx_http_request_t *r)
     }
 #endif
 
-    part = &r->headers_out.headers.part;
+    part   = &r->headers_out.headers.part;
     header = part->elts;
 
     for (i = 0; /* void */; i++) {
@@ -297,9 +297,9 @@ ngx_http_zstd_set_vary(ngx_http_request_t *r)
                 break;
             }
 
-            part = part->next;
+            part   = part->next;
             header = part->elts;
-            i = 0;
+            i      = 0;
         }
 
         /* hash 0 marks an entry the filters below are to ignore. */

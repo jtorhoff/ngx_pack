@@ -87,12 +87,12 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     ngx_memzero(&accept_encoding, sizeof(ngx_table_elt_t));
 
     accept_encoding.value.data = value;
-    accept_encoding.value.len = size;
+    accept_encoding.value.len  = size;
 
     /* claim_request declines subrequests and anything below HTTP/1.1
        before it parses, so set both up to reach the parser. */
-    r.main = &r;
-    r.http_version = NGX_HTTP_VERSION_11;
+    r.main                       = &r;
+    r.http_version               = NGX_HTTP_VERSION_11;
     r.headers_in.accept_encoding = &accept_encoding;
 
     ngx_http_zstd_claim_request(&r);

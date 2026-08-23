@@ -16,6 +16,13 @@ __pycache__/
 *.a
 .DS_Store
 
+# Editor/LSP configuration pointing at the nginx build tree. nginx
+# emits no compile_commands.json, so clangd needs to be told where the
+# headers are - but the tree is an untracked build artifact at an
+# absolute path, which makes the file machine-specific.
+.clangd
+compile_commands.json
+
 # Artifacts left behind by script/run-tests.sh: response bodies and
 # the decompressed copies it compares them against.
 tmp/

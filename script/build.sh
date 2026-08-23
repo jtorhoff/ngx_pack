@@ -10,6 +10,8 @@
 #
 # Overridable:
 #   JOBS        parallelism (default: number of processors)
+#   WITH_DEBUG  1 (default) to configure --with-debug; 0 for a
+#               release build - see the configure call below
 #
 set -eux
 
@@ -44,12 +46,26 @@ if [ ! -d "$ROOT/nginx" ]; then
 fi
 
 cd "$ROOT/nginx"
-# --with-debug is deliberate: without it the streaming suite skips
-# its window and memory checks, which read the encoder's allocator
-# tracing out of the debug log.
+# --with-debug is the default, and deliberate: without it the
+# streaming suite skips its window and memory checks, which read the
+# encoder's allocator tracing out of the debug log.
+#
+# WITH_DEBUG=0 drops it, which is the only way to compile the code
+# that NGX_DEBUG hides. ngx_log_debug* expands to nothing there, so a
+# variable read only by a debug call becomes set-but-unused and
+# -Werror rejects it - a break every --with-debug build in CI would
+# wave through. The release job in .github/workflows/ci.yml exists
+# for exactly that, and this is how it asks for it.
+debug_flag="--with-debug"
+if [ "${WITH_DEBUG:-1}" = "0" ]; then
+	debug_flag=""
+fi
+# Unquoted on purpose: empty must expand to no argument at all, not
+# to an empty one, which configure would reject.
+# shellcheck disable=SC2086
 ./auto/configure \
 	--prefix="$ROOT/script/test" \
 	--with-http_v2_module \
-	--with-debug \
+	$debug_flag \
 	--add-module="$ROOT"
 make -j "$JOBS"

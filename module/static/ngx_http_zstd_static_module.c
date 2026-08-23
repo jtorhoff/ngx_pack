@@ -74,14 +74,14 @@ static ngx_int_t
 ngx_http_zstd_static_handler(ngx_http_request_t *r)
 {
     ngx_http_zstd_static_conf_t *zstd_cfg;
-    ngx_int_t                    rc;
     u_char                      *last;
     ngx_str_t                    path;
-    size_t                       root;
-    ngx_uint_t                   level;
+    size_t                       root_len;
     ngx_log_t                   *log;
     ngx_http_core_loc_conf_t    *core_loc_cfg;
     ngx_open_file_info_t         file_info;
+    ngx_int_t                    rc;
+    ngx_uint_t                   level;
     ngx_buf_t                   *buf;
     ngx_chain_t                  out;
 
@@ -124,13 +124,13 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
        suffix length to what it returned would overshoot the string by
        four and the allocation itself by three. ngx_cpystrn returns
        the terminating zero it wrote, which is that pointer. */
-    last =
-        ngx_http_map_uri_to_path(r, &path, &root, sizeof(".zst") - 1);
+    last = ngx_http_map_uri_to_path(r, &path, &root_len,
+        sizeof(".zst") - 1);
     if (last == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    last = ngx_cpystrn(last, (u_char *) ".zst", sizeof(".zst"));
+    last     = ngx_cpystrn(last, (u_char *) ".zst", sizeof(".zst"));
     path.len = last - path.data;
 
     log = r->connection->log;
@@ -143,11 +143,11 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     ngx_memzero(&file_info, sizeof(ngx_open_file_info_t));
 
     file_info.read_ahead = core_loc_cfg->read_ahead;
-    file_info.directio = core_loc_cfg->directio;
-    file_info.valid = core_loc_cfg->open_file_cache_valid;
-    file_info.min_uses = core_loc_cfg->open_file_cache_min_uses;
-    file_info.errors = core_loc_cfg->open_file_cache_errors;
-    file_info.events = core_loc_cfg->open_file_cache_events;
+    file_info.directio   = core_loc_cfg->directio;
+    file_info.valid      = core_loc_cfg->open_file_cache_valid;
+    file_info.min_uses   = core_loc_cfg->open_file_cache_min_uses;
+    file_info.errors     = core_loc_cfg->open_file_cache_errors;
+    file_info.events     = core_loc_cfg->open_file_cache_events;
 
     rc = ngx_http_set_disable_symlinks(r, core_loc_cfg, &path,
         &file_info);
@@ -205,14 +205,14 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
 
     /* Discard the request body, then describe the response. */
     r->root_tested = !r->error_page;
-    rc = ngx_http_discard_request_body(r);
+    rc             = ngx_http_discard_request_body(r);
     if (rc != NGX_OK) {
         return rc;
     }
     log->action = "sending response to client";
 
-    r->headers_out.status = NGX_HTTP_OK;
-    r->headers_out.content_length_n = file_info.size;
+    r->headers_out.status             = NGX_HTTP_OK;
+    r->headers_out.content_length_n   = file_info.size;
     r->headers_out.last_modified_time = file_info.mtime;
 
     rc = ngx_http_set_etag(r);
@@ -241,17 +241,17 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    buf->file_pos = 0;
-    buf->file_last = file_info.size;
-    buf->in_file = buf->file_last ? 1 : 0;
-    buf->last_buf = (r == r->main) ? 1 : 0;
-    buf->last_in_chain = 1;
-    buf->file->fd = file_info.fd;
-    buf->file->name = path;
-    buf->file->log = log;
+    buf->file_pos       = 0;
+    buf->file_last      = file_info.size;
+    buf->in_file        = buf->file_last ? 1 : 0;
+    buf->last_buf       = (r == r->main) ? 1 : 0;
+    buf->last_in_chain  = 1;
+    buf->file->fd       = file_info.fd;
+    buf->file->name     = path;
+    buf->file->log      = log;
     buf->file->directio = file_info.is_directio;
 
-    out.buf = buf;
+    out.buf  = buf;
     out.next = NULL;
 
     rc = ngx_http_send_header(r);
@@ -282,8 +282,11 @@ static char *
 ngx_http_zstd_static_merge_conf(ngx_conf_t *conf_ctx, void *parent,
     void *child)
 {
-    ngx_http_zstd_static_conf_t *prev_cfg = parent;
-    ngx_http_zstd_static_conf_t *zstd_cfg = child;
+    ngx_http_zstd_static_conf_t *prev_cfg;
+    ngx_http_zstd_static_conf_t *zstd_cfg;
+
+    prev_cfg = parent;
+    zstd_cfg = child;
 
     ngx_conf_merge_uint_value(zstd_cfg->enable, prev_cfg->enable,
         NGX_HTTP_ZSTD_STATIC_OFF);

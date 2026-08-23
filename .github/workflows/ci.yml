@@ -104,6 +104,53 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0
         run: python3 script/test_stream.py --nginx nginx/objs/nginx
 
+  release:
+    name: Build and test without --with-debug
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libpcre3-dev zlib1g-dev
+
+      # Every other job builds --with-debug, so nothing here has ever
+      # been compiled with NGX_DEBUG off. That hides a whole class of
+      # break: ngx_log_debug* expands to nothing without it, so a
+      # variable read only by a debug call is set-but-unused, and
+      # -Werror rejects it. One such error reached the tree and every
+      # existing job passed.
+      - name: Build zstd and nginx without --with-debug
+        env:
+          WITH_DEBUG: "0"
+        run: script/build.sh
+
+      - name: Prepare fixtures
+        run: script/prepare-tests.sh
+
+      - name: Static files and Accept-Encoding
+        run: script/run-tests.sh
+
+      # Also the only run of these against optimised, non-debug code.
+      # The nine window and memory tests read the encoder's allocator
+      # tracing out of the debug log, so the driver skips them here
+      # and reports them as skipped rather than passing.
+      - name: Streaming responses and encoder lifetime
+        run: python3 script/test_stream.py --nginx nginx/objs/nginx
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          for log in script/test/logs/*.log script/test/*.log; do
+            [ -s "$log" ] || continue
+            echo "===== $log"
+            tail -n 100 "$log"
+          done
+
   small-buffer:
     name: Run tests with a 64-byte output buffer
     runs-on: ubuntu-24.04

@@ -378,6 +378,43 @@ x86_64 (`lipo -info` on the archive shows this immediately). Not a
 concern in CI, which runs single-arch, but worth knowing before
 chasing it as a code problem.
 
+The same prefix collision bites `bear`, which is the usual way to get
+a `compile_commands.json` out of a build that has none - and nginx has
+none, so clangd otherwise reports `'ngx_config.h' file not found` on
+line 8 of every module. `bear` works by injecting `libexec.dylib` into
+the build with `DYLD_INSERT_LIBRARIES`, so an Intel `bear` injecting
+an x86_64 dylib drags the compiler to x86_64 with it. The symptom
+reads as a code problem and is not one: the objects `bear` rebuilds
+come out x86_64 while everything already on disk is arm64, and the
+link fails with "symbol(s) not found for architecture x86_64" naming
+this module's own symbols. `file` on any object it rebuilt shows it.
+Install `bear` from the native prefix and it works. Note that a
+failed run leaves x86_64 objects behind, so delete them before
+rebuilding or the next link fails the same way with no `bear` in
+sight.
+
+Two things about the database itself. `bear` records only what was
+actually compiled, so a run after an incremental build describes just
+those files - which is enough here, since clangd infers a command for
+anything absent (the `module/common` header and the fuzz targets
+included) from the nearest entry it does have. And clangd searches
+*upward* from the file it is opening, so a database left in `nginx/`
+is never found: it belongs at the repository root. Both it and the
+`.clangd` fallback are `.gitignore`d, being machine-specific.
+
+One clangd diagnostic is worth knowing to be false before acting on
+it. A `.h` has no entry in the database, so clangd guesses its
+language from the extension, and on Darwin guesses
+`objective-c++-header`. Under that parse every
+`p = ngx_palloc(...)`, `clcf = ngx_http_get_module_loc_conf(...)` or
+`header = part->elts` in `module/common` becomes "assigning to `T *`
+from incompatible type `void *`" - an error in C++, and exactly what
+C is specified to allow. Casting them to silence it would put casts
+nginx itself does not write throughout a header that already
+compiles under `-Wall -Wextra -Werror`. `-xc` in `.clangd` fixes the
+parse instead, which is better than suppressing the check: the same
+diagnostic in a `.c` file would be a real one.
+
 The three measurements below were originally taken against the
 system's dynamically-linked `libzstd` and re-run after vendoring to
 check whether static linking, `ZSTD_MULTITHREAD_SUPPORT=OFF` or

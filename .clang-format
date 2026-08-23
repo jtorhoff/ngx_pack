@@ -20,6 +20,27 @@
 #     MaxEmptyLinesToKeep preserves two where they are written but
 #     will not insert them, so that spacing is maintained by hand.
 #
+# And one deliberate departure, as opposed to those two gaps: runs of
+# assignments are aligned into a column too, which nginx does not do.
+# AlignConsecutiveAssignments groups them exactly as the declaration
+# blocks are grouped - a blank line or a comment ends a run - so a set
+# of related stores reads as a table of what is being set rather than
+# as a list of statements:
+#
+#     file_info.read_ahead = core_loc_cfg->read_ahead;
+#     file_info.directio   = core_loc_cfg->directio;
+#     file_info.valid      = core_loc_cfg->open_file_cache_valid;
+#
+# The cost is that the whole run reformats whenever the longest name
+# in it changes, so a one-line edit can show up as a several-line
+# diff. Worth knowing before blaming the reviewer.
+#
+# Local declarations are ordered by where each name is first assigned
+# rather than grouped by type. clang-format has no say in that - it
+# aligns a declaration block but never reorders one - so it is a
+# convention this file cannot enforce, noted here because this is
+# where someone will look for it.
+#
 # AlignFunctionDeclarations needs clang-format 19 or newer; an older
 # one rejects the key and the whole file with it, so the CI job that
 # checks formatting pins a distribution new enough to have it.
@@ -31,6 +52,31 @@
 ---
 BasedOnStyle: LLVM
 AlignAfterOpenBracket: DontAlign
+AlignConsecutiveAssignments:
+  Enabled:          true
+  # Same grouping rules as the declarations below: a blank line or a
+  # comment ends a run, so alignment follows the paragraphs the code
+  # is already written in rather than reaching across them.
+  AcrossEmptyLines: false
+  AcrossComments:   false
+  # Compound operators ("|=", "+=", "&=") join the run rather than
+  # starting a new one, so storing to a variable and then updating it
+  # reads as the pair it is:
+  #
+  #     buf       = ctx->in->buf;
+  #     buf->pos += zin.pos;
+  #
+  # The cost is that one long compound target stretches the column for
+  # every short name beside it: the target "r->connection->buffered"
+  # is 23 characters, so a "link" assigned next to it gets padded out
+  # by twenty. Where that happens, put the outlier in its own
+  # paragraph - a blank line ends the run, because AcrossEmptyLines is
+  # false above.
+  AlignCompound:    true
+  # Pad before the operator, so the "=" itself forms the column
+  # rather than the values starting at one while the operators
+  # stagger.
+  PadOperators:     true
 AlignConsecutiveDeclarations:
   Enabled:                   true
   # Keep the alignment to declaration blocks inside functions, which
