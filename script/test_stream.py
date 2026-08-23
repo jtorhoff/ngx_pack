@@ -374,6 +374,10 @@ class Upstream:
                 self._dribble(conn)
                 return
 
+            if path.startswith("/burst"):
+                self._burst(conn)
+                return
+
             if path.startswith("/status/"):
                 self._status(conn, int(path.rsplit("/", 1)[-1]))
                 return
@@ -405,6 +409,30 @@ class Upstream:
         finally:
             with contextlib.suppress(OSError):
                 conn.close()
+
+    # Small enough that all BURST_CHUNKS fit in one proxy buffer, so nginx
+    # reads the whole burst at once and the chunked filter builds one chain
+    # rather than several.
+    BURST_CHUNKS = 12
+    BURST_TEXT = b"<p>zstd flush coalescing burst chunk payload</p>"
+
+    def _burst(self, conn):
+        """Writes every chunk in a single send.
+
+        nginx then reads them together and ngx_http_proxy_chunked_filter
+        appends one buffer per chunk, each with flush set, into one chain -
+        the case NGX_HTTP_ZSTD_FLUSH_COALESCE exists for. Sending them as
+        separate writes would let nginx read them one at a time, and the
+        chain would hold a single flush marker with nothing to fold.
+        """
+        body = b"".join(
+            self._chunk(b"%d %s" % (i, self.BURST_TEXT))
+            for i in range(self.BURST_CHUNKS)
+        )
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n" + body + b"0\r\n\r\n"
+        )
 
     def _dribble(self, conn):
         """Sends a chunk every 50 ms without ever setting a flush marker, so
@@ -637,6 +665,42 @@ def frame_window(data):
     it back. Reading the frame asserts what the encoder did instead of what
     this module intended, so it also holds if zstd's own sizing changes.
     """
+    return _frame_header(data)[0]
+
+
+def frame_blocks(data):
+    """How many blocks the first frame is made of.
+
+    This is the observable behind flush coalescing. A flush ends the block
+    it interrupts, so a chain of N flush-marked buffers produces N blocks
+    where one would otherwise do, and folding them shows up here and
+    nowhere else - the decoded bytes are identical either way.
+    """
+    pos = _frame_header(data)[1]
+    blocks = 0
+
+    while True:
+        if pos + 3 > len(data):
+            raise Failure("frame ends inside a block header")
+        header = data[pos] | data[pos + 1] << 8 | data[pos + 2] << 16
+        pos += 3
+
+        last = header & 1
+        block_type = (header >> 1) & 3
+        if block_type == 3:
+            raise Failure("reserved block type in frame")
+
+        blocks += 1
+        # An RLE block stores one byte and repeats it Block_Size times;
+        # raw and compressed blocks store Block_Size bytes.
+        pos += 1 if block_type == 1 else header >> 3
+
+        if last:
+            return blocks
+
+
+def _frame_header(data):
+    """(window size, length of the frame header) for the frame at data[0]."""
     if data[:4] != ZSTD_MAGIC:
         raise Failure("response body does not start with a zstd frame")
 
@@ -646,17 +710,28 @@ def frame_window(data):
     did_flag = descriptor & 3
     pos = 5
 
+    window = None
     if not single_segment:
         exponent, mantissa = data[pos] >> 3, data[pos] & 7
         base = 1 << (10 + exponent)
-        return base + (base // 8) * mantissa
+        window = base + (base // 8) * mantissa
+        pos += 1
 
-    # Single_Segment_flag: no window descriptor at all, the window is the
-    # whole content, and its size is then always present.
     pos += (0, 1, 2, 4)[did_flag]
-    width = (1, 2, 4, 8)[fcs_flag]
-    value = int.from_bytes(data[pos : pos + width], "little")
-    return value + 256 if width == 2 else value
+
+    # Present unless the flag says zero width, which Single_Segment_flag
+    # overrides - there the content size is what gives the window.
+    width = (1 if single_segment else 0, 2, 4, 8)[fcs_flag]
+    if width:
+        value = int.from_bytes(data[pos : pos + width], "little")
+        pos += width
+        if window is None:
+            window = value + 256 if width == 2 else value
+
+    if window is None:
+        raise Failure("frame header declares neither a window nor a size")
+
+    return window, pos
 
 
 def allocator_events(log):
@@ -1411,6 +1486,65 @@ def test_head(ctx):
     status, _, body = fetch(ctx.port, "/big.html", method="HEAD")
     check(status == 200, f"expected 200, got {status}")
     check(body == b"", f"HEAD returned a {len(body)} byte body")
+
+
+# ---------------------------------------------------------------------------
+# Flush coalescing
+# ---------------------------------------------------------------------------
+
+# module/filter/ngx_http_zstd_filter_module.c
+FLUSH_COALESCE = 4
+
+
+@test("a burst of flush-marked chunks folds into fewer blocks", needs_decoder=True)
+def test_flush_coalescing(ctx):
+    """The upstream writes every chunk in one send, so the chunked filter
+    hands the module a single chain of flush markers - one per chunk. Only
+    the last of a fold has to cut a block, and the cap on how many fold is
+    what bounds it.
+
+    Asserting a bound rather than an exact count: how much nginx reads at
+    once is not ours to fix, so a burst may still arrive as more than one
+    chain, and each chain folds separately.
+    """
+    chunks = Upstream.BURST_CHUNKS
+    _, headers, body = fetch(ctx.port, "/burst")
+
+    check(
+        headers.get("content-encoding") == "zstd",
+        f"burst was not compressed, got "
+        f"{headers.get('content-encoding')!r} - a flush marker is supposed "
+        f"to short-circuit zstd_min_length",
+    )
+
+    blocks = frame_blocks(body)
+    ceiling = -(-chunks // FLUSH_COALESCE) + 2
+
+    check(
+        blocks < chunks,
+        f"{chunks} flush-marked chunks produced {blocks} blocks, so every "
+        f"flush still cut its own block and nothing was folded",
+    )
+    check(
+        blocks <= ceiling,
+        f"{chunks} flush-marked chunks produced {blocks} blocks, more than "
+        f"the {ceiling} a fold of {FLUSH_COALESCE} allows",
+    )
+
+
+@test("a folded flush still delivers every byte", needs_decoder=True)
+def test_flush_coalescing_roundtrip(ctx):
+    """Folding may not lose or reorder anything: the point is that only the
+    framing changes."""
+    expected = b"".join(
+        b"%d %s" % (i, Upstream.BURST_TEXT) for i in range(Upstream.BURST_CHUNKS)
+    )
+    _, _, body = fetch(ctx.port, "/burst")
+
+    check(
+        ctx.decode(body) == expected,
+        "decoded burst differs from what the upstream sent",
+    )
 
 
 # ---------------------------------------------------------------------------
