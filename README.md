@@ -92,11 +92,13 @@ clients simply refuse to decode.
 - **default**: `4`
 - **context**: `http`, `server`, `location`
 
-Sets the maximum `number` of output buffers one response may fill before it
-has to wait for the client to take them. Their size is fixed at 16k and is not
-configurable. This is a ceiling rather than an allocation: buffers are created
-only as the encoder actually runs out of free ones, so most responses never
-reach it. Most deployments have no reason to change this. See notes below.
+Sets the maximum `number` of output buffers (between `1` and `64`)
+one response may fill before it has to wait for the client to take
+them. Their size is fixed at 16k and is not configurable. This is a
+ceiling rather than an allocation: buffers are created
+only as the encoder actually runs out of free ones, so most responses
+never reach it. Most deployments have no reason to change this.
+See notes below.
 
 
 ### `zstd_min_length`
