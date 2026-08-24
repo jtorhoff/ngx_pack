@@ -9,13 +9,22 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-/* Needed for ZSTD_createCCtx_advanced (the custom allocator) and the
-   ZSTD_WINDOWLOG_* / ZSTD_WINDOWLOG_LIMIT_DEFAULT bounds. The symbols
-   this unlocks are already exported with default visibility in a
-   normal (dynamically linked) libzstd - "static linking only" is a
-   promise about API stability across releases, not a linker
-   restriction - so this does not commit the module to actually
-   linking libzstd statically. See PORTING.md. */
+/* Needed for ZSTD_createCCtx_advanced (the custom allocator), the
+   ZSTD_WINDOWLOG_* / ZSTD_WINDOWLOG_LIMIT_DEFAULT bounds, and
+   ZSTD_c_srcSizeHint. The symbols this unlocks are already exported
+   with default visibility in a normal (dynamically linked) libzstd -
+   "static linking only" is a promise about API stability across
+   releases, not a linker restriction - so this does not commit the
+   module to actually linking libzstd statically. See PORTING.md.
+
+   ZSTD_c_srcSizeHint is the one of those that is genuinely
+   experimental rather than merely gated: it is a numbered slot
+   (ZSTD_c_experimentalParam7), so a release that reassigned that
+   number would have this silently set some other parameter, which no
+   compile-time check would catch. Acceptable here only because
+   deps/zstd is vendored and pinned, so the number is fixed by the
+   tree rather than by whatever libzstd a host happens to carry. A
+   build against a system libzstd should re-check it. */
 #define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
 
@@ -112,6 +121,41 @@
    marker is a request to push data out now. Four holds the usual
    burst in one block while keeping the deferral short. */
 #define NGX_HTTP_ZSTD_FLUSH_COALESCE 4
+
+/* What the encoder is told to expect from a response whose length is
+   never learned - see ZSTD_c_srcSizeHint at the call site.
+
+   Unlike ZSTD_CCtx_setPledgedSrcSize this is a guess, not a promise:
+   it is not written to the frame header and not checked at the end of
+   the frame, so it may be wrong in either direction. That is the
+   whole reason it can be used here at all. A pledge cannot: it is
+   "controlled at end of frame, and trigger an error if not respected"
+   (zstd.h), so pledging a fixed size for a stream would fail every
+   response that did not happen to be exactly that long, with
+   "Src size is incorrect".
+
+   Without one of the two, zstd sizes its match-finder tables for the
+   worst case the window allows, which is what makes a stream cost
+   several times what the same body costs when its length is known -
+   see the pledge below. Measured on script/corpus prose.txt at level
+   6, peak live encoder bytes with no hint / with this one:
+   3,089,713 -> 1,123,633 at the 64 KB zstd_window default, and
+   3,532,305 -> 2,221,585, 3,925,521 -> 3,663,377, 5,498,385 ->
+   3,663,377 at 128 KB, 512 KB and 2 MB. At every one of those it
+   matches or beats what the exact pledge achieves.
+
+   256 KB rather than the window, which was the first guess and is
+   wrong twice over: at the default it is the one value that costs
+   ratio (97,500 bytes against 95,881 here, the "regress
+   significantly if guess considerably underestimates" zstd.h warns
+   of), and above 256 KB it stops capping the tables at all. Nor
+   smaller: 128 KB does cut memory further, to 1,566,225, but at
+   96,462 bytes - 3.0% worse output for memory this module does not
+   need. 256 KB is the smallest hint measured to cost no ratio
+   (0.17% at the default window, nothing at all above it) while still
+   bounding the tables at every window setting. Re-measure if
+   zstd_window's default moves. */
+#define NGX_HTTP_ZSTD_SRC_SIZE_HINT (256 * 1024)
 
 #define NGX_HTTP_ZSTD_LEVEL_MIN 1
 #define NGX_HTTP_ZSTD_LEVEL_MAX 22
@@ -1119,20 +1163,29 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
 
     /* Writes the size into the frame header when it is known, which
        helps the decoder allocate. Brotli has no equivalent - see
-       PORTING.md. Safe to skip otherwise: ZSTD_CONTENTSIZE_UNKNOWN
-       is the default for a fresh context.
+       PORTING.md.
 
        It does more than help the decoder, and is worth keeping for
        the other reason: told the source size, zstd sizes its own
        match-finder tables to the body rather than to the window, so
        this call is what keeps a high zstd_comp_level affordable.
        Measured on script/corpus, peak encoder memory plateaus at
-       1.07 MB across levels 5, 6 and 9 with it, where the same
-       levels on a stream of unknown length cost 1.20, 2.95 and
-       10.45 MB. Dropping it would not merely cost the decoder a
-       hint; it would remove the ceiling. The cast must stay 64-bit:
-       content_length is an off_t, and "unsigned" would truncate a
-       body over 4 GiB into a pledge zstd then rejects. */
+       1.07 MB across levels 5, 6 and 9 with it, where the same body
+       with nothing said about its size at all costs 2.95, 2.95 and
+       10.45 MB - and 640.90 MB at level 22.
+
+       Which is what the else branch covers, so the two are not
+       redundant and neither replaces the other: this one is exact,
+       is checked at the end of the frame, and reaches the decoder
+       through the frame header; that one is a guess that does none
+       of those things and is all a response of unknown length can
+       offer. Leaving the else empty would be safe in the sense that
+       ZSTD_CONTENTSIZE_UNKNOWN is the default for a fresh context,
+       and expensive in every other sense.
+
+       The cast must stay 64-bit: content_length is an off_t, and
+       "unsigned" would truncate a body over 4 GiB into a pledge zstd
+       then rejects. */
     if (ctx->content_length >= 0) {
         zrc = ZSTD_CCtx_setPledgedSrcSize(
             ctx->zcctx, (unsigned long long) ctx->content_length);
@@ -1140,6 +1193,29 @@ ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
             ngx_log_error(NGX_LOG_ALERT, log, 0,
                 "ZSTD_CCtx_setPledgedSrcSize(%O) failed: %s",
                 ctx->content_length, ZSTD_getErrorName(zrc));
+
+            return NGX_ERROR;
+        }
+
+    } else {
+        /* No length to pledge, so give the guess instead - which is
+           the difference between tables sized to the body and tables
+           sized to the worst case the window allows. See
+           NGX_HTTP_ZSTD_SRC_SIZE_HINT for what it costs and why it
+           is that number.
+
+           Fatal like the parameters above rather than skipped on
+           error, deliberately: libzstd is vendored and pinned (see
+           deps/zstd), so a rejection here is a broken build and not
+           a library that merely happens to be older, and failing
+           loudly beats every stream quietly costing three times the
+           memory it should. */
+        zrc = ZSTD_CCtx_setParameter(ctx->zcctx, ZSTD_c_srcSizeHint,
+            NGX_HTTP_ZSTD_SRC_SIZE_HINT);
+        if (ZSTD_isError(zrc)) {
+            ngx_log_error(NGX_LOG_ALERT, log, 0,
+                "ZSTD_CCtx_setParameter(srcSizeHint, %d) failed: %s",
+                NGX_HTTP_ZSTD_SRC_SIZE_HINT, ZSTD_getErrorName(zrc));
 
             return NGX_ERROR;
         }
