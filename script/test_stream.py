@@ -707,6 +707,22 @@ def frame_blocks(data):
             return blocks
 
 
+def frame_declares_size(data):
+    """Whether the frame header carries a Frame_Content_Size.
+
+    zstd writes one when, and only when, it was told the size before the
+    frame was written, so from the outside this is what tells the pledged
+    path apart from the hinted one. RFC 8878 section 3.1.1.1.2: the size is
+    present when Frame_Content_Size_flag is non-zero, and additionally when
+    Single_Segment_flag is set, which forces a one-byte field.
+    """
+    if data[:4] != ZSTD_MAGIC:
+        raise Failure("response body does not start with a zstd frame")
+
+    descriptor = data[4]
+    return bool(descriptor >> 6) or bool((descriptor >> 5) & 1)
+
+
 def _frame_header(data):
     """(window size, length of the frame header) for the frame at data[0]."""
     if data[:4] != ZSTD_MAGIC:
@@ -1748,6 +1764,81 @@ def test_alloc_balance_stream(ctx):
     ctx.nginx.mark_log()
     fetch(ctx.port, "/stream/big.html")
     assert_balanced(wait_for_encoder_release(ctx.nginx), "stream")
+
+
+def peak_encoder_bytes(ctx, path):
+    """(peak simultaneously-live encoder bytes, body) for one request.
+
+    The body comes back so the caller can read out of the frame which sizing
+    path the encoder actually took, rather than assuming it from the URL.
+    """
+    ctx.nginx.mark_log()
+    _, headers, body = fetch(ctx.port, path)
+    check(
+        headers.get("content-encoding") == "zstd",
+        f"{path} came back uncompressed, so there is no encoder to measure",
+    )
+    stats = wait_for_encoder_release(ctx.nginx)
+    active = [entry for entry in stats.values() if entry["allocs"]]
+    check(active, f"no encoder allocation was traced for {path}")
+    return max(entry["peak_bytes"] for entry in active), body
+
+
+@test("a stream costs no more memory than the same body of known length",
+      needs_debug=True)
+def test_stream_memory_ceiling(ctx):
+    """Pins ZSTD_c_srcSizeHint, which nothing else here would notice.
+
+    A known Content-Length reaches ZSTD_CCtx_setPledgedSrcSize, which sizes
+    the encoder's match-finder tables to the body. Without it zstd sizes them
+    for the worst case the window allows, and a response of unknown length
+    used to pay for that: the same body cost 2.95 MB streamed against 1.07 MB
+    static at level 6, and 640.90 MB against 1.90 MB at level 22. The hint is
+    the non-binding form of the pledge and is what closes that.
+
+    The suite passed 51/51 both before and after the hint was added, so the
+    other memory tests here do not cover this. They check that allocations
+    balance and do not drift, which is a different property: a leak-free
+    encoder three times larger than it needs to be passes all of them.
+
+    Deliberately a ratio rather than a byte count. The absolute figures move
+    with the libzstd in deps/zstd and with zstd_comp_level, but "a stream
+    should not cost materially more than the same bytes with a length on
+    them" holds across both. 1.5x leaves room for the two paths genuinely
+    differing - the hint is a guess where the pledge is exact, so they need
+    not land on the same tables - while a regression here is a 2.75x at the
+    level this suite runs.
+
+    Being a comparison, it would prove nothing if both sides quietly ended up
+    on the same path - if /stream stopped being a stream, or if the pledge
+    went missing so that both merely guessed. Neither side is taken on trust
+    for that reason: a frame carries a Frame_Content_Size only when the
+    encoder knew the size up front, so the frames themselves are asked which
+    path they came from before the peaks are compared.
+    """
+    known, known_body = peak_encoder_bytes(ctx, "/big.html")
+    streamed, streamed_body = peak_encoder_bytes(ctx, "/stream/big.html")
+
+    check(
+        frame_declares_size(known_body),
+        "/big.html produced a frame with no content size, so it was not "
+        "given a pledged length and is not the known-length yardstick this "
+        "comparison needs",
+    )
+    check(
+        not frame_declares_size(streamed_body),
+        "/stream/big.html produced a frame carrying a content size, so it "
+        "was compressed with a known length after all - both sides of this "
+        "comparison took the same path and it proves nothing",
+    )
+    check(
+        streamed <= known * 1.5,
+        f"a streamed response peaked at {streamed / 1024:.0f} KB against "
+        f"{known / 1024:.0f} KB for the same body with a known length "
+        f"({streamed / known:.2f}x). The encoder is sizing its tables to the "
+        f"window rather than to the response - ZSTD_c_srcSizeHint is most "
+        f"likely no longer reaching it",
+    )
 
 
 @test("repeated requests neither leak nor drift", needs_debug=True)
