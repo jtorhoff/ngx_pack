@@ -31,8 +31,10 @@
 #include "../common/ngx_http_zstd_headers.h"
 
 
-/* Zstandard and GZip never stack, i.e. when one of them sets
-   "Content-Encoding" the other becomes a pass-through filter. */
+/* Tells nginx to wait for output.
+   Zstandard and GZip never stack, i.e. when one of them sets
+   "Content-Encoding" the other becomes a pass-through filter.
+   This is why it's safe to re-use the constant here. */
 #define NGX_HTTP_ZSTD_BUFFERED NGX_HTTP_GZIP_BUFFERED
 
 /* The most input that may be held back while waiting to learn the
