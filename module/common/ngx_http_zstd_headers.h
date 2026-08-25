@@ -318,9 +318,8 @@ ngx_http_zstd_set_vary(ngx_http_request_t *r)
     }
 
     vary->hash = 1;
-#if nginx_version >= 1023000
     vary->next = NULL;
-#endif
+
     ngx_str_set(&vary->key, "Vary");
     ngx_str_set(&vary->value, "Accept-Encoding");
 
@@ -346,13 +345,11 @@ ngx_http_zstd_set_content_encoding(ngx_http_request_t *r)
     }
 
     entry->hash = 1;
-#if nginx_version >= 1023000
-    /* Since 1.23.0 the headers_out entries are linked, so a pushed
-       entry has to terminate its own list. */
     entry->next = NULL;
-#endif
+
     ngx_str_set(&entry->key, "Content-Encoding");
     ngx_str_set(&entry->value, "zstd");
+
     r->headers_out.content_encoding = entry;
 
     return NGX_OK;
