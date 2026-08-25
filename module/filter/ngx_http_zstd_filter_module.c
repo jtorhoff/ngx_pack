@@ -122,7 +122,7 @@
    flush stay inside the encoder until the fold ends, and a flush
    marker is a request to push data out now. Four holds the usual
    burst in one block while keeping the deferral short. */
-#define NGX_HTTP_ZSTD_FLUSH_COALESCE 4
+#define NGX_HTTP_ZSTD_MAX_FOLDED_FLUSHES 4
 
 /* What the encoder is told to expect from a response whose length is
    never learned - see ZSTD_c_srcSizeHint at the call site.
@@ -298,10 +298,10 @@ typedef struct {
     unsigned caller_wants_output : 1;
 
     /* How many flush-marked buffers have been folded into the block
-       still being built - see NGX_HTTP_ZSTD_FLUSH_COALESCE. Reset
+       still being built - see NGX_HTTP_ZSTD_MAX_FOLDED_FLUSHES. Reset
        whenever a flush or the end of the frame completes, since that
        is what starts the next block. */
-    ngx_uint_t coalesced_flushes;
+    ngx_uint_t folded_flushes;
 
     /* The directive a round with no input left has to repeat, or
        ZSTD_e_continue for "nothing owed".
@@ -743,7 +743,7 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
                that never reached the encoder would spend part of the
                allowance on nothing. */
             folded = ngx_http_zstd_filter_may_fold_flush(
-                ctx->in->next, ctx->coalesced_flushes);
+                ctx->in->next, ctx->folded_flushes);
 
             if (folded) {
                 zmode = ZSTD_e_continue;
@@ -793,7 +793,7 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
     }
 
     if (folded) {
-        ctx->coalesced_flushes++;
+        ctx->folded_flushes++;
     }
 
     /* Record progress in the chain itself. It cannot be kept in
@@ -835,7 +835,7 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
 
         /* Either directive ends the block, so the next one starts
            with nothing folded into it. */
-        ctx->coalesced_flushes = 0;
+        ctx->folded_flushes = 0;
 
         if (zmode == ZSTD_e_flush) {
             ctx->unflushed_input = 0;
@@ -954,11 +954,11 @@ ngx_http_zstd_filter_may_fold_flush(
     ngx_uint_t   lookahead;
     ngx_chain_t *link;
 
-    if (folded + 1 >= NGX_HTTP_ZSTD_FLUSH_COALESCE) {
+    if (folded + 1 >= NGX_HTTP_ZSTD_MAX_FOLDED_FLUSHES) {
         return 0;
     }
 
-    lookahead = NGX_HTTP_ZSTD_FLUSH_COALESCE - 1 - folded;
+    lookahead = NGX_HTTP_ZSTD_MAX_FOLDED_FLUSHES - 1 - folded;
 
     for (link = rest; link != NULL && lookahead > 0;
         link  = link->next) {

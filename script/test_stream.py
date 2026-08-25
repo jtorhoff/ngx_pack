@@ -414,14 +414,14 @@ class Upstream:
     # reads the whole burst at once and the chunked filter builds one chain
     # rather than several.
     BURST_CHUNKS = 12
-    BURST_TEXT = b"<p>zstd flush coalescing burst chunk payload</p>"
+    BURST_TEXT = b"<p>zstd flush folding burst chunk payload</p>"
 
     def _burst(self, conn):
         """Writes every chunk in a single send.
 
         nginx then reads them together and ngx_http_proxy_chunked_filter
         appends one buffer per chunk, each with flush set, into one chain -
-        the case NGX_HTTP_ZSTD_FLUSH_COALESCE exists for. Sending them as
+        the case NGX_HTTP_ZSTD_MAX_FOLDED_FLUSHES exists for. Sending them as
         separate writes would let nginx read them one at a time, and the
         chain would hold a single flush marker with nothing to fold.
         """
@@ -679,7 +679,7 @@ def frame_window(data):
 def frame_blocks(data):
     """How many blocks the first frame is made of.
 
-    This is the observable behind flush coalescing. A flush ends the block
+    This is the observable behind flush folding. A flush ends the block
     it interrupts, so a chain of N flush-marked buffers produces N blocks
     where one would otherwise do, and folding them shows up here and
     nowhere else - the decoded bytes are identical either way.
@@ -1578,15 +1578,15 @@ def test_buffers_directive_is_honoured(ctx):
 
 
 # ---------------------------------------------------------------------------
-# Flush coalescing
+# Flush folding
 # ---------------------------------------------------------------------------
 
 # module/filter/ngx_http_zstd_filter_module.c
-FLUSH_COALESCE = 4
+MAX_FOLDED_FLUSHES = 4
 
 
 @test("a burst of flush-marked chunks folds into fewer blocks", needs_decoder=True)
-def test_flush_coalescing(ctx):
+def test_flush_folding(ctx):
     """The upstream writes every chunk in one send, so the chunked filter
     hands the module a single chain of flush markers - one per chunk. Only
     the last of a fold has to cut a block, and the cap on how many fold is
@@ -1607,7 +1607,7 @@ def test_flush_coalescing(ctx):
     )
 
     blocks = frame_blocks(body)
-    ceiling = -(-chunks // FLUSH_COALESCE) + 2
+    ceiling = -(-chunks // MAX_FOLDED_FLUSHES) + 2
 
     check(
         blocks < chunks,
@@ -1617,12 +1617,12 @@ def test_flush_coalescing(ctx):
     check(
         blocks <= ceiling,
         f"{chunks} flush-marked chunks produced {blocks} blocks, more than "
-        f"the {ceiling} a fold of {FLUSH_COALESCE} allows",
+        f"the {ceiling} a fold of {MAX_FOLDED_FLUSHES} allows",
     )
 
 
 @test("a folded flush still delivers every byte", needs_decoder=True)
-def test_flush_coalescing_roundtrip(ctx):
+def test_flush_folding_roundtrip(ctx):
     """Folding may not lose or reorder anything: the point is that only the
     framing changes."""
     expected = b"".join(
