@@ -29,10 +29,10 @@ static ngx_conf_enum_t ngx_http_zstd_static[] = {
     {ngx_null_string, 0}};
 
 static ngx_int_t ngx_http_zstd_static_handler(ngx_http_request_t *r);
-static void *ngx_http_zstd_static_create_conf(ngx_conf_t *conf_ctx);
+static void *ngx_http_zstd_static_create_conf(ngx_conf_t *cf);
 static char *ngx_http_zstd_static_merge_conf(
-    ngx_conf_t *conf_ctx, void *parent, void *child);
-static ngx_int_t ngx_http_zstd_static_init(ngx_conf_t *conf_ctx);
+    ngx_conf_t *cf, void *parent, void *child);
+static ngx_int_t ngx_http_zstd_static_init(ngx_conf_t *cf);
 
 static ngx_command_t ngx_http_zstd_static_commands[] = {
     {ngx_string("zstd_static"),
@@ -73,12 +73,12 @@ ngx_module_t ngx_http_zstd_static_module = {NGX_MODULE_V1,
 static ngx_int_t
 ngx_http_zstd_static_handler(ngx_http_request_t *r)
 {
-    ngx_http_zstd_static_conf_t *zstd_cfg;
+    ngx_http_zstd_static_conf_t *conf;
     u_char                      *last;
     ngx_str_t                    path;
     size_t                       root_len;
     ngx_log_t                   *log;
-    ngx_http_core_loc_conf_t    *core_loc_cfg;
+    ngx_http_core_loc_conf_t    *core_conf;
     ngx_open_file_info_t         file_info;
     ngx_int_t                    rc;
     ngx_uint_t                   level;
@@ -95,15 +95,15 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    zstd_cfg =
+    conf =
         ngx_http_get_module_loc_conf(r, ngx_http_zstd_static_module);
-    if (zstd_cfg->enable == NGX_HTTP_ZSTD_STATIC_OFF) {
+    if (conf->enable == NGX_HTTP_ZSTD_STATIC_OFF) {
         return NGX_DECLINED;
     }
 
     /* "always" serves the .zst file whatever the request said about
        encodings, so only "on" has to consult it. */
-    if (zstd_cfg->enable == NGX_HTTP_ZSTD_STATIC_ON) {
+    if (conf->enable == NGX_HTTP_ZSTD_STATIC_ON) {
         /* Set before the Accept-Encoding test, and left in place even
            when this handler declines: what varies is the resource,
            not this one request. "always" needs none of it, serving
@@ -134,30 +134,30 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     path.len = last - path.data;
 
     log = r->connection->log;
+
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
         "http filename: \"%s\"", path.data);
 
     /* Prepare to read the file. */
-    core_loc_cfg =
-        ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+    core_conf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
     ngx_memzero(&file_info, sizeof(ngx_open_file_info_t));
 
-    file_info.read_ahead = core_loc_cfg->read_ahead;
-    file_info.directio   = core_loc_cfg->directio;
-    file_info.valid      = core_loc_cfg->open_file_cache_valid;
-    file_info.min_uses   = core_loc_cfg->open_file_cache_min_uses;
-    file_info.errors     = core_loc_cfg->open_file_cache_errors;
-    file_info.events     = core_loc_cfg->open_file_cache_events;
+    file_info.read_ahead = core_conf->read_ahead;
+    file_info.directio   = core_conf->directio;
+    file_info.valid      = core_conf->open_file_cache_valid;
+    file_info.min_uses   = core_conf->open_file_cache_min_uses;
+    file_info.errors     = core_conf->open_file_cache_errors;
+    file_info.events     = core_conf->open_file_cache_events;
 
     rc = ngx_http_set_disable_symlinks(
-        r, core_loc_cfg, &path, &file_info);
+        r, core_conf, &path, &file_info);
     if (rc != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     /* Try to fetch file and process errors. */
     rc = ngx_open_cached_file(
-        core_loc_cfg->open_file_cache, &path, &file_info, r->pool);
+        core_conf->open_file_cache, &path, &file_info, r->pool);
     if (rc != NGX_OK) {
         switch (file_info.err) {
             case 0:
@@ -205,10 +205,12 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
 
     /* Discard the request body, then describe the response. */
     r->root_tested = !r->error_page;
-    rc             = ngx_http_discard_request_body(r);
+
+    rc = ngx_http_discard_request_body(r);
     if (rc != NGX_OK) {
         return rc;
     }
+
     log->action = "sending response to client";
 
     r->headers_out.status             = NGX_HTTP_OK;
@@ -263,48 +265,47 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
 }
 
 static void *
-ngx_http_zstd_static_create_conf(ngx_conf_t *conf_ctx)
+ngx_http_zstd_static_create_conf(ngx_conf_t *cf)
 {
-    ngx_http_zstd_static_conf_t *zstd_cfg;
+    ngx_http_zstd_static_conf_t *conf;
 
-    zstd_cfg = ngx_palloc(
-        conf_ctx->pool, sizeof(ngx_http_zstd_static_conf_t));
-    if (zstd_cfg == NULL) {
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_zstd_static_conf_t));
+    if (conf == NULL) {
         return NULL;
     }
 
-    zstd_cfg->enable = NGX_CONF_UNSET_UINT;
+    conf->enable = NGX_CONF_UNSET_UINT;
 
-    return zstd_cfg;
+    return conf;
 }
 
 static char *
 ngx_http_zstd_static_merge_conf(
-    ngx_conf_t *conf_ctx, void *parent, void *child)
+    ngx_conf_t *cf, void *parent, void *child)
 {
-    ngx_http_zstd_static_conf_t *prev_cfg;
-    ngx_http_zstd_static_conf_t *zstd_cfg;
+    ngx_http_zstd_static_conf_t *prev;
+    ngx_http_zstd_static_conf_t *conf;
 
-    prev_cfg = parent;
-    zstd_cfg = child;
+    prev = parent;
+    conf = child;
 
     ngx_conf_merge_uint_value(
-        zstd_cfg->enable, prev_cfg->enable, NGX_HTTP_ZSTD_STATIC_OFF);
+        conf->enable, prev->enable, NGX_HTTP_ZSTD_STATIC_OFF);
 
     return NGX_CONF_OK;
 }
 
 static ngx_int_t
-ngx_http_zstd_static_init(ngx_conf_t *conf_ctx)
+ngx_http_zstd_static_init(ngx_conf_t *cf)
 {
-    ngx_http_core_main_conf_t *core_main_cfg;
+    ngx_http_core_main_conf_t *main_conf;
     ngx_http_handler_pt       *handler_slot;
 
-    core_main_cfg = ngx_http_conf_get_module_main_conf(
-        conf_ctx, ngx_http_core_module);
+    main_conf =
+        ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
     handler_slot = ngx_array_push(
-        &core_main_cfg->phases[NGX_HTTP_CONTENT_PHASE].handlers);
+        &main_conf->phases[NGX_HTTP_CONTENT_PHASE].handlers);
     if (handler_slot == NULL) {
         return NGX_ERROR;
     }
