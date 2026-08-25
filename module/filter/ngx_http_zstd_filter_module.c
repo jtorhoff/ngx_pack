@@ -205,17 +205,17 @@ typedef enum {
    return "rc" - so they are separate for the reader rather than for
    the control flow. */
 typedef enum {
-    /* Accepted for encoding: carry on into the encoder loop. */
-    NGX_HTTP_ZSTD_PRE_ACCEPT = 0,
+    /* Carry on into the encoder loop. */
+    NGX_HTTP_ZSTD_ENCODE = 0,
     /* Not yet: too little of the body has arrived to answer the
        question zstd_min_length asks, or its size is still unknown
        and worth waiting a moment to learn before the encoder window
        is fixed. The input stays in ctx->in and a later call decides,
        so this may still end in compression. "rc" is NGX_OK. */
-    NGX_HTTP_ZSTD_PRE_DEFER,
+    NGX_HTTP_ZSTD_DEFER,
     /* Settled, and not encoded here. "rc" holds what the body filter
        should return. */
-    NGX_HTTP_ZSTD_PRE_REJECT
+    NGX_HTTP_ZSTD_REJECT
 } ngx_http_zstd_prepare_e;
 
 /* Instance context. */
@@ -1014,7 +1014,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
     /* The steady state: the headers are away and the encoder exists,
        so there is nothing to settle. */
     if (ctx->headers_sent && ctx->initialized) {
-        return NGX_HTTP_ZSTD_PRE_ACCEPT;
+        return NGX_HTTP_ZSTD_ENCODE;
     }
 
     pending = ngx_http_zstd_filter_pending_input(
@@ -1035,7 +1035,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
             ctx->accepted_for_compression = 1;
         } else {
             *rc = NGX_OK;
-            return NGX_HTTP_ZSTD_PRE_DEFER;
+            return NGX_HTTP_ZSTD_DEFER;
         }
 
         header_rc = ngx_http_zstd_filter_send_headers(ctx);
@@ -1055,7 +1055,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
             ngx_http_zstd_filter_close(ctx);
 
             *rc = NGX_ERROR;
-            return NGX_HTTP_ZSTD_PRE_REJECT;
+            return NGX_HTTP_ZSTD_REJECT;
         }
 
         if (!ctx->accepted_for_compression) {
@@ -1067,7 +1067,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
                 ~NGX_HTTP_ZSTD_BUFFERED;
 
             *rc = ngx_http_next_body_filter(ctx->request, link);
-            return NGX_HTTP_ZSTD_PRE_REJECT;
+            return NGX_HTTP_ZSTD_REJECT;
         }
     }
 
@@ -1087,11 +1087,11 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
                 "zstd deferring encoder: pending:%uz", pending);
 
             *rc = NGX_OK;
-            return NGX_HTTP_ZSTD_PRE_DEFER;
+            return NGX_HTTP_ZSTD_DEFER;
         }
     }
 
-    return NGX_HTTP_ZSTD_PRE_ACCEPT;
+    return NGX_HTTP_ZSTD_ENCODE;
 }
 
 /* Initializes encoder, output chain and buffer, if necessary. */
@@ -1308,7 +1308,7 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     rc = NGX_ERROR;
 
     if (ngx_http_zstd_filter_prepare(ctx, &rc) !=
-        NGX_HTTP_ZSTD_PRE_ACCEPT) {
+        NGX_HTTP_ZSTD_ENCODE) {
         return rc;
     }
 
