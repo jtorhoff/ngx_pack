@@ -251,10 +251,20 @@ typedef struct {
     ngx_uint_t buffers;
     size_t     out_size;
 
-    /* 1 if the response headers are still ours to send. Set when the
-       response length is unknown, so that zstd_min_length can be
-       applied once enough of the body has been seen to judge it. */
-    unsigned headers_postponed : 1;
+    /* 1 once the response headers have been committed. Zero until
+       then, which is what ngx_pcalloc leaves and what the header
+       filter depends on: with no Content-Length there is nothing to
+       compare against zstd_min_length yet, so it holds the headers
+       back by leaving this zero and lets the body decide.
+
+       Set only where compressed headers are committed, so the
+       uncompressed exit from ngx_http_zstd_filter_send_headers
+       leaves it zero even though it too sends the headers on. That
+       is safe only because the same branch closes the context, and
+       a closed context never reaches ngx_http_zstd_filter_prepare
+       again - were it to stop closing, the headers would be
+       committed a second time. */
+    unsigned headers_sent : 1;
     /* 1 if this response has been accepted for compression. Decided
        either in the header filter, when the length is known up front,
        or in ngx_http_zstd_filter_prepare once enough of the body has
@@ -513,7 +523,6 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
        against zstd_min_length, and committing the headers here would
        settle the question for good. Hold them instead. */
     if (ctx->content_length < 0) {
-        ctx->headers_postponed = 1;
         return NGX_OK;
     }
 
@@ -533,14 +542,22 @@ static ngx_int_t
 ngx_http_zstd_filter_send_headers(ngx_http_zstd_ctx_t *ctx)
 {
     ngx_http_request_t *r;
+    ngx_int_t           rc;
+
     r = ctx->request;
 
-    ctx->headers_postponed = 0;
-
     if (!ctx->accepted_for_compression) {
-        /* Nothing has been allocated yet on this path - headers are
-           only postponed while the encoder does not exist - so this
-           closes an empty instance. */
+        /* Nothing has been allocated yet on this path - the headers
+           are only held while the encoder does not exist - so this
+           closes an empty instance.
+
+           Closing is also what lets headers_sent stay zero here. The
+           headers do go out, so the flag understates what happened;
+           it is never read again because its only reader is
+           ngx_http_zstd_filter_prepare, and the body filter returns
+           on ctx->closed before it gets there. The two belong
+           together - dropping the close would leave a context that
+           reports unsent headers and commits them a second time. */
         ngx_http_zstd_filter_close(ctx);
         return ngx_http_next_header_filter(r);
     }
@@ -554,7 +571,11 @@ ngx_http_zstd_filter_send_headers(ngx_http_zstd_ctx_t *ctx)
     ngx_http_clear_accept_ranges(r);
     ngx_http_weak_etag(r);
 
-    return ngx_http_next_header_filter(r);
+    rc = ngx_http_next_header_filter(r);
+
+    ctx->headers_sent = 1;
+
+    return rc;
 }
 
 /* Hands back a buffer to compress into.
@@ -992,7 +1013,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
 
     /* The steady state: the headers are away and the encoder exists,
        so there is nothing to settle. */
-    if (!ctx->headers_postponed && ctx->initialized) {
+    if (ctx->headers_sent && ctx->initialized) {
         return NGX_HTTP_ZSTD_PRE_ACCEPT;
     }
 
@@ -1003,7 +1024,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
        soon as the body answers the only question zstd_min_length
        asks - is it at least that big. A flush marker means something
        downstream is waiting, so decide immediately and compress. */
-    if (ctx->headers_postponed) {
+    if (!ctx->headers_sent) {
         conf = ngx_http_get_module_loc_conf(
             ctx->request, ngx_http_zstd_filter_module);
 
