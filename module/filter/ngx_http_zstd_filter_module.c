@@ -1096,7 +1096,8 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
 
 /* Initializes encoder, output chain and buffer, if necessary. */
 static ngx_int_t
-ngx_http_zstd_filter_ensure_stream_inited(ngx_http_zstd_ctx_t *ctx)
+ngx_http_zstd_filter_ensure_stream_initialized(
+    ngx_http_zstd_ctx_t *ctx)
 {
     ngx_http_request_t   *r;
     ngx_http_zstd_conf_t *conf;
@@ -1312,7 +1313,8 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         return rc;
     }
 
-    if (ngx_http_zstd_filter_ensure_stream_inited(ctx) != NGX_OK) {
+    if (ngx_http_zstd_filter_ensure_stream_initialized(ctx) !=
+        NGX_OK) {
         ngx_http_zstd_filter_close(ctx);
         return NGX_ERROR;
     }
@@ -1477,8 +1479,9 @@ ngx_http_zstd_filter_close(ngx_http_zstd_ctx_t *ctx)
        nothing to hand back, dropping them is the cleanup. Dropped
        rather than left stale so that a use after close faults instead
        of quietly writing into memory the pool still owns -
-       ensure_stream_inited guards on "initialized", which close does
-       not reset. out_size goes too, to keep it coherent with them.
+       ensure_stream_initialized guards on "initialized", which close
+       does not reset. out_size goes too, to keep it coherent with
+       them.
 
        "busy" is dropped along with the rest, which is safe because
        nothing here owns those buffers any more:
