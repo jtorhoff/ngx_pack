@@ -35,7 +35,7 @@
    "Content-Encoding" the other becomes a pass-through filter. */
 #define NGX_HTTP_ZSTD_BUFFERED NGX_HTTP_GZIP_BUFFERED
 
-/* How much input may be held back while waiting to learn the
+/* The most input that may be held back while waiting to learn the
    response size. There is no point deferring longer than the window
    the encoder would use anyway - zstd_window's compiled-in default,
    below - since committing beyond it cannot change the window choice
@@ -47,7 +47,7 @@
    equivalent constant was derived from its fixed internal block size
    and this one is derived from the window, but they land on the same
    bound. Both follow zstd_window, so move them together. */
-#define NGX_HTTP_ZSTD_DEFER_INPUT (64 * 1024)
+#define NGX_HTTP_ZSTD_MAX_HELD_INPUT (64 * 1024)
 
 /* The largest windowLog zstd_window accepts. ZSTD_WINDOWLOG_MAX is
    the codec's own ceiling (31 bits on a 64-bit build); capped at
@@ -1081,7 +1081,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
             }
         } else if (!ctx->caller_wants_output && !urgent &&
                    ctx->content_length < 0 &&
-                   pending < NGX_HTTP_ZSTD_DEFER_INPUT) {
+                   pending < NGX_HTTP_ZSTD_MAX_HELD_INPUT) {
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP,
                 ctx->request->connection->log, 0,
                 "zstd deferring encoder: pending:%uz", pending);

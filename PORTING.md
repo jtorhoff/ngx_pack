@@ -518,7 +518,7 @@ zstd's block structure differs and isn't a single fixed number the
 way Brotli's is, so that reasoning doesn't transfer — but there's a
 simpler bound available: deferring longer than the window the encoder
 would use anyway cannot change the window choice any further, so
-`NGX_HTTP_ZSTD_DEFER_INPUT` just matches the compiled-in
+`NGX_HTTP_ZSTD_MAX_HELD_INPUT` just matches the compiled-in
 `zstd_window` default (also 64 KB). The two happen to be the same
 number for a different reason, not the same reason.
 
