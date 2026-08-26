@@ -294,7 +294,7 @@ typedef struct {
 
     /* 1 if compression is finished / failed. */
     unsigned closed : 1;
-} ngx_http_zstd_ctx_state_t;
+} ngx_http_zstd_state_t;
 
 /* What libzstd owns on this response's behalf: the encoder itself,
    and the directive still owed to it. Its own pool allocation beside
@@ -332,7 +332,7 @@ typedef struct {
    Two groups sit at the position of their earliest member rather
    than being split across it, since one comment covers each. */
 typedef struct {
-    ngx_http_zstd_ctx_state_t *state;
+    ngx_http_zstd_state_t *state;
 
     ngx_http_zstd_cctx_t *zstd;
 
@@ -564,8 +564,7 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    ctx->state =
-        ngx_pcalloc(r->pool, sizeof(ngx_http_zstd_ctx_state_t));
+    ctx->state = ngx_pcalloc(r->pool, sizeof(ngx_http_zstd_state_t));
     if (ctx->state == NULL) {
         return NGX_ERROR;
     }
