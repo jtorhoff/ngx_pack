@@ -184,22 +184,6 @@ typedef struct {
     ngx_int_t buffers;
 } ngx_http_zstd_conf_t;
 
-/* What one turn of the encoder decided to do next. The loop owns the
-   returns; a step only says which one. */
-typedef enum {
-    /* Made progress; go round again. */
-    NGX_HTTP_ZSTD_STEP_CONTINUE = 0,
-    /* The encoder has nothing more to give until it is fed again. */
-    NGX_HTTP_ZSTD_STEP_DONE,
-    /* Stopped for want of a free output buffer, with work still to
-       do. Whether that can be resolved depends on what the filters
-       below hand back, so the loop decides. */
-    NGX_HTTP_ZSTD_STEP_AGAIN,
-    /* Unrecoverable; the loop closes the stream and returns
-       NGX_ERROR. */
-    NGX_HTTP_ZSTD_STEP_FAILED
-} ngx_http_zstd_step_e;
-
 /* What the body filter should do once ngx_http_zstd_filter_prepare
    has settled the decisions that come before the encoder.
 
@@ -233,25 +217,36 @@ typedef enum {
     NGX_HTTP_ZSTD_ERROR
 } ngx_http_zstd_prepare_e;
 
-/* The response's flags, in the order a request sets them: the header
-   filter decides, send_headers commits, the body filter records what
-   it was called with, the encoder is built, input accumulates inside
-   it, the frame ends, the instance closes. Two are assigned a test
-   rather than a literal 1 - accepted_for_compression may take a
-   min_length comparison, caller_wants_output takes (in == NULL) - and
-   sit where they are assigned at all.
+/* What one turn of the encoder decided to do next. The loop owns the
+   returns; a step only says which one. */
+typedef enum {
+    /* Made progress; go round again. */
+    NGX_HTTP_ZSTD_STEP_CONTINUE = 0,
+    /* The encoder has nothing more to give until it is fed again. */
+    NGX_HTTP_ZSTD_STEP_DONE,
+    /* Stopped for want of a free output buffer, with work still to
+       do. Whether that can be resolved depends on what the filters
+       below hand back, so the loop decides. */
+    NGX_HTTP_ZSTD_STEP_AGAIN,
+    /* Unrecoverable; the loop closes the stream and returns
+       NGX_ERROR. */
+    NGX_HTTP_ZSTD_STEP_FAILED
+} ngx_http_zstd_step_e;
 
-   The order follows the path where the length is known up front.
-   With no Content-Length the decision moves into
-   ngx_http_zstd_filter_prepare, so caller_wants_output is assigned
-   before the first two rather than after them.
+/* The response's flags, in the order the response passes through
+   them: decided, committed, the encoder built, then what each call
+   brings and what the encoder is still holding, and last the two
+   ways it ends. Two take a test rather than a literal 1 -
+   accepted_for_compression may take a min_length comparison, and
+   caller_wants_output takes (in == NULL).
 
-   Kept together so they stay one contiguous bitfield run wherever
-   the context puts them: split across the members between their
-   first uses they would take a storage unit each, 128 bytes against
-   104. Embedded by value, never by pointer - ngx_pcalloc then zeroes
-   every flag along with the rest of the context, which is what lets
-   "not yet" be the starting state. */
+   Its own pool allocation, made in the header filter beside the
+   context, so ngx_pcalloc has zeroed every flag before any of them
+   is read: "not yet" is the starting state, with no constructor
+   needed to say so. That the flags share a struct at all is what
+   keeps them one contiguous bitfield run - scattered through the
+   context between their first uses they would take a storage unit
+   each. */
 typedef struct {
     /* 1 if this response has been accepted for compression. Decided
        either in the header filter, when the length is known up front,
@@ -275,15 +270,15 @@ typedef struct {
        committed a second time. */
     unsigned headers_sent : 1;
 
+    /* 1 if the encoder, output chain and buffer are allocated. */
+    unsigned initialized : 1;
+
     /* 1 if this call of the body filter arrived with no new data,
        i.e. nginx is asking for progress on what it has already handed
        over rather than adding to it. Set once on entry and read by
        both ngx_http_zstd_filter_prepare and
        ngx_http_zstd_filter_compress. */
     unsigned caller_wants_output : 1;
-
-    /* 1 if the encoder, output chain and buffer are allocated. */
-    unsigned initialized : 1;
 
     /* 1 if input has been handed to the encoder under ZSTD_e_continue
        that it may still be holding, unflushed. zstd gives no query
@@ -301,6 +296,10 @@ typedef struct {
     unsigned closed : 1;
 } ngx_http_zstd_ctx_state_t;
 
+/* What libzstd owns on this response's behalf: the encoder itself,
+   and the directive still owed to it. Its own pool allocation beside
+   the flags above, so both are zeroed before the first read - which
+   ZSTD_e_continue being 0 depends on, see repeat_mode. */
 typedef struct {
     /* zstd compression context instance. */
     ZSTD_CCtx *cctx;
@@ -322,24 +321,34 @@ typedef struct {
 
        ZSTD_e_continue is 0, so ngx_pcalloc starts this right. */
     ZSTD_EndDirective repeat_mode;
-} ngx_http_zstd_ctx_z_t;
+} ngx_http_zstd_ctx_zstd_t;
 
-/* Instance context. The request and the two grouped sub-states lead;
-   the rest follows the path a response takes through the filter -
-   what is known about it, the input chain, the output chains, the
-   buffers behind them, and the block being built. */
+/* Instance context. Members follow the path a request takes through
+   the module: the two sub-structs are allocated before there is
+   anything to record in them, the header filter records what it
+   knows, the body filter takes in a chain, the encoder is built,
+   buffers are drawn and filled, and the filled ones are handed on.
+
+   Two groups sit at the position of their earliest member rather
+   than being split across it, since one comment covers each. */
 typedef struct {
+    ngx_http_zstd_ctx_state_t *state;
+
+    ngx_http_zstd_ctx_zstd_t *zstd;
+
     ngx_http_request_t *request;
-
-    ngx_http_zstd_ctx_state_t state;
-
-    ngx_http_zstd_ctx_z_t z;
 
     /* Payload length; -1, if unknown. */
     off_t content_length;
 
     /* Input buffer chain. */
     ngx_chain_t *in;
+
+    /* How many buffers have been created so far, against
+       zstd_buffers. Created on demand rather than up front, so a
+       response that never needs a second one never pays for it. */
+    ngx_uint_t buffers;
+    size_t     out_size;
 
     /* Output buffers, in the three states nginx's chain helpers keep
        them in. Unlike the Brotli filter these point at memory *we*
@@ -356,12 +365,6 @@ typedef struct {
     ngx_chain_t **last_out;
     ngx_chain_t  *busy;
     ngx_chain_t  *free;
-
-    /* How many buffers have been created so far, against
-       zstd_buffers. Created on demand rather than up front, so a
-       response that never needs a second one never pays for it. */
-    ngx_uint_t buffers;
-    size_t     out_size;
 
     /* How many flush-marked buffers have been folded into the block
        still being built - see NGX_HTTP_ZSTD_MAX_FOLDED_FLUSHES. Reset
@@ -561,6 +564,18 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    ctx->state =
+        ngx_pcalloc(r->pool, sizeof(ngx_http_zstd_ctx_state_t));
+    if (ctx->state == NULL) {
+        return NGX_ERROR;
+    }
+
+    ctx->zstd =
+        ngx_pcalloc(r->pool, sizeof(ngx_http_zstd_ctx_zstd_t));
+    if (ctx->zstd == NULL) {
+        return NGX_ERROR;
+    }
+
     ctx->request        = r;
     ctx->content_length = r->headers_out.content_length_n;
     ngx_http_set_ctx(r, ctx, ngx_http_zstd_filter_module);
@@ -574,7 +589,7 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
         return NGX_OK;
     }
 
-    ctx->state.accepted_for_compression = 1;
+    ctx->state->accepted_for_compression = 1;
 
     return ngx_http_zstd_filter_send_headers(ctx);
 }
@@ -594,7 +609,7 @@ ngx_http_zstd_filter_send_headers(ngx_http_zstd_ctx_t *ctx)
 
     r = ctx->request;
 
-    if (!ctx->state.accepted_for_compression) {
+    if (!ctx->state->accepted_for_compression) {
         /* Nothing has been allocated yet on this path - the headers
            are only held while the encoder does not exist - so this
            closes an empty instance.
@@ -621,7 +636,7 @@ ngx_http_zstd_filter_send_headers(ngx_http_zstd_ctx_t *ctx)
 
     rc = ngx_http_next_header_filter(r);
 
-    ctx->state.headers_sent = 1;
+    ctx->state->headers_sent = 1;
 
     return rc;
 }
@@ -724,17 +739,17 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
        the buffer carrying last_buf may still be sitting in ctx->out
        or ctx->busy, and the encoder is not done with the response
        until the filters below have taken it. */
-    if (ctx->state.frame_closed) {
+    if (ctx->state->frame_closed) {
         return NGX_HTTP_ZSTD_STEP_DONE;
     }
 
     if (ctx->in == NULL) {
-        if (ctx->z.repeat_mode != ZSTD_e_continue) {
+        if (ctx->zstd->repeat_mode != ZSTD_e_continue) {
             /* Finishing what was started takes priority over asking
                whether the caller wants output - see repeat_mode. */
-            zmode = ctx->z.repeat_mode;
-        } else if (ctx->state.caller_wants_output &&
-                   ctx->state.unflushed_input) {
+            zmode = ctx->zstd->repeat_mode;
+        } else if (ctx->state->caller_wants_output &&
+                   ctx->state->unflushed_input) {
             zmode = ZSTD_e_flush;
         } else {
             /* Nothing to do; wait for more input. */
@@ -831,7 +846,7 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
     zout.pos  = 0;
 
     zremaining =
-        ZSTD_compressStream2(ctx->z.cctx, &zout, &zin, zmode);
+        ZSTD_compressStream2(ctx->zstd->cctx, &zout, &zin, zmode);
     if (ZSTD_isError(zremaining)) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
             "ZSTD_compressStream2() failed: %s",
@@ -872,23 +887,23 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
 
     if (zmode == ZSTD_e_continue) {
         if (zin.pos > 0) {
-            ctx->state.unflushed_input = 1;
+            ctx->state->unflushed_input = 1;
         }
     } else if (zremaining != 0) {
         /* Not finished, whichever of the two it was: repeat it once
            the input in hand has been consumed. */
-        ctx->z.repeat_mode = zmode;
+        ctx->zstd->repeat_mode = zmode;
     } else {
-        ctx->z.repeat_mode = ZSTD_e_continue;
+        ctx->zstd->repeat_mode = ZSTD_e_continue;
 
         /* Either directive ends the block, so the next one starts
            with nothing folded into it. */
         ctx->folded_flushes = 0;
 
         if (zmode == ZSTD_e_flush) {
-            ctx->state.unflushed_input = 0;
+            ctx->state->unflushed_input = 0;
         } else { /* ZSTD_e_end */
-            ctx->state.frame_closed = 1;
+            ctx->state->frame_closed = 1;
         }
     }
 
@@ -912,7 +927,7 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
        has to be retried, and the caller is otherwise not owed a
        return yet. The buffer goes back unused, or the round would
        spend one out of zstd_buffers on nothing. */
-    if (zout.pos == 0 && !ctx->state.frame_closed) {
+    if (zout.pos == 0 && !ctx->state->frame_closed) {
         if (ngx_http_zstd_filter_release_buf(ctx, out_buf) !=
             NGX_OK) {
             return NGX_HTTP_ZSTD_STEP_FAILED;
@@ -946,7 +961,7 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
     out_buf->temporary = (zout.pos > 0);
     out_buf->sync      = (zout.pos == 0);
     out_buf->flush     = (zmode == ZSTD_e_flush);
-    out_buf->last_buf  = ctx->state.frame_closed;
+    out_buf->last_buf  = ctx->state->frame_closed;
 
     link = ngx_alloc_chain_link(r->pool);
     if (link == NULL) {
@@ -1063,7 +1078,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
 
     /* The steady state: the headers are away and the encoder exists,
        so there is nothing to settle. */
-    if (ctx->state.headers_sent && ctx->state.initialized) {
+    if (ctx->state->headers_sent && ctx->state->initialized) {
         return NGX_HTTP_ZSTD_OK;
     }
 
@@ -1074,15 +1089,15 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
        soon as the body answers the only question zstd_min_length
        asks - is it at least that big. A flush marker means something
        downstream is waiting, so decide immediately and compress. */
-    if (!ctx->state.headers_sent) {
+    if (!ctx->state->headers_sent) {
         conf = ngx_http_get_module_loc_conf(
             ctx->request, ngx_http_zstd_filter_module);
 
         if (complete) {
-            ctx->state.accepted_for_compression =
+            ctx->state->accepted_for_compression =
                 (pending >= (size_t) conf->min_length);
         } else if (urgent || pending >= (size_t) conf->min_length) {
-            ctx->state.accepted_for_compression = 1;
+            ctx->state->accepted_for_compression = 1;
         } else {
             *rc = NGX_OK;
             return NGX_HTTP_ZSTD_DEFER;
@@ -1108,7 +1123,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
             return NGX_HTTP_ZSTD_ERROR;
         }
 
-        if (!ctx->state.accepted_for_compression) {
+        if (!ctx->state->accepted_for_compression) {
             /* Pass the held input through untouched. */
             link    = ctx->in;
             ctx->in = NULL;
@@ -1124,12 +1139,12 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
     /* Choosing the encoder window costs memory that scales with the
        window, so when the response size is unknown it is worth
        waiting a moment to see if the whole thing turns up. */
-    if (!ctx->state.initialized) {
+    if (!ctx->state->initialized) {
         if (complete) {
             if (ctx->content_length < 0) {
                 ctx->content_length = (off_t) pending;
             }
-        } else if (!ctx->state.caller_wants_output && !urgent &&
+        } else if (!ctx->state->caller_wants_output && !urgent &&
                    ctx->content_length < 0 &&
                    pending < NGX_HTTP_ZSTD_MAX_HELD_INPUT) {
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP,
@@ -1155,7 +1170,7 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
     ngx_log_t            *log;
     size_t                zrc;
 
-    if (ctx->state.initialized) {
+    if (ctx->state->initialized) {
         return NGX_OK;
     }
 
@@ -1181,8 +1196,8 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
 
     log = r->connection->log;
 
-    ctx->z.cctx = ZSTD_createCCtx_advanced(zmem);
-    if (ctx->z.cctx == NULL) {
+    ctx->zstd->cctx = ZSTD_createCCtx_advanced(zmem);
+    if (ctx->zstd->cctx == NULL) {
         ngx_log_error(
             NGX_LOG_ALERT, log, 0, "OOM / ZSTD_createCCtx_advanced");
 
@@ -1190,7 +1205,7 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
     }
 
     zrc = ZSTD_CCtx_setParameter(
-        ctx->z.cctx, ZSTD_c_compressionLevel, (int) conf->level);
+        ctx->zstd->cctx, ZSTD_c_compressionLevel, (int) conf->level);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
             "ZSTD_CCtx_setParameter(compressionLevel, %i) failed: %s",
@@ -1210,7 +1225,7 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
        allocation either way. So the ceiling is all this has to set,
        and the pledge below does the rest. */
     zrc = ZSTD_CCtx_setParameter(
-        ctx->z.cctx, ZSTD_c_windowLog, (int) conf->window_bits);
+        ctx->zstd->cctx, ZSTD_c_windowLog, (int) conf->window_bits);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
             "ZSTD_CCtx_setParameter(windowLog, %uz) failed: %s",
@@ -1223,7 +1238,8 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
        core, so a per-request thread pool would only oversubscribe -
        see PORTING.md. 0 is the library default, set explicitly so a
        vendored update cannot change it under us. */
-    zrc = ZSTD_CCtx_setParameter(ctx->z.cctx, ZSTD_c_nbWorkers, 0);
+    zrc =
+        ZSTD_CCtx_setParameter(ctx->zstd->cctx, ZSTD_c_nbWorkers, 0);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
             "ZSTD_CCtx_setParameter(nbWorkers, 0) failed: %s",
@@ -1259,7 +1275,7 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
        then rejects. */
     if (ctx->content_length >= 0) {
         zrc = ZSTD_CCtx_setPledgedSrcSize(
-            ctx->z.cctx, (uint64_t) ctx->content_length);
+            ctx->zstd->cctx, (uint64_t) ctx->content_length);
         if (ZSTD_isError(zrc)) {
             ngx_log_error(NGX_LOG_ALERT, log, 0,
                 "ZSTD_CCtx_setPledgedSrcSize(%O) failed: %s",
@@ -1281,8 +1297,8 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
            a library that merely happens to be older, and failing
            loudly beats every stream quietly costing three times the
            memory it should. */
-        zrc = ZSTD_CCtx_setParameter(ctx->z.cctx, ZSTD_c_srcSizeHint,
-            NGX_HTTP_ZSTD_SRC_SIZE_HINT);
+        zrc = ZSTD_CCtx_setParameter(ctx->zstd->cctx,
+            ZSTD_c_srcSizeHint, NGX_HTTP_ZSTD_SRC_SIZE_HINT);
         if (ZSTD_isError(zrc)) {
             ngx_log_error(NGX_LOG_ALERT, log, 0,
                 "ZSTD_CCtx_setParameter(srcSizeHint, %d) failed: %s",
@@ -1300,7 +1316,7 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
     ctx->last_out = &ctx->out;
 
     /* Last, so that the flag means what it says. */
-    ctx->state.initialized = 1;
+    ctx->state->initialized = 1;
 
     /* The ceiling and the pledge, not the window zstd settles on:
        that is chosen from both when compression starts, and the
@@ -1333,14 +1349,14 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
         "http zstd filter");
 
-    if (ctx == NULL || ctx->state.closed || r->header_only) {
+    if (ctx == NULL || ctx->state->closed || r->header_only) {
         return ngx_http_next_body_filter(r, in);
     }
 
     /* Recorded before "in" is folded into ctx->in: ctx->in running
        dry says the filter has nothing left to compress, this says
        the caller brought nothing new. */
-    ctx->state.caller_wants_output = (in == NULL);
+    ctx->state->caller_wants_output = (in == NULL);
 
     if (in) {
         if (ngx_chain_add_copy(r->pool, &ctx->in, in) != NGX_OK) {
@@ -1422,7 +1438,7 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
                request pool to be destroyed is what keeps its memory
                from outliving the response - see PORTING.md section 1.
              */
-            if (ctx->state.frame_closed && ctx->busy == NULL) {
+            if (ctx->state->frame_closed && ctx->busy == NULL) {
                 ngx_http_zstd_filter_close(ctx);
             }
 
@@ -1503,9 +1519,9 @@ ngx_http_zstd_filter_cleanup(void *data)
        Normally the encoder is already gone:
        ngx_http_zstd_filter_close resets the field.
        This is the abort path. */
-    if (ctx->z.cctx != NULL) {
-        ZSTD_freeCCtx(ctx->z.cctx);
-        ctx->z.cctx = NULL;
+    if (ctx->zstd->cctx != NULL) {
+        ZSTD_freeCCtx(ctx->zstd->cctx);
+        ctx->zstd->cctx = NULL;
     }
 }
 
@@ -1513,7 +1529,7 @@ ngx_http_zstd_filter_cleanup(void *data)
 static void
 ngx_http_zstd_filter_close(ngx_http_zstd_ctx_t *ctx)
 {
-    ctx->state.closed = 1;
+    ctx->state->closed = 1;
 
     /* Closed means this instance owes the connection nothing, so the
        bit goes with it - left set it tells nginx output is still
