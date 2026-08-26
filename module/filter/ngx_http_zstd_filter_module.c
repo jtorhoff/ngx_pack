@@ -502,14 +502,13 @@ static ngx_http_output_body_filter_pt   ngx_http_next_body_filter;
 static ngx_int_t
 ngx_http_zstd_header_filter(ngx_http_request_t *r)
 {
-    ngx_http_zstd_conf_t *conf;
+    ngx_http_zstd_conf_t *cf;
     ngx_http_zstd_ctx_t  *ctx;
 
-    conf =
-        ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
+    cf = ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
 
     /* Filter only if enabled. */
-    if (!conf->enable) {
+    if (!cf->enable) {
         return ngx_http_next_header_filter(r);
     }
 
@@ -538,12 +537,12 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
 
     /* If response size is known, do not compress tiny responses. */
     if (r->headers_out.content_length_n != -1 &&
-        r->headers_out.content_length_n < conf->min_length) {
+        r->headers_out.content_length_n < cf->min_length) {
         return ngx_http_next_header_filter(r);
     }
 
     /* Compress only certain MIME-typed responses. */
-    if (ngx_http_test_content_type(r, &conf->types) == NULL) {
+    if (ngx_http_test_content_type(r, &cf->types) == NULL) {
         return ngx_http_next_header_filter(r);
     }
 
@@ -564,11 +563,13 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    /* Prepare the response's flags. */
     ctx->state = ngx_pcalloc(r->pool, sizeof(ngx_http_zstd_state_t));
     if (ctx->state == NULL) {
         return NGX_ERROR;
     }
 
+    /* Prepare what libzstd owns. */
     ctx->zstd = ngx_pcalloc(r->pool, sizeof(ngx_http_zstd_cctx_t));
     if (ctx->zstd == NULL) {
         return NGX_ERROR;
