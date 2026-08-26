@@ -502,13 +502,14 @@ static ngx_http_output_body_filter_pt   ngx_http_next_body_filter;
 static ngx_int_t
 ngx_http_zstd_header_filter(ngx_http_request_t *r)
 {
-    ngx_http_zstd_conf_t *cf;
+    ngx_http_zstd_conf_t *conf;
     ngx_http_zstd_ctx_t  *ctx;
 
-    cf = ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
+    conf = ngx_http_get_module_loc_conf(
+        r, ngx_http_zstd_filter_module);
 
     /* Filter only if enabled. */
-    if (!cf->enable) {
+    if (!conf->enable) {
         return ngx_http_next_header_filter(r);
     }
 
@@ -537,12 +538,12 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
 
     /* If response size is known, do not compress tiny responses. */
     if (r->headers_out.content_length_n != -1 &&
-        r->headers_out.content_length_n < cf->min_length) {
+        r->headers_out.content_length_n < conf->min_length) {
         return ngx_http_next_header_filter(r);
     }
 
     /* Compress only certain MIME-typed responses. */
-    if (ngx_http_test_content_type(r, &cf->types) == NULL) {
+    if (ngx_http_test_content_type(r, &conf->types) == NULL) {
         return ngx_http_next_header_filter(r);
     }
 
@@ -674,8 +675,8 @@ ngx_http_zstd_filter_get_buf(
         return NGX_OK;
     }
 
-    conf =
-        ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
+    conf = ngx_http_get_module_loc_conf(
+        r, ngx_http_zstd_filter_module);
     if ((ngx_int_t) ctx->buffers >= conf->buffers) {
         return NGX_DECLINED;
     }
@@ -844,8 +845,8 @@ ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
     zout.size = ctx->out_size;
     zout.pos  = 0;
 
-    zremaining =
-        ZSTD_compressStream2(ctx->zstd->cctx, &zout, &zin, zmode);
+    zremaining = ZSTD_compressStream2(
+        ctx->zstd->cctx, &zout, &zin, zmode);
     if (ZSTD_isError(zremaining)) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
             "ZSTD_compressStream2() failed: %s",
@@ -1174,8 +1175,9 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
     }
 
     r = ctx->request;
-    conf =
-        ngx_http_get_module_loc_conf(r, ngx_http_zstd_filter_module);
+
+    conf = ngx_http_get_module_loc_conf(
+        r, ngx_http_zstd_filter_module);
 
     /* Encoder memory is not owned by the pool, so arrange for it to
        be released even if the request is aborted mid-stream.
@@ -1237,8 +1239,8 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
        core, so a per-request thread pool would only oversubscribe -
        see PORTING.md. 0 is the library default, set explicitly so a
        vendored update cannot change it under us. */
-    zrc =
-        ZSTD_CCtx_setParameter(ctx->zstd->cctx, ZSTD_c_nbWorkers, 0);
+    zrc = ZSTD_CCtx_setParameter(
+        ctx->zstd->cctx, ZSTD_c_nbWorkers, 0);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
             "ZSTD_CCtx_setParameter(nbWorkers, 0) failed: %s",

@@ -144,8 +144,8 @@ ngx_http_zstd_check_accept_encoding(ngx_http_request_t *r)
         for (;;) {
             /* Bounded search, so a header without a terminating NUL
                can not be run off the end of. */
-            cursor =
-                ngx_strlcasestrn(cursor, end, token, token_len - 1);
+            cursor = ngx_strlcasestrn(
+                cursor, end, token, token_len - 1);
             if (cursor == NULL) {
                 break;
             }

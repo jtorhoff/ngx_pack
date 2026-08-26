@@ -95,8 +95,8 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    conf =
-        ngx_http_get_module_loc_conf(r, ngx_http_zstd_static_module);
+    conf = ngx_http_get_module_loc_conf(
+        r, ngx_http_zstd_static_module);
     if (conf->enable == NGX_HTTP_ZSTD_STATIC_OFF) {
         return NGX_DECLINED;
     }
@@ -301,8 +301,8 @@ ngx_http_zstd_static_init(ngx_conf_t *cf)
     ngx_http_core_main_conf_t *main_conf;
     ngx_http_handler_pt       *handler_slot;
 
-    main_conf =
-        ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+    main_conf = ngx_http_conf_get_module_main_conf(
+        cf, ngx_http_core_module);
 
     handler_slot = ngx_array_push(
         &main_conf->phases[NGX_HTTP_CONTENT_PHASE].handlers);

@@ -119,6 +119,20 @@ IndentWidth: 4
 InsertBraces: true
 KeepEmptyLinesAtTheStartOfBlocks: false
 MaxEmptyLinesToKeep: 2
+# LLVM's default of 2 makes breaking after "=" almost free, so a call
+# that will not fit gets split from its result rather than at its own
+# parentheses - "conf =" alone on a line, the call below it. Raising
+# it puts the break inside the argument list instead, where
+# AlignAfterOpenBracket above indents it one continuation width:
+#
+#     conf = ngx_http_get_module_loc_conf(
+#         r, ngx_http_zstd_filter_module);
+#
+# 100 is enough to move every call in the tree and no more. Higher
+# starts breaking member chains apart as well - measured at 300,
+# "ctx->request->connection" on one line and "->buffered" on the
+# next - which is worse than what it fixes.
+PenaltyBreakAssignment: 100
 PointerAlignment: Right
 SortIncludes: Never
 SpaceAfterCStyleCast: true
