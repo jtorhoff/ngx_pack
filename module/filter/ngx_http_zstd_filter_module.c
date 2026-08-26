@@ -203,21 +203,34 @@ typedef enum {
 /* What the body filter should do once ngx_http_zstd_filter_prepare
    has settled the decisions that come before the encoder.
 
-   The caller treats DEFER and REJECT alike - both end the call and
-   return "rc" - so they are separate for the reader rather than for
-   the control flow. */
+   Only OK carries on; the other three end the call and return "rc",
+   which every one of them sets. The caller therefore tests against
+   OK alone and does not branch on which of the three it got - they
+   are apart for the reader, and so that a future caller can tell a
+   response that was handed on from one that failed. */
 typedef enum {
     /* Carry on into the encoder loop. */
-    NGX_HTTP_ZSTD_ENCODE = 0,
+    NGX_HTTP_ZSTD_OK = 0,
     /* Not yet: too little of the body has arrived to answer the
        question zstd_min_length asks, or its size is still unknown
        and worth waiting a moment to learn before the encoder window
        is fixed. The input stays in ctx->in and a later call decides,
        so this may still end in compression. "rc" is NGX_OK. */
     NGX_HTTP_ZSTD_DEFER,
-    /* Settled, and not encoded here. "rc" holds what the body filter
-       should return. */
-    NGX_HTTP_ZSTD_REJECT
+    /* Settled, and not compressed: the response is too small to be
+       worth it, so the held input has already been handed to the
+       filters below untouched. "rc" is what that call returned, and
+       the response goes out intact - no "Content-Encoding" of ours
+       for the filters below to defer to, so gzip may still take it.
+     */
+    NGX_HTTP_ZSTD_PASS,
+
+    /* Settled, and failed: the encoder is closed and "rc" is
+       NGX_ERROR. Reached when committing the held headers fails, or
+       when a filter below replaced the response with a status - see
+       ngx_http_zstd_filter_prepare, which explains why that has to
+       become NGX_ERROR rather than travel as the status itself. */
+    NGX_HTTP_ZSTD_ERROR
 } ngx_http_zstd_prepare_e;
 
 /* The response's flags, in the order a request sets them: the header
@@ -1051,7 +1064,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
     /* The steady state: the headers are away and the encoder exists,
        so there is nothing to settle. */
     if (ctx->state.headers_sent && ctx->state.initialized) {
-        return NGX_HTTP_ZSTD_ENCODE;
+        return NGX_HTTP_ZSTD_OK;
     }
 
     pending = ngx_http_zstd_filter_pending_input(
@@ -1092,7 +1105,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
             ngx_http_zstd_filter_close(ctx);
 
             *rc = NGX_ERROR;
-            return NGX_HTTP_ZSTD_REJECT;
+            return NGX_HTTP_ZSTD_ERROR;
         }
 
         if (!ctx->state.accepted_for_compression) {
@@ -1104,7 +1117,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
                 ~NGX_HTTP_ZSTD_BUFFERED;
 
             *rc = ngx_http_next_body_filter(ctx->request, link);
-            return NGX_HTTP_ZSTD_REJECT;
+            return NGX_HTTP_ZSTD_PASS;
         }
     }
 
@@ -1128,13 +1141,12 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
         }
     }
 
-    return NGX_HTTP_ZSTD_ENCODE;
+    return NGX_HTTP_ZSTD_OK;
 }
 
 /* Initializes encoder, output chain and buffer, if necessary. */
 static ngx_int_t
-ngx_http_zstd_filter_ensure_stream_initialized(
-    ngx_http_zstd_ctx_t *ctx)
+ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
 {
     ngx_http_request_t   *r;
     ngx_http_zstd_conf_t *conf;
@@ -1345,13 +1357,11 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
        -Wconditional-uninitialized can see. */
     rc = NGX_ERROR;
 
-    if (ngx_http_zstd_filter_prepare(ctx, &rc) !=
-        NGX_HTTP_ZSTD_ENCODE) {
+    if (ngx_http_zstd_filter_prepare(ctx, &rc) != NGX_HTTP_ZSTD_OK) {
         return rc;
     }
 
-    if (ngx_http_zstd_filter_ensure_stream_initialized(ctx) !=
-        NGX_OK) {
+    if (ngx_http_zstd_filter_ensure_stream_init(ctx) != NGX_OK) {
         ngx_http_zstd_filter_close(ctx);
         return NGX_ERROR;
     }
@@ -1516,9 +1526,8 @@ ngx_http_zstd_filter_close(ngx_http_zstd_ctx_t *ctx)
        nothing to hand back, dropping them is the cleanup. Dropped
        rather than left stale so that a use after close faults instead
        of quietly writing into memory the pool still owns -
-       ensure_stream_initialized guards on "initialized", which close
-       does not reset. out_size goes too, to keep it coherent with
-       them.
+       ensure_stream_init guards on "initialized", which close does
+       not reset. out_size goes too, to keep it coherent with them.
 
        "busy" is dropped along with the rest, which is safe because
        nothing here owns those buffers any more:
