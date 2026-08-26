@@ -321,7 +321,7 @@ typedef struct {
 
        ZSTD_e_continue is 0, so ngx_pcalloc starts this right. */
     ZSTD_EndDirective repeat_mode;
-} ngx_http_zstd_ctx_zstd_t;
+} ngx_http_zstd_cctx_t;
 
 /* Instance context. Members follow the path a request takes through
    the module: the two sub-structs are allocated before there is
@@ -334,7 +334,7 @@ typedef struct {
 typedef struct {
     ngx_http_zstd_ctx_state_t *state;
 
-    ngx_http_zstd_ctx_zstd_t *zstd;
+    ngx_http_zstd_cctx_t *zstd;
 
     ngx_http_request_t *request;
 
@@ -570,8 +570,7 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    ctx->zstd =
-        ngx_pcalloc(r->pool, sizeof(ngx_http_zstd_ctx_zstd_t));
+    ctx->zstd = ngx_pcalloc(r->pool, sizeof(ngx_http_zstd_cctx_t));
     if (ctx->zstd == NULL) {
         return NGX_ERROR;
     }
