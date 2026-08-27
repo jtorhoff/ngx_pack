@@ -118,7 +118,7 @@ static ngx_http_pack_static_sibling_t
 
 #define NGX_HTTP_PACK_STATIC_NSIBLINGS                               \
     (sizeof(ngx_http_pack_static_siblings) /                         \
-        sizeof(ngx_http_pack_static_siblings[0]))
+        sizeof(ngx_http_pack_static_sibling_t))
 
 static ngx_int_t ngx_http_pack_static_handler(ngx_http_request_t *r);
 static void *ngx_http_pack_static_create_conf(ngx_conf_t *cf);
@@ -205,7 +205,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
     ngx_str_t                       path;
     size_t                          root_len;
     size_t                          reserved;
-    ngx_uint_t                      i;
+    ngx_uint_t                      idx;
     ngx_log_t                      *log;
     ngx_http_core_loc_conf_t       *core_conf;
     ngx_open_file_info_t            file_info;
@@ -247,8 +247,8 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
        last, so the reservation has to cover the widest of them rather
        than the first. */
     reserved = 0;
-    for (i = 0; i < NGX_HTTP_PACK_STATIC_NSIBLINGS; i++) {
-        member = &ngx_http_pack_static_siblings[i];
+    for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS; idx++) {
+        member = &ngx_http_pack_static_siblings[idx];
         if (member->ext.len > reserved) {
             reserved = member->ext.len;
         }
@@ -270,8 +270,8 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
     /* Where every candidate's suffix goes, one after another. */
     suffix = last;
     found  = NULL;
-    for (i = 0; i < NGX_HTTP_PACK_STATIC_NSIBLINGS; i++) {
-        member = &ngx_http_pack_static_siblings[i];
+    for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS; idx++) {
+        member = &ngx_http_pack_static_siblings[idx];
 
         if (!(conf->encodings & member->mask)) {
             continue;
