@@ -25,7 +25,7 @@ ngx_module_incs=
 ZSTD_COMMON_DIR="$ZSTD_MODULE_SRC_DIR/../common"
 ngx_module_name=ngx_http_zstd_static_module
 ngx_module_deps="$ZSTD_COMMON_DIR/ngx_http_pack_headers.h"
-ngx_module_srcs="$ZSTD_MODULE_SRC_DIR/ngx_http_pack_static_module.c"
+ngx_module_srcs="$ZSTD_MODULE_SRC_DIR/ngx_http_pack_static.c"
 ngx_module_libs=
 ngx_module_order=
 

@@ -307,7 +307,7 @@ Deliberate departures from the example:
 | --- | --- |
 | `module/common/ngx_http_pack_headers.h` | adapted and compiles under `-Wall -Werror`; encoding-agnostic, each module passes its own token — `"zstd"` here, giving `Content-Encoding: zstd` |
 | `module/filter/ngx_http_zstd_filter_module.c` | **implemented** — the architecture in §3, built and passing the full suite below |
-| `module/static/ngx_http_pack_static_module.c` | **implemented** — mechanical port, no encoder involved |
+| `module/static/ngx_http_pack_static.c` | **implemented** — mechanical port, no encoder involved |
 | `config`, `module/filter/config`, `module/static/config` | **implemented** — builds against the vendored `deps/zstd` submodule, statically |
 | `deps/zstd` | **submodule, pinned at `v1.5.7`** — see §7 for why it's vendored rather than taken from the system |
 | `script/build.sh` | **implemented** — was referenced by `run-tests.sh` and CI but missing from the initial commit; now builds `deps/zstd` before nginx |
