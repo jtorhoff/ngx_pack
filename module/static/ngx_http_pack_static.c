@@ -500,6 +500,14 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    /* Offers byte ranges over the sibling, which the range filter
+       declines to do for anyone who has not said so. The ranges count
+       in the bytes actually sent - the encoded ones - which is what a
+       client resuming an interrupted download of this response asks
+       for. Both of nginx's own file handlers set it here; without it
+       a Range request is answered with the whole body and a 200. */
+    r->allow_ranges = 1;
+
     return ngx_http_pack_static_send(r, &path, &file_info);
 }
 
