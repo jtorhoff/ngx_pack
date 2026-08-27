@@ -20,7 +20,7 @@
 #     MaxEmptyLinesToKeep preserves two where they are written but
 #     will not insert them, so that spacing is maintained by hand.
 #
-# And three deliberate departures, as opposed to those two gaps.
+# And two deliberate departures, as opposed to those two gaps.
 #
 # Runs of assignments are aligned into a column, which nginx does not
 # do. AlignConsecutiveAssignments groups them exactly as the
@@ -49,20 +49,25 @@
 # beneath it. Neither option touches a call that already fits, so
 # what they change is only where an unavoidable wrap falls.
 #
-# And an array of structs has its fields aligned into columns, which
-# nginx does not do either. AlignArrayOfStructures turns the lookup
-# tables into something that reads as a table:
+# A trailing comma keeps a braced list exploded. clang-format has no
+# option to insert one in C - InsertTrailingCommas is JavaScript only,
+# and is refused outright unless bin packing is off - but it does
+# honour one that is already written, the way black's magic trailing
+# comma does:
 #
-#     {ngx_string("br"),   NGX_HTTP_PACK_STATIC_ENCODING_BR  },
-#     {ngx_string("gzip"), NGX_HTTP_PACK_STATIC_ENCODING_GZIP},
+#     static pair_t with[] = {
+#         {1, 2},
+#         {3, 4},        <- stays one row per line
+#     };
 #
-# The catch is that the option ignores ColumnLimit, and the
-# ngx_command_t tables have rows far too wide to align - left to it,
-# clang-format pads them out to 96 columns and scatters the fields
-# of a row across the wraps. Those tables are therefore wrapped in
-# "/* clang-format off */" and kept by hand. Any new ngx_command_t
-# table needs the same treatment; nothing here can apply it for you,
-# because the option is all or nothing across the file.
+#     static pair_t without[] = {{1, 2}, {3, 4}};
+#
+# So a table that should read as a table gets a trailing comma on its
+# last row, and needs nothing from this file. Only a list clang-format
+# would still rewrite for some other reason - the flag arguments in
+# ngx_http_pack_static_commands are written one context per line,
+# which it would pack back together - needs a
+# "/* clang-format off */" fence.
 #
 # Local declarations are ordered by where each name is first assigned
 # rather than grouped by type. clang-format has no say in that - it
@@ -81,9 +86,6 @@
 ---
 BasedOnStyle: LLVM
 AlignAfterOpenBracket: DontAlign
-# Left rather than Right: Right pads before each field, so a short
-# name in a column of long ones is pushed away from its own brace.
-AlignArrayOfStructures: Left
 AlignConsecutiveAssignments:
   Enabled:          true
   # Same grouping rules as the declarations below: a blank line or a
