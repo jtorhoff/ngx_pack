@@ -4,7 +4,7 @@
  */
 
 /* libFuzzer target for the Accept-Encoding parser in
- * module/common/ngx_http_zstd_headers.h.
+ * module/common/ngx_http_pack_headers.h.
  *
  * That parser is the only code in this repository that reads attacker
  * controlled bytes. It walks the header with ngx_strlcasestrn,
@@ -42,7 +42,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-#include "../../module/common/ngx_http_zstd_headers.h"
+#include "../../module/common/ngx_http_pack_headers.h"
 
 /* ngx_string.c is linked for ngx_strlcasestrn and refers to these.
    Nothing on the path under test reaches them; they exist to satisfy
@@ -68,6 +68,7 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     ngx_http_request_t r;
     ngx_table_elt_t    accept_encoding;
+    ngx_str_t          encoding;
     u_char            *value;
 
     /* An nginx header value is a length and a pointer, with no
@@ -95,7 +96,11 @@ LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     r.http_version               = NGX_HTTP_VERSION_11;
     r.headers_in.accept_encoding = &accept_encoding;
 
-    ngx_http_zstd_claim_request(&r);
+    /* The parser is generic over the encoding now; "zstd" is what
+       the filter and the static module both pass. */
+    ngx_str_set(&encoding, "zstd");
+
+    ngx_http_pack_claim_request(&r, &encoding);
 
     free(value);
 

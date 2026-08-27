@@ -53,7 +53,7 @@ ZSTD_H="$zstd/lib/zstd.h"
 # Shared with the static module. Listed as a dependency so that
 # editing it actually rebuilds this module.
 ZSTD_COMMON_DIR="$ZSTD_MODULE_SRC_DIR/../common"
-ZSTD_COMMON_H="$ZSTD_COMMON_DIR/ngx_http_zstd_headers.h"
+ZSTD_COMMON_H="$ZSTD_COMMON_DIR/ngx_http_pack_headers.h"
 
 ngx_module_incs="$zstd/lib"
 ngx_module_deps="$ZSTD_H $ZSTD_COMMON_H"

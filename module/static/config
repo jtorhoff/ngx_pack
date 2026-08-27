@@ -24,8 +24,8 @@ ngx_module_incs=
 # editing it actually rebuilds this module.
 ZSTD_COMMON_DIR="$ZSTD_MODULE_SRC_DIR/../common"
 ngx_module_name=ngx_http_zstd_static_module
-ngx_module_deps="$ZSTD_COMMON_DIR/ngx_http_zstd_headers.h"
-ngx_module_srcs="$ZSTD_MODULE_SRC_DIR/ngx_http_zstd_static_module.c"
+ngx_module_deps="$ZSTD_COMMON_DIR/ngx_http_pack_headers.h"
+ngx_module_srcs="$ZSTD_MODULE_SRC_DIR/ngx_http_pack_static_module.c"
 ngx_module_libs=
 ngx_module_order=
 
@@ -35,7 +35,7 @@ ngx_module_order=
 # auto/modules already defines it, conditionally, when the gzip
 # filter is actually configured in; forcing it on unconditionally -
 # which is what ngx_brotli's equivalent config does - would make
-# ngx_http_zstd_headers.h's "#if (NGX_HTTP_GZIP)" branch reference
+# ngx_http_pack_headers.h's "#if (NGX_HTTP_GZIP)" branch reference
 # r->gzip_vary on a build where ngx_http_request_t never declared
 # that field, i.e. --without-http_gzip_module. Nobody notices in
 # practice because gzip defaults to built-in, which is exactly why

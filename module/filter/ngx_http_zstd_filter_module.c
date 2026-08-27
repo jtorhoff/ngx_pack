@@ -28,8 +28,10 @@
 #define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
 
-#include "../common/ngx_http_zstd_headers.h"
+#include "../common/ngx_http_pack_headers.h"
 
+
+static ngx_str_t ENCODING = ngx_string("zstd");
 
 /* Tells nginx to wait for output.
    Zstandard and GZip never stack, i.e. when one of them sets
@@ -549,12 +551,12 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
 
     /* Before the Accept-Encoding test, not after: the response varies
        whether or not this particular client is served Zstandard. */
-    if (ngx_http_zstd_set_vary(r) != NGX_OK) {
+    if (ngx_http_pack_set_vary(r) != NGX_OK) {
         return NGX_ERROR;
     }
 
     /* Check if client supports zstd encoding. */
-    if (ngx_http_zstd_claim_request(r) != NGX_OK) {
+    if (ngx_http_pack_claim_request(r, &ENCODING) != NGX_OK) {
         return ngx_http_next_header_filter(r);
     }
 
@@ -626,7 +628,7 @@ ngx_http_zstd_filter_send_headers(ngx_http_zstd_ctx_t *ctx)
     }
 
     /* Tell the filters below that the body is compressed. */
-    if (ngx_http_zstd_set_content_encoding(r) != NGX_OK) {
+    if (ngx_http_pack_set_encoding(r, &ENCODING) != NGX_OK) {
         return NGX_ERROR;
     }
 

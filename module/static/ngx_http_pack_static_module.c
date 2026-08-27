@@ -9,8 +9,10 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-#include "../common/ngx_http_zstd_headers.h"
+#include "../common/ngx_http_pack_headers.h"
 
+
+static ngx_str_t ENCODING = ngx_string("zstd");
 
 enum {
     NGX_HTTP_ZSTD_STATIC_OFF = 0,
@@ -108,10 +110,10 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
            when this handler declines: what varies is the resource,
            not this one request. "always" needs none of it, serving
            the same bytes to everyone. */
-        if (ngx_http_zstd_set_vary(r) != NGX_OK) {
+        if (ngx_http_pack_set_vary(r) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
-        if (ngx_http_zstd_claim_request(r) != NGX_OK) {
+        if (ngx_http_pack_claim_request(r, &ENCODING) != NGX_OK) {
             return NGX_DECLINED;
         }
     }
@@ -228,7 +230,7 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     }
 
     /* Set "Content-Encoding" header. */
-    if (ngx_http_zstd_set_content_encoding(r) != NGX_OK) {
+    if (ngx_http_pack_set_encoding(r, &ENCODING) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
