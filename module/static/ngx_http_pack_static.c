@@ -15,7 +15,7 @@
 enum {
     NGX_HTTP_PACK_STATIC_OFF = 0,
     NGX_HTTP_PACK_STATIC_ON,
-    NGX_HTTP_PACK_STATIC_ALWAYS
+    NGX_HTTP_PACK_STATIC_ALWAYS,
 };
 
 /* Which pre-compressed siblings the module may serve. One bit each,
@@ -31,7 +31,7 @@ enum {
 enum {
     NGX_HTTP_PACK_STATIC_ENCODING_BR   = 0x0001,
     NGX_HTTP_PACK_STATIC_ENCODING_GZIP = 0x0002,
-    NGX_HTTP_PACK_STATIC_ENCODING_ZSTD = 0x0004
+    NGX_HTTP_PACK_STATIC_ENCODING_ZSTD = 0x0004,
 };
 
 typedef struct {
@@ -40,17 +40,41 @@ typedef struct {
 } ngx_http_pack_static_conf_t;
 
 static ngx_conf_enum_t ngx_http_pack_static[] = {
-    {ngx_string("off"),    .value = NGX_HTTP_PACK_STATIC_OFF   },
-    {ngx_string("on"),     .value = NGX_HTTP_PACK_STATIC_ON    },
-    {ngx_string("always"), .value = NGX_HTTP_PACK_STATIC_ALWAYS},
-    {ngx_null_string,      0                                   }
+    {
+        .name  = ngx_string("off"),
+        .value = NGX_HTTP_PACK_STATIC_OFF,
+    },
+    {
+        .name  = ngx_string("on"),
+        .value = NGX_HTTP_PACK_STATIC_ON,
+    },
+    {
+        .name  = ngx_string("always"),
+        .value = NGX_HTTP_PACK_STATIC_ALWAYS,
+    },
+    {
+        .name  = ngx_null_string,
+        .value = 0,
+    },
 };
 
 static ngx_conf_bitmask_t ngx_http_pack_static_encodings[] = {
-    {ngx_string("br"),   NGX_HTTP_PACK_STATIC_ENCODING_BR  },
-    {ngx_string("gzip"), NGX_HTTP_PACK_STATIC_ENCODING_GZIP},
-    {ngx_string("zstd"), NGX_HTTP_PACK_STATIC_ENCODING_ZSTD},
-    {ngx_null_string,    0                                 }
+    {
+        .name = ngx_string("br"),
+        .mask = NGX_HTTP_PACK_STATIC_ENCODING_BR,
+    },
+    {
+        .name = ngx_string("gzip"),
+        .mask = NGX_HTTP_PACK_STATIC_ENCODING_GZIP,
+    },
+    {
+        .name = ngx_string("zstd"),
+        .mask = NGX_HTTP_PACK_STATIC_ENCODING_ZSTD,
+    },
+    {
+        .name = ngx_null_string,
+        .mask = 0,
+    },
 };
 
 /* One row per encoding the module knows: the bit that selects it,
@@ -68,19 +92,28 @@ static ngx_conf_bitmask_t ngx_http_pack_static_encodings[] = {
    are separate because the directive needs an ngx_conf_bitmask_t and
    that type has nowhere to put a suffix. */
 typedef struct {
-    ngx_uint_t bit;
+    ngx_uint_t mask;
     ngx_str_t  name;
-    ngx_str_t  extension;
+    ngx_str_t  ext;
 } ngx_http_pack_static_sibling_t;
 
 static ngx_http_pack_static_sibling_t
     ngx_http_pack_static_siblings[] = {
-        {NGX_HTTP_PACK_STATIC_ENCODING_BR,   ngx_string("br"),
-         ngx_string(".br") },
-        {NGX_HTTP_PACK_STATIC_ENCODING_ZSTD, ngx_string("zstd"),
-         ngx_string(".zst")},
-        {NGX_HTTP_PACK_STATIC_ENCODING_GZIP, ngx_string("gzip"),
-         ngx_string(".gz") }
+        {
+            .mask = NGX_HTTP_PACK_STATIC_ENCODING_BR,
+            .name = ngx_string("br"),
+            .ext  = ngx_string(".br"),
+        },
+        {
+            .mask = NGX_HTTP_PACK_STATIC_ENCODING_ZSTD,
+            .name = ngx_string("zstd"),
+            .ext  = ngx_string(".zst"),
+        },
+        {
+            .mask = NGX_HTTP_PACK_STATIC_ENCODING_GZIP,
+            .name = ngx_string("gzip"),
+            .ext  = ngx_string(".gz"),
+        },
 };
 
 #define NGX_HTTP_PACK_STATIC_NSIBLINGS                               \
@@ -93,30 +126,41 @@ static char *ngx_http_pack_static_merge_conf(
     ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_pack_static_init(ngx_conf_t *cf);
 
-/* Kept by hand: AlignArrayOfStructures would pad these rows past
-   the column limit. See .clang-format. */
+/* Fenced for the contexts below, which are written one per line so
+   that adding or dropping one is a one-line diff. clang-format would
+   pack them back together; the trailing commas that hold the tables
+   above in shape do not reach inside an expression. */
 /* clang-format off */
 static ngx_command_t ngx_http_pack_static_commands[] = {
-    {ngx_string("pack_static"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+    {
+        ngx_string("pack_static"),
+        NGX_HTTP_MAIN_CONF    |
+            NGX_HTTP_SRV_CONF |
+            NGX_HTTP_LOC_CONF |
             NGX_CONF_TAKE1,
-        ngx_conf_set_enum_slot, NGX_HTTP_LOC_CONF_OFFSET,
+        ngx_conf_set_enum_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_pack_static_conf_t, enable),
-        &ngx_http_pack_static},
-
-    /* 1MORE rather than TAKE123: the count is already bounded by the
-       mask having three entries, and a repeated one is a warning
-       from ngx_conf_set_bitmask_slot rather than an error, so a
-       fourth argument is caught either way - with a message naming
-       the offending value instead of counting arguments. */
-    {ngx_string("pack_static_encodings"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+        &ngx_http_pack_static,
+    },
+    /* 1MORE rather than TAKE123: the mask has three entries, so the
+       count is already bounded, and a repeated value is a warning
+       from ngx_conf_set_bitmask_slot rather than an error. A fourth
+       argument is caught either way, with a message naming the
+       offending value instead of counting arguments. */
+    {
+        ngx_string("pack_static_encodings"),
+        NGX_HTTP_MAIN_CONF    |
+            NGX_HTTP_SRV_CONF |
+            NGX_HTTP_LOC_CONF |
             NGX_CONF_1MORE,
-        ngx_conf_set_bitmask_slot, NGX_HTTP_LOC_CONF_OFFSET,
+        ngx_conf_set_bitmask_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_pack_static_conf_t, encodings),
-        &ngx_http_pack_static_encodings},
-
-    ngx_null_command};
+        &ngx_http_pack_static_encodings,
+    },
+    ngx_null_command,
+};
 /* clang-format on */
 
 static ngx_http_module_t ngx_http_pack_static_module_ctx = {
@@ -133,7 +177,9 @@ static ngx_http_module_t ngx_http_pack_static_module_ctx = {
     ngx_http_pack_static_merge_conf   /* merge location conf */
 };
 
-ngx_module_t ngx_http_pack_static_module = {NGX_MODULE_V1,
+ngx_module_t ngx_http_pack_static_module = {
+    NGX_MODULE_V1,
+
     &ngx_http_pack_static_module_ctx, /* module context */
     ngx_http_pack_static_commands,    /* module directives */
     NGX_HTTP_MODULE,                  /* module type */
@@ -144,19 +190,21 @@ ngx_module_t ngx_http_pack_static_module = {NGX_MODULE_V1,
     NULL,                             /* exit thread */
     NULL,                             /* exit process */
     NULL,                             /* exit master */
-    NGX_MODULE_V1_PADDING};
+
+    NGX_MODULE_V1_PADDING,
+};
 
 static ngx_int_t
 ngx_http_pack_static_handler(ngx_http_request_t *r)
 {
     ngx_http_pack_static_conf_t    *conf;
-    ngx_http_pack_static_sibling_t *sibling;
+    ngx_http_pack_static_sibling_t *member;
     ngx_http_pack_static_sibling_t *found;
     u_char                         *last;
     u_char                         *suffix;
     ngx_str_t                       path;
     size_t                          root_len;
-    size_t                          reserve;
+    size_t                          reserved;
     ngx_uint_t                      i;
     ngx_log_t                      *log;
     ngx_http_core_loc_conf_t       *core_conf;
@@ -198,11 +246,11 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
        is mapped once and each candidate's suffix is written over the
        last, so the reservation has to cover the widest of them rather
        than the first. */
-    reserve = 0;
+    reserved = 0;
     for (i = 0; i < NGX_HTTP_PACK_STATIC_NSIBLINGS; i++) {
-        if (ngx_http_pack_static_siblings[i].extension.len >
-            reserve) {
-            reserve = ngx_http_pack_static_siblings[i].extension.len;
+        member = &ngx_http_pack_static_siblings[i];
+        if (member->ext.len > reserved) {
+            reserved = member->ext.len;
         }
     }
 
@@ -214,32 +262,30 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
        it returned would overshoot the string and the allocation.
        ngx_cpystrn returns the terminating zero it wrote, which is
        that pointer. */
-    last = ngx_http_map_uri_to_path(r, &path, &root_len, reserve);
+    last = ngx_http_map_uri_to_path(r, &path, &root_len, reserved);
     if (last == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     /* Where every candidate's suffix goes, one after another. */
     suffix = last;
-
-    found = NULL;
+    found  = NULL;
     for (i = 0; i < NGX_HTTP_PACK_STATIC_NSIBLINGS; i++) {
-        sibling = &ngx_http_pack_static_siblings[i];
+        member = &ngx_http_pack_static_siblings[i];
 
-        if (!(conf->encodings & sibling->bit)) {
+        if (!(conf->encodings & member->mask)) {
             continue;
         }
 
-        /* "always" serves whatever sibling is on disk whatever the
-           request said about encodings, so only "on" has to ask. */
+        /* "always" serves whatever is on disk to everyone, so only
+           "on" has to ask whether this client takes the encoding. */
         if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
-            ngx_http_pack_claim_request(r, &sibling->name) !=
-                NGX_OK) {
+            ngx_http_pack_claim_request(r, &member->name) != NGX_OK) {
             continue;
         }
 
-        last     = ngx_cpystrn(suffix, sibling->extension.data,
-                sibling->extension.len + 1);
+        last = ngx_cpystrn(
+            suffix, member->ext.data, member->ext.len + 1);
         path.len = last - path.data;
 
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
@@ -315,7 +361,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
         }
 #endif
 
-        found = sibling;
+        found = member;
         break;
     }
 
@@ -325,9 +371,17 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    /* Discard the request body, then describe the response. */
+    /* Records that the document root has been shown to exist, which
+       opening the sibling above just did. Its one reader is the log
+       module, which stats the root before writing an access_log whose
+       path contains a variable; the flag saves it that stat.
+
+       Not simply 1: an error page can redirect the request into a
+       location with a different root, and what was proven about this
+       one says nothing about that one. */
     r->root_tested = !r->error_page;
 
+    /* Discard the request body, then describe the response. */
     rc = ngx_http_discard_request_body(r);
     if (rc != NGX_OK) {
         return rc;
@@ -339,13 +393,11 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
     r->headers_out.content_length_n   = file_info.size;
     r->headers_out.last_modified_time = file_info.mtime;
 
-    rc = ngx_http_set_etag(r);
-    if (rc != NGX_OK) {
+    if (ngx_http_set_etag(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    rc = ngx_http_set_content_type(r);
-    if (rc != NGX_OK) {
+    if (ngx_http_set_content_type(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
