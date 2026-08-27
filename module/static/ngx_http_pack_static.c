@@ -401,15 +401,43 @@ ngx_http_pack_static_create_conf(ngx_conf_t *cf)
     return conf;
 }
 
+/* Whether this pair leaves the served encoding up to whichever
+   sibling happens to exist. "always" skips the Accept-Encoding test,
+   so with more than one encoding configured the client gets whatever
+   the probe reaches first, with no say in it.
+
+   "n & (n - 1)" clears the lowest set bit: what is left is non-zero
+   only if some other bit was set too. It reads an unset mask, zero,
+   as not ambiguous, which is what the caller below wants of a parent
+   that named no encodings. */
+static ngx_uint_t
+ngx_http_pack_static_is_ambiguous(
+    ngx_uint_t enable, ngx_uint_t encodings)
+{
+    return enable == NGX_HTTP_PACK_STATIC_ALWAYS &&
+           (encodings & (encodings - 1)) != 0;
+}
+
 static char *
 ngx_http_pack_static_merge_conf(
     ngx_conf_t *cf, void *parent, void *child)
 {
     ngx_http_pack_static_conf_t *prev;
     ngx_http_pack_static_conf_t *conf;
+    ngx_uint_t                   inherited;
 
     prev = parent;
     conf = child;
+
+    /* Whether the block above was already ambiguous, so that the
+       warning below lands where the combination first takes effect
+       rather than repeating down every block that inherits it.
+       nginx runs a merge per location, and the enclosing http{} is
+       only ever a parent - it is never passed as a child - so asking
+       "did this block write it" would miss a setting made there
+       entirely. Asking what the parent already meant does not. */
+    inherited = ngx_http_pack_static_is_ambiguous(
+        prev->enable, prev->encodings);
 
     ngx_conf_merge_uint_value(
         conf->enable, prev->enable, NGX_HTTP_PACK_STATIC_OFF);
@@ -418,6 +446,17 @@ ngx_http_pack_static_merge_conf(
         NGX_HTTP_PACK_STATIC_ENCODING_BR |
             NGX_HTTP_PACK_STATIC_ENCODING_GZIP |
             NGX_HTTP_PACK_STATIC_ENCODING_ZSTD);
+
+    /* Warned about rather than rejected, since the combination is
+       servable - a location whose clients are all known to take the
+       same encoding is a fair use of it. */
+    if (!inherited && ngx_http_pack_static_is_ambiguous(
+                          conf->enable, conf->encodings)) {
+        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+            "\"pack_static always\" with more than one encoding in "
+            "\"pack_static_encodings\" serves whichever sibling is "
+            "found first to every client, whatever it accepts");
+    }
 
     return NGX_CONF_OK;
 }
