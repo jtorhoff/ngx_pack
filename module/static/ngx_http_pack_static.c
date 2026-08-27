@@ -37,7 +37,7 @@ static char *ngx_http_pack_static_merge_conf(
 static ngx_int_t ngx_http_pack_static_init(ngx_conf_t *cf);
 
 static ngx_command_t ngx_http_pack_static_commands[] = {
-    {ngx_string("zstd_static"),
+    {ngx_string("pack_static"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_CONF_TAKE1,
         ngx_conf_set_enum_slot, NGX_HTTP_LOC_CONF_OFFSET,

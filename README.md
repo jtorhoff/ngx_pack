@@ -165,9 +165,9 @@ without creating an encoder. The request costs neither compression CPU nor
 encoder memory, so prefer it wherever the content is static.
 
 
-### `zstd_static`
+### `pack_static`
 
-- **syntax**: `zstd_static on|off|always`
+- **syntax**: `pack_static on|off|always`
 - **default**: `off`
 - **context**: `http`, `server`, `location`
 

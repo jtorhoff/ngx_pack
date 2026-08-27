@@ -148,7 +148,7 @@ def locate_decoder():
 def locate_encoder():
     """Returns a callable bytes->bytes, or None if zstd cannot be encoded.
 
-    Only the zstd_static tests need this: they have to lay down a real
+    Only the pack_static tests need this: they have to lay down a real
     ".zst" sibling for the module to find, and nginx will not make one for
     them.
     """
@@ -284,7 +284,7 @@ def build_fixtures(work):
 
     fixtures = {name: content.encode() for name, content in files.items()}
 
-    # A pre-compressed sibling for zstd_static to find. Written only when an
+    # A pre-compressed sibling for pack_static to find. Written only when an
     # encoder is available; the tests skip otherwise.
     encode = locate_encoder()
     if encode:
@@ -294,7 +294,7 @@ def build_fixtures(work):
         with open(os.path.join(html, "precompressed.html.zst"), "wb") as handle:
             handle.write(encode(precompressed))
         fixtures["precompressed.html"] = precompressed
-        # No ".zst" sibling, so zstd_static has to fall through to it.
+        # No ".zst" sibling, so pack_static has to fall through to it.
         with open(os.path.join(html, "plain_only.html"), "wb") as handle:
             handle.write(precompressed)
         fixtures["plain_only.html"] = precompressed
@@ -982,7 +982,7 @@ def check_corpus_roundtrip(ctx, name, path=None):
     check(ctx.decode(body) == original, f"{path}: decoded body differs")
 
 
-@test("zstd_static serves a pre-compressed sibling", needs_decoder=True)
+@test("pack_static serves a pre-compressed sibling", needs_decoder=True)
 def test_static_module_serves_zst(ctx):
     if "precompressed.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the .zst fixture")
@@ -991,7 +991,7 @@ def test_static_module_serves_zst(ctx):
     check(status == 200, f"expected 200, got {status}")
     check(
         headers.get("content-encoding") == "zstd",
-        f"zstd_static did not serve the .zst sibling; headers: {headers!r}",
+        f"pack_static did not serve the .zst sibling; headers: {headers!r}",
     )
     check(
         ctx.decode(body) == ctx.fixtures["precompressed.html"],
@@ -1007,7 +1007,7 @@ def test_static_module_serves_zst(ctx):
     )
 
 
-@test("zstd_static declines a client that will not take zstd")
+@test("pack_static declines a client that will not take zstd")
 def test_static_module_declines_plain_client(ctx):
     if "precompressed.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the .zst fixture")
@@ -1026,7 +1026,7 @@ def test_static_module_declines_plain_client(ctx):
     )
 
 
-@test("zstd_static falls through when there is no .zst sibling")
+@test("pack_static falls through when there is no .zst sibling")
 def test_static_module_without_sibling(ctx):
     if "plain_only.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the fixtures")
