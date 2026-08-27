@@ -423,6 +423,9 @@ static ngx_conf_num_bounds_t ngx_http_zstd_buffers_bounds = {
 static ngx_conf_post_handler_pt ngx_http_zstd_parse_window_p =
     ngx_http_zstd_parse_window;
 
+/* Kept by hand: AlignArrayOfStructures would pad these rows past
+   the column limit. See .clang-format. */
+/* clang-format off */
 static ngx_command_t ngx_http_zstd_filter_commands[] = {
     {ngx_string("zstd"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -465,6 +468,7 @@ static ngx_command_t ngx_http_zstd_filter_commands[] = {
         offsetof(ngx_http_zstd_conf_t, min_length), NULL},
 
     ngx_null_command};
+/* clang-format on */
 
 /* Module context hooks. */
 static ngx_http_module_t ngx_http_zstd_filter_module_ctx = {

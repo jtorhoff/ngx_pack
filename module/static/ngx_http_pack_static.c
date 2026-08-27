@@ -40,16 +40,18 @@ typedef struct {
 } ngx_http_pack_static_conf_t;
 
 static ngx_conf_enum_t ngx_http_pack_static[] = {
-    {ngx_string("off"), NGX_HTTP_PACK_STATIC_OFF},
-    {ngx_string("on"), NGX_HTTP_PACK_STATIC_ON},
-    {ngx_string("always"), NGX_HTTP_PACK_STATIC_ALWAYS},
-    {ngx_null_string, 0}};
+    {ngx_string("off"),    .value = NGX_HTTP_PACK_STATIC_OFF   },
+    {ngx_string("on"),     .value = NGX_HTTP_PACK_STATIC_ON    },
+    {ngx_string("always"), .value = NGX_HTTP_PACK_STATIC_ALWAYS},
+    {ngx_null_string,      0                                   }
+};
 
 static ngx_conf_bitmask_t ngx_http_pack_static_encodings[] = {
-    {ngx_string("br"), NGX_HTTP_PACK_STATIC_ENCODING_BR},
+    {ngx_string("br"),   NGX_HTTP_PACK_STATIC_ENCODING_BR  },
     {ngx_string("gzip"), NGX_HTTP_PACK_STATIC_ENCODING_GZIP},
     {ngx_string("zstd"), NGX_HTTP_PACK_STATIC_ENCODING_ZSTD},
-    {ngx_null_string, 0}};
+    {ngx_null_string,    0                                 }
+};
 
 /* One row per encoding the module knows: the bit that selects it,
    the token it goes by in Accept-Encoding and Content-Encoding, and
@@ -73,12 +75,13 @@ typedef struct {
 
 static ngx_http_pack_static_sibling_t
     ngx_http_pack_static_siblings[] = {
-        {NGX_HTTP_PACK_STATIC_ENCODING_BR, ngx_string("br"),
-            ngx_string(".br")},
+        {NGX_HTTP_PACK_STATIC_ENCODING_BR,   ngx_string("br"),
+         ngx_string(".br") },
         {NGX_HTTP_PACK_STATIC_ENCODING_ZSTD, ngx_string("zstd"),
-            ngx_string(".zst")},
+         ngx_string(".zst")},
         {NGX_HTTP_PACK_STATIC_ENCODING_GZIP, ngx_string("gzip"),
-            ngx_string(".gz")}};
+         ngx_string(".gz") }
+};
 
 #define NGX_HTTP_PACK_STATIC_NSIBLINGS                               \
     (sizeof(ngx_http_pack_static_siblings) /                         \
@@ -90,6 +93,9 @@ static char *ngx_http_pack_static_merge_conf(
     ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_pack_static_init(ngx_conf_t *cf);
 
+/* Kept by hand: AlignArrayOfStructures would pad these rows past
+   the column limit. See .clang-format. */
+/* clang-format off */
 static ngx_command_t ngx_http_pack_static_commands[] = {
     {ngx_string("pack_static"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -111,6 +117,7 @@ static ngx_command_t ngx_http_pack_static_commands[] = {
         &ngx_http_pack_static_encodings},
 
     ngx_null_command};
+/* clang-format on */
 
 static ngx_http_module_t ngx_http_pack_static_module_ctx = {
     NULL,                             /* preconfiguration */
@@ -454,8 +461,8 @@ ngx_http_pack_static_merge_conf(
                           conf->enable, conf->encodings)) {
         ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
             "\"pack_static always\" with more than one encoding in "
-            "\"pack_static_encodings\" serves whichever sibling is "
-            "found first to every client, whatever it accepts");
+            "\"pack_static_encodings\" serves whatever is found "
+            "first to every client");
     }
 
     return NGX_CONF_OK;
