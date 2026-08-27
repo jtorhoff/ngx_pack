@@ -12,8 +12,6 @@
 #include "../common/ngx_http_pack_headers.h"
 
 
-static ngx_str_t ENCODING = ngx_string("zstd");
-
 enum {
     NGX_HTTP_PACK_STATIC_OFF = 0,
     NGX_HTTP_PACK_STATIC_ON,
@@ -52,6 +50,39 @@ static ngx_conf_bitmask_t ngx_http_pack_static_encodings[] = {
     {ngx_string("gzip"), NGX_HTTP_PACK_STATIC_ENCODING_GZIP},
     {ngx_string("zstd"), NGX_HTTP_PACK_STATIC_ENCODING_ZSTD},
     {ngx_null_string, 0}};
+
+/* One row per encoding the module knows: the bit that selects it,
+   the token it goes by in Accept-Encoding and Content-Encoding, and
+   the suffix its pre-compressed sibling carries.
+
+   Probed in the order written here, which is fixed rather than the
+   order the directive named them in - ngx_conf_set_bitmask_slot
+   hands back a set, so what the admin typed is not recoverable.
+   Smallest output first, so a client that takes several is served
+   the tightest sibling that exists rather than the first one
+   configured.
+
+   Kept in step with ngx_http_pack_static_encodings by hand. The two
+   are separate because the directive needs an ngx_conf_bitmask_t and
+   that type has nowhere to put a suffix. */
+typedef struct {
+    ngx_uint_t bit;
+    ngx_str_t  name;
+    ngx_str_t  extension;
+} ngx_http_pack_static_sibling_t;
+
+static ngx_http_pack_static_sibling_t
+    ngx_http_pack_static_siblings[] = {
+        {NGX_HTTP_PACK_STATIC_ENCODING_BR, ngx_string("br"),
+            ngx_string(".br")},
+        {NGX_HTTP_PACK_STATIC_ENCODING_ZSTD, ngx_string("zstd"),
+            ngx_string(".zst")},
+        {NGX_HTTP_PACK_STATIC_ENCODING_GZIP, ngx_string("gzip"),
+            ngx_string(".gz")}};
+
+#define NGX_HTTP_PACK_STATIC_NSIBLINGS                               \
+    (sizeof(ngx_http_pack_static_siblings) /                         \
+        sizeof(ngx_http_pack_static_siblings[0]))
 
 static ngx_int_t ngx_http_pack_static_handler(ngx_http_request_t *r);
 static void *ngx_http_pack_static_create_conf(ngx_conf_t *cf);
@@ -111,17 +142,22 @@ ngx_module_t ngx_http_pack_static_module = {NGX_MODULE_V1,
 static ngx_int_t
 ngx_http_pack_static_handler(ngx_http_request_t *r)
 {
-    ngx_http_pack_static_conf_t *conf;
-    u_char                      *last;
-    ngx_str_t                    path;
-    size_t                       root_len;
-    ngx_log_t                   *log;
-    ngx_http_core_loc_conf_t    *core_conf;
-    ngx_open_file_info_t         file_info;
-    ngx_int_t                    rc;
-    ngx_uint_t                   level;
-    ngx_buf_t                   *buf;
-    ngx_chain_t                  out;
+    ngx_http_pack_static_conf_t    *conf;
+    ngx_http_pack_static_sibling_t *sibling;
+    ngx_http_pack_static_sibling_t *found;
+    u_char                         *last;
+    u_char                         *suffix;
+    ngx_str_t                       path;
+    size_t                          root_len;
+    size_t                          reserve;
+    ngx_uint_t                      i;
+    ngx_log_t                      *log;
+    ngx_http_core_loc_conf_t       *core_conf;
+    ngx_open_file_info_t            file_info;
+    ngx_int_t                       rc;
+    ngx_uint_t                      level;
+    ngx_buf_t                      *buf;
+    ngx_chain_t                     out;
 
     /* Only GET and HEAD requests are supported. */
     if (!(r->method & (NGX_HTTP_GET | NGX_HTTP_HEAD))) {
@@ -139,107 +175,148 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    /* "always" serves the .zst file whatever the request said about
-       encodings, so only "on" has to consult it. */
-    if (conf->enable == NGX_HTTP_PACK_STATIC_ON) {
-        /* Set before the Accept-Encoding test, and left in place even
-           when this handler declines: what varies is the resource,
-           not this one request. "always" needs none of it, serving
-           the same bytes to everyone. */
-        if (ngx_http_pack_set_vary(r) != NGX_OK) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-        if (ngx_http_pack_claim_request(r, &ENCODING) != NGX_OK) {
-            return NGX_DECLINED;
+    log       = r->connection->log;
+    core_conf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+
+    /* Set once, before any Accept-Encoding test, and left in place
+       even when this handler declines: what varies is the resource,
+       not this one request. "always" needs none of it, serving the
+       same bytes to everyone. */
+    if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
+        ngx_http_pack_set_vary(r) != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    /* Room for the longest suffix any candidate might need. The path
+       is mapped once and each candidate's suffix is written over the
+       last, so the reservation has to cover the widest of them rather
+       than the first. */
+    reserve = 0;
+    for (i = 0; i < NGX_HTTP_PACK_STATIC_NSIBLINGS; i++) {
+        if (ngx_http_pack_static_siblings[i].extension.len >
+            reserve) {
+            reserve = ngx_http_pack_static_siblings[i].extension.len;
         }
     }
 
-    /* Get path and append the suffix. ngx_http_map_uri_to_path leaves
-       path.len holding the size of the buffer it allocated - the
-       path, the room asked for here, and a terminating zero - not the
-       length of the string in it. So the length has to come from the
-       write pointer, as nginx's own gzip_static does; adding the
-       suffix length to what it returned would overshoot the string by
-       four and the allocation itself by three. ngx_cpystrn returns
-       the terminating zero it wrote, which is that pointer. */
-    last = ngx_http_map_uri_to_path(
-        r, &path, &root_len, sizeof(".zst") - 1);
+    /* Get the path. ngx_http_map_uri_to_path leaves path.len holding
+       the size of the buffer it allocated - the path, the room asked
+       for here, and a terminating zero - not the length of the string
+       in it. So the length has to come from the write pointer, as
+       nginx's own gzip_static does; adding the suffix length to what
+       it returned would overshoot the string and the allocation.
+       ngx_cpystrn returns the terminating zero it wrote, which is
+       that pointer. */
+    last = ngx_http_map_uri_to_path(r, &path, &root_len, reserve);
     if (last == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    last     = ngx_cpystrn(last, (u_char *) ".zst", sizeof(".zst"));
-    path.len = last - path.data;
+    /* Where every candidate's suffix goes, one after another. */
+    suffix = last;
 
-    log = r->connection->log;
+    found = NULL;
+    for (i = 0; i < NGX_HTTP_PACK_STATIC_NSIBLINGS; i++) {
+        sibling = &ngx_http_pack_static_siblings[i];
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
-        "http filename: \"%s\"", path.data);
-
-    /* Prepare to read the file. */
-    core_conf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
-    ngx_memzero(&file_info, sizeof(ngx_open_file_info_t));
-
-    file_info.read_ahead = core_conf->read_ahead;
-    file_info.directio   = core_conf->directio;
-    file_info.valid      = core_conf->open_file_cache_valid;
-    file_info.min_uses   = core_conf->open_file_cache_min_uses;
-    file_info.errors     = core_conf->open_file_cache_errors;
-    file_info.events     = core_conf->open_file_cache_events;
-
-    rc = ngx_http_set_disable_symlinks(
-        r, core_conf, &path, &file_info);
-    if (rc != NGX_OK) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    /* Try to fetch file and process errors. */
-    rc = ngx_open_cached_file(
-        core_conf->open_file_cache, &path, &file_info, r->pool);
-    if (rc != NGX_OK) {
-        switch (file_info.err) {
-            case 0:
-                return NGX_HTTP_INTERNAL_SERVER_ERROR;
-
-            case NGX_ENOENT:
-            case NGX_ENOTDIR:
-            case NGX_ENAMETOOLONG:
-                return NGX_DECLINED;
-
-#if (NGX_HAVE_OPENAT)
-            case NGX_EMLINK:
-            case NGX_ELOOP:
-#endif
-            case NGX_EACCES:
-                level = NGX_LOG_ERR;
-                break;
-
-            default:
-                level = NGX_LOG_CRIT;
-                break;
+        if (!(conf->encodings & sibling->bit)) {
+            continue;
         }
 
-        ngx_log_error(level, log, file_info.err, "%s \"%s\" failed",
-            file_info.failed, path.data);
+        /* "always" serves whatever sibling is on disk whatever the
+           request said about encodings, so only "on" has to ask. */
+        if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
+            ngx_http_pack_claim_request(r, &sibling->name) !=
+                NGX_OK) {
+            continue;
+        }
 
-        return NGX_DECLINED;
-    }
+        last     = ngx_cpystrn(suffix, sibling->extension.data,
+                sibling->extension.len + 1);
+        path.len = last - path.data;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "http static fd: %d",
-        file_info.fd);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
+            "http filename: \"%s\"", path.data);
 
-    /* The suffixed path is not a file we can serve. */
-    if (file_info.is_dir) {
-        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, log, 0, "http dir");
-        return NGX_DECLINED;
-    }
-#if !(NGX_WIN32)
-    if (!file_info.is_file) {
-        ngx_log_error(NGX_LOG_CRIT, log, 0,
-            "\"%s\" is not a regular file", path.data);
-        return NGX_HTTP_NOT_FOUND;
-    }
+        /* Prepare to read the file. Re-zeroed per candidate:
+           ngx_open_cached_file both reads this and writes its result
+           back into it, so carrying one candidate's fields into the
+           next would test the wrong file. */
+        ngx_memzero(&file_info, sizeof(ngx_open_file_info_t));
+
+        file_info.read_ahead = core_conf->read_ahead;
+        file_info.directio   = core_conf->directio;
+        file_info.valid      = core_conf->open_file_cache_valid;
+        file_info.min_uses   = core_conf->open_file_cache_min_uses;
+        file_info.errors     = core_conf->open_file_cache_errors;
+        file_info.events     = core_conf->open_file_cache_events;
+
+        rc = ngx_http_set_disable_symlinks(
+            r, core_conf, &path, &file_info);
+        if (rc != NGX_OK) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
+        /* Try to fetch file and process errors. The "continue"s below
+           belong to the for, not to the switch - a missing sibling is
+           the ordinary case here, and the next candidate is still
+           worth a look. */
+        rc = ngx_open_cached_file(
+            core_conf->open_file_cache, &path, &file_info, r->pool);
+        if (rc != NGX_OK) {
+            switch (file_info.err) {
+                case 0:
+                    return NGX_HTTP_INTERNAL_SERVER_ERROR;
+
+                case NGX_ENOENT:
+                case NGX_ENOTDIR:
+                case NGX_ENAMETOOLONG:
+                    continue;
+
+#if (NGX_HAVE_OPENAT)
+                case NGX_EMLINK:
+                case NGX_ELOOP:
 #endif
+                case NGX_EACCES:
+                    level = NGX_LOG_ERR;
+                    break;
+
+                default:
+                    level = NGX_LOG_CRIT;
+                    break;
+            }
+
+            ngx_log_error(level, log, file_info.err,
+                "%s \"%s\" failed", file_info.failed, path.data);
+
+            continue;
+        }
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
+            "http static fd: %d", file_info.fd);
+
+        /* The suffixed path is not a file we can serve. */
+        if (file_info.is_dir) {
+            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, log, 0, "http dir");
+            continue;
+        }
+#if !(NGX_WIN32)
+        if (!file_info.is_file) {
+            ngx_log_error(NGX_LOG_CRIT, log, 0,
+                "\"%s\" is not a regular file", path.data);
+            return NGX_HTTP_NOT_FOUND;
+        }
+#endif
+
+        found = sibling;
+        break;
+    }
+
+    /* No encoding the client would take had a sibling on disk, so
+       leave the request to the static handler behind this one. */
+    if (found == NULL) {
+        return NGX_DECLINED;
+    }
 
     /* Discard the request body, then describe the response. */
     r->root_tested = !r->error_page;
@@ -266,7 +343,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *r)
     }
 
     /* Set "Content-Encoding" header. */
-    if (ngx_http_pack_set_encoding(r, &ENCODING) != NGX_OK) {
+    if (ngx_http_pack_set_encoding(r, &found->name) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
