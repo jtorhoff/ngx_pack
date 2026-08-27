@@ -15,39 +15,39 @@
 static ngx_str_t ENCODING = ngx_string("zstd");
 
 enum {
-    NGX_HTTP_ZSTD_STATIC_OFF = 0,
-    NGX_HTTP_ZSTD_STATIC_ON,
-    NGX_HTTP_ZSTD_STATIC_ALWAYS
+    NGX_HTTP_PACK_STATIC_OFF = 0,
+    NGX_HTTP_PACK_STATIC_ON,
+    NGX_HTTP_PACK_STATIC_ALWAYS
 };
 
 typedef struct {
     ngx_uint_t enable;
-} ngx_http_zstd_static_conf_t;
+} ngx_http_pack_static_conf_t;
 
-static ngx_conf_enum_t ngx_http_zstd_static[] = {
-    {ngx_string("off"), NGX_HTTP_ZSTD_STATIC_OFF},
-    {ngx_string("on"), NGX_HTTP_ZSTD_STATIC_ON},
-    {ngx_string("always"), NGX_HTTP_ZSTD_STATIC_ALWAYS},
+static ngx_conf_enum_t ngx_http_pack_static[] = {
+    {ngx_string("off"), NGX_HTTP_PACK_STATIC_OFF},
+    {ngx_string("on"), NGX_HTTP_PACK_STATIC_ON},
+    {ngx_string("always"), NGX_HTTP_PACK_STATIC_ALWAYS},
     {ngx_null_string, 0}};
 
-static ngx_int_t ngx_http_zstd_static_handler(ngx_http_request_t *r);
-static void *ngx_http_zstd_static_create_conf(ngx_conf_t *cf);
-static char *ngx_http_zstd_static_merge_conf(
+static ngx_int_t ngx_http_pack_static_handler(ngx_http_request_t *r);
+static void *ngx_http_pack_static_create_conf(ngx_conf_t *cf);
+static char *ngx_http_pack_static_merge_conf(
     ngx_conf_t *cf, void *parent, void *child);
-static ngx_int_t ngx_http_zstd_static_init(ngx_conf_t *cf);
+static ngx_int_t ngx_http_pack_static_init(ngx_conf_t *cf);
 
-static ngx_command_t ngx_http_zstd_static_commands[] = {
+static ngx_command_t ngx_http_pack_static_commands[] = {
     {ngx_string("zstd_static"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_CONF_TAKE1,
         ngx_conf_set_enum_slot, NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_zstd_static_conf_t, enable),
-        &ngx_http_zstd_static},
+        offsetof(ngx_http_pack_static_conf_t, enable),
+        &ngx_http_pack_static},
     ngx_null_command};
 
-static ngx_http_module_t ngx_http_zstd_static_module_ctx = {
+static ngx_http_module_t ngx_http_pack_static_module_ctx = {
     NULL,                             /* preconfiguration */
-    ngx_http_zstd_static_init,        /* postconfiguration */
+    ngx_http_pack_static_init,        /* postconfiguration */
 
     NULL,                             /* create main conf */
     NULL,                             /* init main conf */
@@ -55,13 +55,13 @@ static ngx_http_module_t ngx_http_zstd_static_module_ctx = {
     NULL,                             /* create server conf */
     NULL,                             /* merge server conf */
 
-    ngx_http_zstd_static_create_conf, /* create location conf */
-    ngx_http_zstd_static_merge_conf   /* merge location conf */
+    ngx_http_pack_static_create_conf, /* create location conf */
+    ngx_http_pack_static_merge_conf   /* merge location conf */
 };
 
-ngx_module_t ngx_http_zstd_static_module = {NGX_MODULE_V1,
-    &ngx_http_zstd_static_module_ctx, /* module context */
-    ngx_http_zstd_static_commands,    /* module directives */
+ngx_module_t ngx_http_pack_static_module = {NGX_MODULE_V1,
+    &ngx_http_pack_static_module_ctx, /* module context */
+    ngx_http_pack_static_commands,    /* module directives */
     NGX_HTTP_MODULE,                  /* module type */
     NULL,                             /* init master */
     NULL,                             /* init module */
@@ -73,9 +73,9 @@ ngx_module_t ngx_http_zstd_static_module = {NGX_MODULE_V1,
     NGX_MODULE_V1_PADDING};
 
 static ngx_int_t
-ngx_http_zstd_static_handler(ngx_http_request_t *r)
+ngx_http_pack_static_handler(ngx_http_request_t *r)
 {
-    ngx_http_zstd_static_conf_t *conf;
+    ngx_http_pack_static_conf_t *conf;
     u_char                      *last;
     ngx_str_t                    path;
     size_t                       root_len;
@@ -98,14 +98,14 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
     }
 
     conf = ngx_http_get_module_loc_conf(
-        r, ngx_http_zstd_static_module);
-    if (conf->enable == NGX_HTTP_ZSTD_STATIC_OFF) {
+        r, ngx_http_pack_static_module);
+    if (conf->enable == NGX_HTTP_PACK_STATIC_OFF) {
         return NGX_DECLINED;
     }
 
     /* "always" serves the .zst file whatever the request said about
        encodings, so only "on" has to consult it. */
-    if (conf->enable == NGX_HTTP_ZSTD_STATIC_ON) {
+    if (conf->enable == NGX_HTTP_PACK_STATIC_ON) {
         /* Set before the Accept-Encoding test, and left in place even
            when this handler declines: what varies is the resource,
            not this one request. "always" needs none of it, serving
@@ -267,11 +267,11 @@ ngx_http_zstd_static_handler(ngx_http_request_t *r)
 }
 
 static void *
-ngx_http_zstd_static_create_conf(ngx_conf_t *cf)
+ngx_http_pack_static_create_conf(ngx_conf_t *cf)
 {
-    ngx_http_zstd_static_conf_t *conf;
+    ngx_http_pack_static_conf_t *conf;
 
-    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_zstd_static_conf_t));
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_pack_static_conf_t));
     if (conf == NULL) {
         return NULL;
     }
@@ -282,23 +282,23 @@ ngx_http_zstd_static_create_conf(ngx_conf_t *cf)
 }
 
 static char *
-ngx_http_zstd_static_merge_conf(
+ngx_http_pack_static_merge_conf(
     ngx_conf_t *cf, void *parent, void *child)
 {
-    ngx_http_zstd_static_conf_t *prev;
-    ngx_http_zstd_static_conf_t *conf;
+    ngx_http_pack_static_conf_t *prev;
+    ngx_http_pack_static_conf_t *conf;
 
     prev = parent;
     conf = child;
 
     ngx_conf_merge_uint_value(
-        conf->enable, prev->enable, NGX_HTTP_ZSTD_STATIC_OFF);
+        conf->enable, prev->enable, NGX_HTTP_PACK_STATIC_OFF);
 
     return NGX_CONF_OK;
 }
 
 static ngx_int_t
-ngx_http_zstd_static_init(ngx_conf_t *cf)
+ngx_http_pack_static_init(ngx_conf_t *cf)
 {
     ngx_http_core_main_conf_t *main_conf;
     ngx_http_handler_pt       *handler_slot;
@@ -312,7 +312,7 @@ ngx_http_zstd_static_init(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
-    *handler_slot = ngx_http_zstd_static_handler;
+    *handler_slot = ngx_http_pack_static_handler;
 
     return NGX_OK;
 }

@@ -23,7 +23,7 @@ ngx_module_incs=
 # Shared with the filter module. Listed as a dependency so that
 # editing it actually rebuilds this module.
 ZSTD_COMMON_DIR="$ZSTD_MODULE_SRC_DIR/../common"
-ngx_module_name=ngx_http_zstd_static_module
+ngx_module_name=ngx_http_pack_static_module
 ngx_module_deps="$ZSTD_COMMON_DIR/ngx_http_pack_headers.h"
 ngx_module_srcs="$ZSTD_MODULE_SRC_DIR/ngx_http_pack_static.c"
 ngx_module_libs=
@@ -40,4 +40,4 @@ ngx_module_order=
 # that field, i.e. --without-http_gzip_module. Nobody notices in
 # practice because gzip defaults to built-in, which is exactly why
 # it is worth not repeating.
-have=NGX_HTTP_ZSTD_STATIC_MODULE . auto/have
+have=NGX_HTTP_PACK_STATIC_MODULE . auto/have
