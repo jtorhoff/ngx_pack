@@ -20,14 +20,37 @@ enum {
     NGX_HTTP_PACK_STATIC_ALWAYS
 };
 
+/* Which pre-compressed siblings the module may serve. One bit each,
+   rather than the counting values above, because the directive takes
+   several at once and ngx_conf_set_bitmask_slot ORs them together.
+   Spelled out in hex as nginx spells its own bitmasks, so that
+   adding a fourth is visibly the next bit rather than the next
+   number.
+
+   Deliberately not sharing the NGX_HTTP_PACK_STATIC_ prefix's
+   counting values: NGX_HTTP_PACK_STATIC_ON and a first bit would
+   both be 1, and the two are never interchangeable. */
+enum {
+    NGX_HTTP_PACK_STATIC_ENCODING_BR   = 0x0001,
+    NGX_HTTP_PACK_STATIC_ENCODING_GZIP = 0x0002,
+    NGX_HTTP_PACK_STATIC_ENCODING_ZSTD = 0x0004
+};
+
 typedef struct {
     ngx_uint_t enable;
+    ngx_uint_t encodings;
 } ngx_http_pack_static_conf_t;
 
 static ngx_conf_enum_t ngx_http_pack_static[] = {
     {ngx_string("off"), NGX_HTTP_PACK_STATIC_OFF},
     {ngx_string("on"), NGX_HTTP_PACK_STATIC_ON},
     {ngx_string("always"), NGX_HTTP_PACK_STATIC_ALWAYS},
+    {ngx_null_string, 0}};
+
+static ngx_conf_bitmask_t ngx_http_pack_static_encodings[] = {
+    {ngx_string("br"), NGX_HTTP_PACK_STATIC_ENCODING_BR},
+    {ngx_string("gzip"), NGX_HTTP_PACK_STATIC_ENCODING_GZIP},
+    {ngx_string("zstd"), NGX_HTTP_PACK_STATIC_ENCODING_ZSTD},
     {ngx_null_string, 0}};
 
 static ngx_int_t ngx_http_pack_static_handler(ngx_http_request_t *r);
@@ -43,6 +66,19 @@ static ngx_command_t ngx_http_pack_static_commands[] = {
         ngx_conf_set_enum_slot, NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_pack_static_conf_t, enable),
         &ngx_http_pack_static},
+
+    /* 1MORE rather than TAKE123: the count is already bounded by the
+       mask having three entries, and a repeated one is a warning
+       from ngx_conf_set_bitmask_slot rather than an error, so a
+       fourth argument is caught either way - with a message naming
+       the offending value instead of counting arguments. */
+    {ngx_string("pack_static_encodings"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_1MORE,
+        ngx_conf_set_bitmask_slot, NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_pack_static_conf_t, encodings),
+        &ngx_http_pack_static_encodings},
+
     ngx_null_command};
 
 static ngx_http_module_t ngx_http_pack_static_module_ctx = {
@@ -278,6 +314,13 @@ ngx_http_pack_static_create_conf(ngx_conf_t *cf)
 
     conf->enable = NGX_CONF_UNSET_UINT;
 
+    /* conf->encodings is deliberately left at the zero ngx_pcalloc
+       wrote. A bitmask has no spare value to mean "unset" - every bit
+       is a legal encoding - so nginx reserves the empty set for it,
+       and that is what ngx_conf_merge_bitmask_value tests for.
+       Setting NGX_CONF_UNSET_UINT here would read as every bit set
+       and inherit nothing. */
+
     return conf;
 }
 
@@ -293,6 +336,11 @@ ngx_http_pack_static_merge_conf(
 
     ngx_conf_merge_uint_value(
         conf->enable, prev->enable, NGX_HTTP_PACK_STATIC_OFF);
+
+    ngx_conf_merge_bitmask_value(conf->encodings, prev->encodings,
+        NGX_HTTP_PACK_STATIC_ENCODING_BR |
+            NGX_HTTP_PACK_STATIC_ENCODING_GZIP |
+            NGX_HTTP_PACK_STATIC_ENCODING_ZSTD);
 
     return NGX_CONF_OK;
 }
