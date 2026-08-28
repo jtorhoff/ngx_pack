@@ -268,31 +268,6 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
         return NGX_DECLINED;
     }
 
-    /* Set once, before any Accept-Encoding test, and left in place
-       even when this handler declines: what varies is the resource,
-       not this one request. "always" needs none of it, serving the
-       same bytes to everyone. */
-    if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
-        ngx_http_pack_set_vary(r) != NGX_OK) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    /* A "Via" header means a proxy stands between this server and the
-       client, and nothing here knows what it will do with an encoded
-       body - it may cache one representation and hand it to a client
-       that cannot read it. So the sibling is not offered, which is
-       what nginx's "gzip_proxied off" does for gzip_static, and what
-       it defaults to. There is no directive to relax it yet.
-
-       After the Vary above, not before: the resource still varies on
-       Accept-Encoding whoever is asking. And under "always" not at
-       all, which skips every question about the client the same way
-       ngx_http_gzip_ok is skipped there. */
-    if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
-        r->headers_in.via != NULL) {
-        return NGX_DECLINED;
-    }
-
     /* Room for the longest suffix any candidate might need. The path
        is mapped once and each candidate's suffix is written over the
        last, so the reservation has to cover the widest of them rather
@@ -434,6 +409,7 @@ static ngx_int_t
 ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
 {
     pack_conf_t              *conf;
+    ngx_uint_t                accepted;
     ngx_http_core_loc_conf_t *core_conf;
     u_char                   *last;
     ngx_log_t                *log;
@@ -442,12 +418,22 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
     conf = ngx_http_get_module_loc_conf(
         args->request, ngx_http_pack_static_module);
 
-    /* "always" serves whatever is on disk to everyone, so only
-       "on" has to ask whether this client takes the encoding. */
-    if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
-        ngx_http_pack_claim_request(
-            args->request, &args->encoding->name) != NGX_OK) {
-        return NGX_DECLINED;
+    /* Whether this client may have the sibling: it has to name the
+       encoding, and it must not have reached us through a proxy - a
+       "Via" header, which is what nginx's "gzip_proxied off" turns
+       away and what it defaults to. There is no directive to relax
+       that yet. "always" asks neither question, serving whatever is
+       on disk to everyone.
+
+       Only recorded here. The probe below runs either way, because a
+       sibling that exists means the resource varies on
+       Accept-Encoding, and that has to be said in the plain response
+       a declined client is about to fall through to. */
+    accepted = 1;
+    if (conf->enable == NGX_HTTP_PACK_STATIC_ON) {
+        accepted = args->request->headers_in.via == NULL &&
+                   ngx_http_pack_claim_request(args->request,
+                       &args->encoding->name) == NGX_OK;
     }
 
     core_conf = ngx_http_get_module_loc_conf(
@@ -497,6 +483,28 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
         return NGX_HTTP_NOT_FOUND;
     }
 #endif
+
+    /* A servable sibling exists, so the resource does vary on
+       Accept-Encoding - said here, where that is known, rather than
+       for every request the location handles. gzip_static sets it in
+       the same place and for the same reason, one step earlier: it
+       has no loop to come back round, so a sibling that turns out to
+       be a directory cannot leave it advertising a resource that
+       never varied.
+
+       Set even for a client about to be declined below, which is the
+       whole point: the plain response it falls through to is the one
+       a shared cache must not hand to the next client. Under
+       "always" there is nothing to vary on - everyone gets the same
+       bytes. */
+    if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
+        ngx_http_pack_set_vary(args->request) != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    if (!accepted) {
+        return NGX_DECLINED;
+    }
 
     return NGX_OK;
 }
