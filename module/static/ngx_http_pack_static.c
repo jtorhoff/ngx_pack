@@ -44,20 +44,14 @@ static pack_encoding_t const ngx_http_pack_static_encodings[] = {
 #define NGX_HTTP_PACK_STATIC_NENCODINGS                              \
     (sizeof(ngx_http_pack_static_encodings) / sizeof(pack_encoding_t))
 
-/* The encodings this location may serve, in the order they are to be
-   tried, which is the order pack_static_encodings named them. Held as
-   rows of the table above rather than as a set, because a set has
-   nowhere to keep that order - which is why the directive has a
-   setter of its own instead of ngx_conf_set_bitmask_slot.
-
-   A count of zero means the directive was not written here, and is
-   what merge_conf tests to decide between inheriting and defaulting.
-   It cannot arise any other way: NGX_CONF_1MORE refuses an empty
-   directive, and every argument that parses adds a row. */
+/* Rows of the table above, in the order the directive named them. A
+   count of zero means it was not written in this block. */
 typedef struct {
     ngx_uint_t enable;
     ngx_uint_t nencodings;
-
+    /* Bookkeeping for merge_conf rather than configuration. */
+    ngx_uint_t warned;
+    /* Encodings specified at configuration processing time. */
     pack_encoding_t const *encodings[NGX_HTTP_PACK_STATIC_NENCODINGS];
 } pack_conf_t;
 
@@ -121,7 +115,7 @@ ngx_http_pack_static_set_encodings(
 
             /* The directive's arguments are case-sensitive.
                Accept-Encoding is not: ngx_http_pack_check_encoding
-               matches it case-insensitively, as per RFC 9110. */
+               matches case-insensitively, as per RFC 9110. */
             if (ngx_strncmp(lhs->data, rhs->data, lhs->len)) {
                 continue;
             }
@@ -345,7 +339,7 @@ typedef struct {
     ngx_http_core_loc_conf_t *conf;
     ngx_str_t                *path;
     ngx_open_file_info_t     *file_info;
-} pack_stat_args_t;
+} pack_fstat_args_t;
 
 /* Opens whatever the path now names and says whether it can be
    served. The name understates it: ngx_open_cached_file returns a
@@ -357,7 +351,7 @@ typedef struct {
    finishes the request. What an operator would want to know about is
    logged first, then declined like the rest. */
 static ngx_int_t
-ngx_http_pack_static_stat(pack_stat_args_t *const args)
+ngx_http_pack_static_fstat(pack_fstat_args_t *const args)
 {
     ngx_int_t  rc;
     ngx_uint_t level;
@@ -461,12 +455,13 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
             .file_info = args->file_info,
         });
 
-    rc = ngx_http_pack_static_stat(&(pack_stat_args_t) {
+    rc = ngx_http_pack_static_fstat(&(pack_fstat_args_t) {
         .request   = args->request,
         .conf      = core_conf,
         .path      = args->path,
         .file_info = args->file_info,
     });
+
     if (rc != NGX_OK) {
         return rc;
     }
@@ -643,6 +638,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
                 .suffix    = suffix,
                 .file_info = &file_info,
             });
+
         if (rc == NGX_OK) {
             found = sibling_encoding;
             break;
@@ -681,6 +677,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         .file_info = &file_info,
         .encoding  = &found->name,
     });
+
     if (rc != NGX_OK) {
         return rc;
     }
@@ -733,6 +730,36 @@ ngx_http_pack_static_is_ambiguous(
            args->nencodings > 1;
 }
 
+/* Reports the combination, at most once for any one block.
+
+   Warned about rather than rejected, since it is servable - a
+   location whose clients are all known to take the same encoding is
+   a fair use of it. */
+static void
+ngx_http_pack_static_warn_ambiguous(
+    ngx_conf_t *const cf, pack_conf_t *const conf)
+{
+    ngx_uint_t is_ambiguous;
+
+    if (conf->warned) {
+        return;
+    }
+
+    is_ambiguous = ngx_http_pack_static_is_ambiguous(
+        &(pack_is_ambiguous_args_t) {
+            .enable     = conf->enable,
+            .nencodings = conf->nencodings,
+        });
+
+    if (is_ambiguous) {
+        conf->warned = 1;
+        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+            "\"pack_static always\" with more than one encoding in "
+            "\"pack_static_encodings\" serves whatever is found "
+            "first to every client");
+    }
+}
+
 static char *
 ngx_http_pack_static_merge_conf(
     ngx_conf_t *const cf, void *const parent, void *const child)
@@ -741,18 +768,23 @@ ngx_http_pack_static_merge_conf(
     pack_conf_t *conf;
     ngx_uint_t   inherited;
     ngx_uint_t   i;
-    ngx_uint_t   is_ambiguous;
 
     prev = parent;
     conf = child;
 
+    /* The parent is reported here rather than on a merge of its own,
+       because http{} never gets one: nginx merges a parent into a
+       child, and http{} is only ever the parent. Every other block
+       has already passed through as a child by the time it appears
+       here, so in practice this call speaks for http{} alone. */
+    ngx_http_pack_static_warn_ambiguous(cf, prev);
+
     /* Whether the block above was already ambiguous, so that the
        warning below lands where the combination first takes effect
        rather than repeating down every block that inherits it.
-       nginx runs a merge per location, and the enclosing http{} is
-       only ever a parent - it is never passed as a child - so asking
-       "did this block write it" would miss a setting made there
-       entirely. Asking what the parent already meant does not. */
+       Asking "did this block write it" would miss a setting made in
+       an enclosing one; asking what the parent already meant does
+       not. */
     inherited = ngx_http_pack_static_is_ambiguous(
         &(pack_is_ambiguous_args_t) {
             .enable     = prev->enable,
@@ -780,21 +812,12 @@ ngx_http_pack_static_merge_conf(
         }
     }
 
-    is_ambiguous = ngx_http_pack_static_is_ambiguous(
-        &(pack_is_ambiguous_args_t) {
-            .enable     = conf->enable,
-            .nencodings = conf->nencodings,
-        });
+    /* An inherited ambiguity has been spoken for by the block above,
+       so this one counts as reported without anything being said -
+       which is also what keeps the blocks below it quiet. */
+    conf->warned = inherited;
 
-    /* Warned about rather than rejected, since the combination is
-       servable - a location whose clients are all known to take
-       the same encoding is a fair use of it. */
-    if (!inherited && is_ambiguous) {
-        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
-            "\"pack_static always\" with more than one encoding in "
-            "\"pack_static_encodings\" serves whatever is found "
-            "first to every client");
-    }
+    ngx_http_pack_static_warn_ambiguous(cf, conf);
 
     return NGX_CONF_OK;
 }
