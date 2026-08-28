@@ -24,6 +24,7 @@ from __future__ import annotations  # so "str | None" parses before Python 3.10
 
 import argparse
 import contextlib
+import gzip
 import http.client
 import os
 import random
@@ -173,6 +174,62 @@ def locate_encoder():
     return encode_with_cli
 
 
+def encode_with_command(argv):
+    """Returns a callable bytes->bytes running argv, or None if argv[0] is
+    not on PATH."""
+    cli = shutil.which(argv[0])
+    if not cli:
+        return None
+
+    def encode(data):
+        return subprocess.run(
+            [cli, *argv[1:]], input=data, capture_output=True, check=True
+        ).stdout
+
+    return encode
+
+
+# One row per encoding pack_static knows, in the order the module probes
+# them, which is what the preference tests below assert.
+#
+# The module never decodes what it serves: it copies the sibling and
+# labels it, so a sibling only has to be distinguishable for the choice
+# to be provable. A real encoder is used wherever one is to hand, so the
+# bytes are also genuinely decodable by a client; where none is
+# installed a marker body stands in, and the tests still prove which
+# file was chosen because they compare against the bytes on disk.
+SIBLING_ENCODINGS = [
+    ("br", ".br", lambda: encode_with_command(["brotli", "-c", "-q", "5"])),
+    ("gzip", ".gz", lambda: (lambda data: gzip.compress(data))),
+    ("zstd", ".zst", locate_encoder),
+]
+
+
+def write_siblings(html, stem, body, encodings):
+    """Writes "stem" and a sibling per named encoding, returning a dict of
+    the exact bytes each file received."""
+    written = {stem: body}
+    with open(os.path.join(html, stem), "wb") as handle:
+        handle.write(body)
+
+    for name, ext, locate in SIBLING_ENCODINGS:
+        if name not in encodings:
+            continue
+        encode = locate()
+        if encode:
+            blob = encode(body)
+        else:
+            # Not real "name" data, which the module cannot tell and does
+            # not care about. Distinct per encoding so a wrong choice is
+            # visible in the assertion rather than merely in the label.
+            blob = b"placeholder for " + name.encode() + b" of " + stem.encode()
+        with open(os.path.join(html, stem + ext), "wb") as handle:
+            handle.write(blob)
+        written[stem + ext] = blob
+
+    return written
+
+
 def port_is_free(port):
     with socket.socket() as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -298,6 +355,18 @@ def build_fixtures(work):
         with open(os.path.join(html, "plain_only.html"), "wb") as handle:
             handle.write(precompressed)
         fixtures["plain_only.html"] = precompressed
+
+    # The default pack_static_encodings is every encoding the module knows,
+    # and the /static/ location leaves it at that, so these exercise the
+    # shipped default rather than a narrowed set.
+    body = f"<html><body>{make_text(3000, 7)}</body></html>".encode()
+    # All three siblings: which one comes back pins the probe order.
+    fixtures.update(write_siblings(html, "multi.html", body, ("br", "zstd", "gzip")))
+    # Only the last candidate in probe order exists, so the two ahead of it
+    # have to miss and be stepped over.
+    fixtures.update(write_siblings(html, "gz_only.html", body, ("gzip",)))
+    # Only the middle one.
+    fixtures.update(write_siblings(html, "zst_only.html", body, ("zstd",)))
 
     for name, blob in load_corpus().items():
         with open(os.path.join(html, name), "wb") as handle:
@@ -1023,6 +1092,157 @@ def test_static_module_declines_plain_client(ctx):
     check(
         body == ctx.fixtures["precompressed.html"],
         "the plain client did not receive the uncompressed file",
+    )
+
+
+def check_sibling_served(ctx, stem, accept_encoding, encoding, prefix="static"):
+    """Fetches "stem" and asserts which sibling came back.
+
+    The body is compared against the bytes actually written to that
+    sibling, so a wrong choice fails on content and not only on the
+    label - the label alone would still pass if the module served the
+    right name from the wrong file.
+    """
+    path = f"/{prefix}/{stem}"
+    status, headers, body = fetch(ctx.port, path, accept_encoding=accept_encoding)
+    check(status == 200, f"{path} {accept_encoding!r}: expected 200, got {status}")
+
+    got = headers.get("content-encoding")
+    if encoding is None:
+        check(
+            got is None,
+            f"{path} {accept_encoding!r}: expected no Content-Encoding, got {got!r}",
+        )
+        want = ctx.fixtures[stem]
+    else:
+        check(
+            got == encoding,
+            f"{path} {accept_encoding!r}: expected Content-Encoding {encoding!r}, "
+            f"got {got!r}",
+        )
+        want = ctx.fixtures[stem + SIBLING_EXTS[encoding]]
+
+    check(
+        body == want,
+        f"{path} {accept_encoding!r}: served {len(body)} bytes, which are not "
+        f"the {encoding or 'plain'} file's {len(want)}",
+    )
+    return headers
+
+
+SIBLING_EXTS = {name: ext for name, ext, _ in SIBLING_ENCODINGS}
+
+
+@test("pack_static serves every encoding the default config allows")
+def test_static_all_encodings(ctx):
+    """The default pack_static_encodings is br, gzip and zstd together, and
+    the /static/ location does not narrow it. A client naming exactly one of
+    them must get that one."""
+    for encoding in ("br", "zstd", "gzip"):
+        check_sibling_served(ctx, "multi.html", encoding, encoding)
+
+
+@test("pack_static probes in the order pack_static_encodings named")
+def test_static_directive_order(ctx):
+    """Two locations list the same three encodings in opposite orders. A
+    client offering all three gets the first one the directive named, so the
+    same request is answered differently by each - which is only possible if
+    the order the admin wrote survives into the probe.
+
+    This is what a bitmask could not do: ngx_conf_set_bitmask_slot ORs the
+    values together and the order is gone by the time the handler runs."""
+    for prefix, expected in [("order-bgz", "br"), ("order-zgb", "zstd")]:
+        for accept in ["br, gzip, zstd", "zstd, gzip, br", "gzip, br, zstd"]:
+            check_sibling_served(
+                ctx, "multi.html", accept, expected, prefix=prefix
+            )
+
+
+@test("the client's own order does not override the directive's")
+def test_static_client_order_ignored(ctx):
+    """Accept-Encoding is read as a set of what the client will take, not as
+    a ranking. Whatever order it lists them in, the directive decides."""
+    # The same two encodings offered in either order. br is not among
+    # them, so each location falls to the first of the two its own
+    # directive named: gzip for "br gzip zstd", zstd for "zstd gzip br".
+    for accept in ["gzip, zstd", "zstd, gzip"]:
+        check_sibling_served(ctx, "multi.html", accept, "gzip", prefix="order-bgz")
+        check_sibling_served(ctx, "multi.html", accept, "zstd", prefix="order-zgb")
+
+
+@test("pack_static serves only the encodings the directive named")
+def test_static_directive_subset(ctx):
+    """A narrowed list still keeps its order, and an encoding left out of it
+    is not served even when the client asks for it and the sibling is on
+    disk."""
+    check_sibling_served(ctx, "multi.html", "br, gzip, zstd", "zstd", prefix="order-zg")
+    check_sibling_served(ctx, "multi.html", "gzip, zstd", "zstd", prefix="order-zg")
+    check_sibling_served(ctx, "multi.html", "gzip", "gzip", prefix="order-zg")
+    # br is on disk and the client wants it, but the directive omits it.
+    check_sibling_served(ctx, "multi.html", "br", None, prefix="order-zg")
+
+
+@test("pack_static defaults to every encoding it knows, in table order")
+def test_static_default_order(ctx):
+    """/static/ leaves pack_static_encodings unwritten, so the default
+    stands: all three, in the order the module's table lists them."""
+    for accept, expected in [
+        ("br, gzip, zstd", "br"),
+        ("gzip, zstd", "gzip"),
+        ("zstd", "zstd"),
+        ("br, gzip", "br"),
+        ("zstd, br", "br"),
+        # A browser's real header, in the order browsers send it.
+        ("gzip, deflate, br, zstd", "br"),
+    ]:
+        check_sibling_served(ctx, "multi.html", accept, expected)
+
+
+@test("pack_static steps over the candidates that have no sibling")
+def test_static_probe_fallthrough(ctx):
+    """Only one sibling exists, and the client accepts all three, so the
+    module has to miss on the candidates ahead of it and keep going rather
+    than decline at the first ENOENT."""
+    check_sibling_served(ctx, "gz_only.html", "br, gzip, zstd", "gzip")
+    check_sibling_served(ctx, "zst_only.html", "br, gzip, zstd", "zstd")
+    # And with the one that does exist left out of Accept-Encoding, every
+    # candidate misses and the plain file is served.
+    check_sibling_served(ctx, "gz_only.html", "br, zstd", None)
+    check_sibling_served(ctx, "zst_only.html", "br, gzip", None)
+
+
+@test("pack_static skips an encoding the client refused with q=0")
+def test_static_zero_weight(ctx):
+    """A zero weight takes that encoding out of the running without taking
+    the request with it: the probe carries on to the next candidate."""
+    check_sibling_served(ctx, "multi.html", "br;q=0, gzip, zstd", "gzip")
+    check_sibling_served(ctx, "multi.html", "br;q=0, gzip;q=0, zstd", "zstd")
+    check_sibling_served(ctx, "multi.html", "br;q=0, zstd;q=0, gzip;q=0", None)
+
+
+@test("pack_static ignores encodings it does not know")
+def test_static_unknown_encodings(ctx):
+    for accept in ["deflate", "compress", "identity", "*", "x-gzip", "brotli"]:
+        check_sibling_served(ctx, "multi.html", accept, None)
+
+
+@test("every sibling is served byte for byte and cached by its own name")
+def test_static_siblings_distinct(ctx):
+    """Each encoding names a different file, and the three differ in length,
+    so this also covers the constructed path being hashed over the right
+    length: open_file_cache is on for this location, and ".br" and ".zst"
+    are not the same number of characters."""
+    seen = {}
+    for encoding in ("br", "zstd", "gzip"):
+        # Twice, so the second answer comes from open_file_cache.
+        for _ in range(2):
+            check_sibling_served(ctx, "multi.html", encoding, encoding)
+        seen[encoding] = ctx.fixtures["multi.html" + SIBLING_EXTS[encoding]]
+
+    check(
+        len(set(seen.values())) == len(seen),
+        f"the three siblings are not distinct, so serving the wrong one "
+        f"would not be visible: { {k: len(v) for k, v in seen.items()} }",
     )
 
 
