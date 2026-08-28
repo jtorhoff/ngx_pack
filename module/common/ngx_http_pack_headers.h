@@ -18,19 +18,22 @@
 
 /* Optional whitespace, as RFC 9110 defines it for list separators. */
 static ngx_uint_t
-ngx_http_pack_is_whitespace(u_char c)
+ngx_http_pack_is_whitespace(u_char const c)
 {
     return c == ' ' || c == '\t';
 }
 
 static u_char *
-ngx_http_pack_skip_whitespace(u_char *cursor, u_char *end)
+ngx_http_pack_skip_whitespace(u_char *const cursor, u_char *const end)
 {
-    while (cursor < end && ngx_http_pack_is_whitespace(*cursor)) {
-        cursor++;
+    u_char *pos;
+
+    pos = cursor;
+    while (pos < end && ngx_http_pack_is_whitespace(*pos)) {
+        pos++;
     }
 
-    return cursor;
+    return pos;
 }
 
 /* Given the text following an encoding token, reports whether its
@@ -39,53 +42,56 @@ ngx_http_pack_skip_whitespace(u_char *cursor, u_char *end)
    unrecognised parameter, no parameters at all - counts as
    acceptable. */
 static ngx_uint_t
-ngx_http_pack_is_zero_weighted(u_char *cursor, u_char *end)
+ngx_http_pack_is_zero_weighted(
+    u_char *const cursor, u_char *const end)
 {
+    u_char    *pos;
     ngx_uint_t digits;
 
-    cursor = ngx_http_pack_skip_whitespace(cursor, end);
-    if (cursor == end || *cursor++ != ';') {
+    pos = cursor;
+    pos = ngx_http_pack_skip_whitespace(pos, end);
+    if (pos == end || *pos++ != ';') {
         return 0;
     }
 
-    cursor = ngx_http_pack_skip_whitespace(cursor, end);
-    if (cursor == end || (*cursor != 'q' && *cursor != 'Q')) {
+    pos = ngx_http_pack_skip_whitespace(pos, end);
+    if (pos == end || (*pos != 'q' && *pos != 'Q')) {
         return 0;
     }
 
-    cursor++;
-    cursor = ngx_http_pack_skip_whitespace(cursor, end);
-    if (cursor == end || *cursor++ != '=') {
+    pos++;
+    pos = ngx_http_pack_skip_whitespace(pos, end);
+    if (pos == end || *pos++ != '=') {
         return 0;
     }
 
     /* Any weight not starting with "0" is non-zero. */
-    cursor = ngx_http_pack_skip_whitespace(cursor, end);
-    if (cursor == end || *cursor++ != '0') {
+    pos = ngx_http_pack_skip_whitespace(pos, end);
+    if (pos == end || *pos++ != '0') {
         return 0;
     }
 
     /* "q=0" with nothing after it, or with no fraction. */
-    if (cursor == end || *cursor != '.') {
+    if (pos == end || *pos != '.') {
         return 1;
     }
 
-    cursor++;
+    pos++;
     /* RFC 9110 permits at most three digits after the point. */
     for (digits = 0; digits < 3; digits++) {
-        if (cursor == end) {
+        if (pos == end) {
             return 1; /* "q=0." */
         }
 
-        if (*cursor < '0' || *cursor > '9') {
+        if (*pos < '0' || *pos > '9') {
             return 1;
         }
 
-        if (*cursor > '0') {
+        if (*pos > '0') {
             return 0; /* a non-zero digit */
         }
 
-        cursor++;
+        pos++;
     }
 
     return 1;
@@ -103,7 +109,7 @@ ngx_http_pack_is_zero_weighted(u_char *cursor, u_char *end)
 
 static ngx_int_t
 ngx_http_pack_check_encoding(
-    ngx_http_request_t *r, ngx_str_t *encoding)
+    ngx_http_request_t *const r, ngx_str_t *const encoding)
 {
     ngx_table_elt_t *entry;
     u_char          *start;
@@ -172,7 +178,8 @@ ngx_http_pack_check_encoding(
 /* Sets the Content-Encoding header with the given encoding.
    Returns NGX_OK on success, NGX_ERROR otherwise. */
 static ngx_int_t
-ngx_http_pack_set_encoding(ngx_http_request_t *r, ngx_str_t *encoding)
+ngx_http_pack_set_encoding(
+    ngx_http_request_t *const r, ngx_str_t *const encoding)
 {
     ngx_table_elt_t *entry;
 
@@ -199,7 +206,7 @@ ngx_http_pack_set_encoding(ngx_http_request_t *r, ngx_str_t *encoding)
    */
 static ngx_int_t
 ngx_http_pack_claim_request(
-    ngx_http_request_t *r, ngx_str_t *encoding)
+    ngx_http_request_t *const r, ngx_str_t *const encoding)
 {
     if (r != r->main) {
         return NGX_DECLINED;
@@ -219,10 +226,10 @@ ngx_http_pack_claim_request(
 /* Checks whether the given header is "Vary: Accept-Encoding".
    Returns NGX_OK on a match, NGX_DECLINED otherwise. */
 static ngx_int_t
-ngx_http_pack_check_vary(ngx_table_elt_t *header)
+ngx_http_pack_check_vary(ngx_table_elt_t *const header)
 {
-    static const u_char vary[]     = "Vary";
-    static const u_char encoding[] = "Accept-Encoding";
+    static u_char const vary[]     = "Vary";
+    static u_char const encoding[] = "Accept-Encoding";
 
     ngx_str_t *key;
     ngx_str_t *val;
@@ -248,7 +255,7 @@ ngx_http_pack_check_vary(ngx_table_elt_t *header)
    never asked for one.
    Returns NGX_OK on success, NGX_ERROR otherwise. */
 static ngx_int_t
-ngx_http_pack_set_vary(ngx_http_request_t *r)
+ngx_http_pack_set_vary(ngx_http_request_t *const r)
 {
     ngx_list_part_t *part;
     ngx_table_elt_t *header;
