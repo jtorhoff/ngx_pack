@@ -277,6 +277,22 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    /* A "Via" header means a proxy stands between this server and the
+       client, and nothing here knows what it will do with an encoded
+       body - it may cache one representation and hand it to a client
+       that cannot read it. So the sibling is not offered, which is
+       what nginx's "gzip_proxied off" does for gzip_static, and what
+       it defaults to. There is no directive to relax it yet.
+
+       After the Vary above, not before: the resource still varies on
+       Accept-Encoding whoever is asking. And under "always" not at
+       all, which skips every question about the client the same way
+       ngx_http_gzip_ok is skipped there. */
+    if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
+        r->headers_in.via != NULL) {
+        return NGX_DECLINED;
+    }
+
     /* Room for the longest suffix any candidate might need. The path
        is mapped once and each candidate's suffix is written over the
        last, so the reservation has to cover the widest of them rather
