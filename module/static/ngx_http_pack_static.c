@@ -391,6 +391,30 @@ ngx_http_pack_static_fstat(pack_fstat_args_t *const args)
 typedef struct {
     ngx_http_request_t    *request;
     pack_encoding_t const *encoding;
+} pack_accepts_args_t;
+
+/* Whether this client may be served the sibling under "on". It has to
+   name the encoding, and it must not have reached us through a proxy:
+   a "Via" header is what nginx's "gzip_proxied off" turns away, and
+   what it defaults to. No directive relaxes that yet. */
+static ngx_uint_t
+ngx_http_pack_static_accepts(pack_accepts_args_t *const args)
+{
+    if (args->request->headers_in.via != NULL) {
+        return 0;
+    }
+
+    if (ngx_http_pack_claim_request(
+            args->request, &args->encoding->name) != NGX_OK) {
+        return 0;
+    }
+
+    return 1;
+}
+
+typedef struct {
+    ngx_http_request_t    *request;
+    pack_encoding_t const *encoding;
     ngx_str_t             *path;
     u_char                *suffix;
     ngx_open_file_info_t  *file_info;
@@ -418,23 +442,18 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
     conf = ngx_http_get_module_loc_conf(
         args->request, ngx_http_pack_static_module);
 
-    /* Whether this client may have the sibling: it has to name the
-       encoding, and it must not have reached us through a proxy - a
-       "Via" header, which is what nginx's "gzip_proxied off" turns
-       away and what it defaults to. There is no directive to relax
-       that yet. "always" asks neither question, serving whatever is
-       on disk to everyone.
+    /* "always" asks neither question, serving whatever is on disk to
+       everyone, so the short circuit is the whole of it there.
 
-       Only recorded here. The probe below runs either way, because a
-       sibling that exists means the resource varies on
+       The verdict is only recorded. The probe below runs either way,
+       because a sibling that exists means the resource varies on
        Accept-Encoding, and that has to be said in the plain response
        a declined client is about to fall through to. */
-    accepted = 1;
-    if (conf->enable == NGX_HTTP_PACK_STATIC_ON) {
-        accepted = args->request->headers_in.via == NULL &&
-                   ngx_http_pack_claim_request(args->request,
-                       &args->encoding->name) == NGX_OK;
-    }
+    accepted = (conf->enable != NGX_HTTP_PACK_STATIC_ON) ||
+               (ngx_http_pack_static_accepts(&(pack_accepts_args_t) {
+                   .request  = args->request,
+                   .encoding = args->encoding,
+               }));
 
     core_conf = ngx_http_get_module_loc_conf(
         args->request, ngx_http_core_module);
