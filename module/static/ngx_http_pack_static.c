@@ -278,7 +278,7 @@ ngx_http_pack_static_preflight(
 typedef struct {
     ngx_http_core_loc_conf_t *conf;
     ngx_open_file_info_t     *file_info;
-} ngx_http_pack_static_prepare_args_t;
+} ngx_http_pack_static_prepare_file_info_args_t;
 
 /* Fills in what ngx_open_cached_file consults before it opens
    anything: the read-ahead and directio thresholds, and the terms the
@@ -289,8 +289,8 @@ typedef struct {
    reads. Carrying one candidate's over would describe the wrong
    file. */
 static void
-ngx_http_pack_static_prepare_file(
-    ngx_http_pack_static_prepare_args_t *const args)
+ngx_http_pack_static_prepare_file_info(
+    ngx_http_pack_static_prepare_file_info_args_t *const args)
 {
     ngx_memzero(args->file_info, sizeof(ngx_open_file_info_t));
 
@@ -423,8 +423,8 @@ ngx_http_pack_static_try_sibling(
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
         "http filename: \"%s\"", args->path->data);
 
-    ngx_http_pack_static_prepare_file(
-        &(ngx_http_pack_static_prepare_args_t) {
+    ngx_http_pack_static_prepare_file_info(
+        &(ngx_http_pack_static_prepare_file_info_args_t) {
             .conf      = core_conf,
             .file_info = args->file_info,
         });
