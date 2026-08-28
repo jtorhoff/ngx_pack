@@ -11,31 +11,53 @@
 
 #include "../common/ngx_http_pack_headers.h"
 
+
 enum {
     NGX_HTTP_PACK_STATIC_OFF = 0,
     NGX_HTTP_PACK_STATIC_ON,
     NGX_HTTP_PACK_STATIC_ALWAYS,
 };
 
-/* Which pre-compressed siblings the module may serve. One bit each,
-   rather than the counting values above, because the directive takes
-   several at once and ngx_conf_set_bitmask_slot ORs them together.
-   Spelled out in hex as nginx spells its own bitmasks, so that
-   adding a fourth is visibly the next bit rather than the next
-   number.
+/* One row per encoding the module knows: the token it goes by in
+   Accept-Encoding and Content-Encoding, and the suffix its
+   pre-compressed sibling carries. */
+typedef struct {
+    ngx_str_t name;
+    ngx_str_t ext;
+} pack_sibling_t;
 
-   Deliberately not sharing the NGX_HTTP_PACK_STATIC_ prefix's
-   counting values: NGX_HTTP_PACK_STATIC_ON and a first bit would
-   both be 1, and the two are never interchangeable. */
-enum {
-    NGX_HTTP_PACK_STATIC_ENCODING_BR   = 0x0001,
-    NGX_HTTP_PACK_STATIC_ENCODING_GZIP = 0x0002,
-    NGX_HTTP_PACK_STATIC_ENCODING_ZSTD = 0x0004,
+static pack_sibling_t const ngx_http_pack_static_siblings[] = {
+    {
+        .name = ngx_string("br"),
+        .ext  = ngx_string(".br"),
+    },
+    {
+        .name = ngx_string("gzip"),
+        .ext  = ngx_string(".gz"),
+    },
+    {
+        .name = ngx_string("zstd"),
+        .ext  = ngx_string(".zst"),
+    },
 };
 
+#define NGX_HTTP_PACK_STATIC_NSIBLINGS                               \
+    (sizeof(ngx_http_pack_static_siblings) / sizeof(pack_sibling_t))
+
+/* The encodings this location may serve, in the order they are to be
+   tried, which is the order pack_static_encodings named them. Held as
+   rows of the table above rather than as a set, because a set has
+   nowhere to keep that order - which is why the directive has a
+   setter of its own instead of ngx_conf_set_bitmask_slot.
+
+   A count of zero means the directive was not written here, and is
+   what merge_conf tests to decide between inheriting and defaulting.
+   It cannot arise any other way: NGX_CONF_1MORE refuses an empty
+   directive, and every argument that parses adds a row. */
 typedef struct {
-    ngx_uint_t enable;
-    ngx_uint_t encodings;
+    ngx_uint_t            enable;
+    pack_sibling_t const *encodings[NGX_HTTP_PACK_STATIC_NSIBLINGS];
+    ngx_uint_t            nencodings;
 } pack_conf_t;
 
 static ngx_conf_enum_t ngx_http_pack_static[] = {
@@ -57,65 +79,77 @@ static ngx_conf_enum_t ngx_http_pack_static[] = {
     },
 };
 
-static ngx_conf_bitmask_t ngx_http_pack_static_encodings[] = {
-    {
-        .name = ngx_string("br"),
-        .mask = NGX_HTTP_PACK_STATIC_ENCODING_BR,
-    },
-    {
-        .name = ngx_string("gzip"),
-        .mask = NGX_HTTP_PACK_STATIC_ENCODING_GZIP,
-    },
-    {
-        .name = ngx_string("zstd"),
-        .mask = NGX_HTTP_PACK_STATIC_ENCODING_ZSTD,
-    },
-    {
-        .name = ngx_null_string,
-        .mask = 0,
-    },
-};
 
-/* One row per encoding the module knows: the bit that selects it,
-   the token it goes by in Accept-Encoding and Content-Encoding, and
-   the suffix its pre-compressed sibling carries.
+/* Reads pack_static_encodings, keeping the order it was written in.
 
-   Probed in the order written here, which is fixed rather than the
-   order the directive named them in - ngx_conf_set_bitmask_slot
-   hands back a set, so what the admin typed is not recoverable.
-   Smallest output first, so a client that takes several is served
-   the tightest sibling that exists rather than the first one
-   configured.
+   ngx_conf_set_bitmask_slot would be the stock setter for a directive
+   that takes several values from a fixed set, but it ORs them into a
+   mask and the order is gone. Recording rows instead costs this
+   function and buys the admin a say in which sibling is preferred.
 
-   Kept in step with ngx_http_pack_static_encodings by hand. The two
-   are separate because the directive needs an ngx_conf_bitmask_t and
-   that type has nowhere to put a suffix. */
-typedef struct {
-    ngx_uint_t mask;
-    ngx_str_t  name;
-    ngx_str_t  ext;
-} pack_sibling_t;
+   An unknown value is refused, naming it, as the stock setter does. A
+   repeat is a warning and then ignored, also as the stock setter does
+   - the second mention cannot mean anything the first did not, and
+   dropping it keeps the row count inside the table's bounds. */
+static char *
+ngx_http_pack_static_set_encodings(
+    ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    pack_conf_t          *pcf;
+    ngx_str_t            *value;
+    pack_sibling_t const *sibling;
+    ngx_uint_t            arg;
+    ngx_uint_t            idx;
+    ngx_str_t const      *lhs;
+    ngx_str_t const      *rhs;
 
-static pack_sibling_t const ngx_http_pack_static_siblings[] = {
-    {
-        .mask = NGX_HTTP_PACK_STATIC_ENCODING_BR,
-        .name = ngx_string("br"),
-        .ext  = ngx_string(".br"),
-    },
-    {
-        .mask = NGX_HTTP_PACK_STATIC_ENCODING_GZIP,
-        .name = ngx_string("gzip"),
-        .ext  = ngx_string(".gz"),
-    },
-    {
-        .mask = NGX_HTTP_PACK_STATIC_ENCODING_ZSTD,
-        .name = ngx_string("zstd"),
-        .ext  = ngx_string(".zst"),
-    },
-};
+    pcf = conf;
+    if (pcf->nencodings != 0) {
+        return "is duplicate";
+    }
 
-#define NGX_HTTP_PACK_STATIC_NSIBLINGS                               \
-    (sizeof(ngx_http_pack_static_siblings) / sizeof(pack_sibling_t))
+    value = cf->args->elts;
+    for (arg = 1; arg < cf->args->nelts; arg++) {
+        sibling = NULL;
+        for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS; idx++) {
+            lhs = &ngx_http_pack_static_siblings[idx].name;
+            rhs = &value[arg];
+
+            if (lhs->len != rhs->len) {
+                continue;
+            }
+
+            if (ngx_strncmp(lhs->data, rhs->data, lhs->len)) {
+                continue;
+            }
+
+            sibling = &ngx_http_pack_static_siblings[idx];
+            break;
+        }
+
+        if (sibling == NULL) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "invalid value \"%V\"", &value[arg]);
+            return NGX_CONF_ERROR;
+        }
+
+        for (idx = 0; idx < pcf->nencodings; idx++) {
+            if (pcf->encodings[idx] == sibling) {
+                break;
+            }
+        }
+
+        if (idx != pcf->nencodings) {
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                "duplicate value \"%V\"", &value[arg]);
+            continue;
+        }
+
+        pcf->encodings[pcf->nencodings++] = sibling;
+    }
+
+    return NGX_CONF_OK;
+}
 
 /* clang-format off */
 static ngx_int_t ngx_http_pack_static_handler(
@@ -148,19 +182,22 @@ static ngx_command_t ngx_http_pack_static_commands[] = {
         offsetof(pack_conf_t, enable),
         &ngx_http_pack_static,
     },
-    /* 1MORE rather than TAKE123: the mask has three entries, so the
-       count is already bounded, and a repeated value is a warning
-       from ngx_conf_set_bitmask_slot rather than an error. A fourth
-       argument is caught either way, with a message naming the
-       offending value instead of counting arguments. */
+    /* 1MORE rather than TAKE123: the table has three rows, so the
+       count is already bounded, and the setter refuses an unknown
+       value and warns on a repeat. A fourth argument is caught either
+       way, with a message naming the offending value instead of
+       counting arguments.
+
+       The setter reaches the conf directly, so the offset and post
+       slots the stock setters read are left empty. */
     {
         ngx_string("pack_static_encodings"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_CONF_1MORE,
-        ngx_conf_set_bitmask_slot,
+        ngx_http_pack_static_set_encodings,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(pack_conf_t, encodings),
-        &ngx_http_pack_static_encodings,
+        0,
+        NULL,
     },
     ngx_null_command,
 };
@@ -390,9 +427,6 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
 
     conf = ngx_http_get_module_loc_conf(
         args->request, ngx_http_pack_static_module);
-    if (!(conf->encodings & args->sibling->mask)) {
-        return NGX_DECLINED;
-    }
 
     /* "always" serves whatever is on disk to everyone, so only
        "on" has to ask whether this client takes the encoding. */
@@ -566,6 +600,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
     ngx_int_t             rc;
     ngx_str_t             path;
     u_char               *suffix;
+    pack_conf_t          *conf;
     pack_sibling_t const *found;
     ngx_uint_t            idx;
     pack_sibling_t const *sibling;
@@ -580,9 +615,14 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         return rc;
     }
 
+    /* In the order pack_static_encodings named them, so the admin
+       decides which sibling a client taking several is served. */
+    conf = ngx_http_get_module_loc_conf(
+        r, ngx_http_pack_static_module);
+
     found = NULL;
-    for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS; idx++) {
-        sibling = &ngx_http_pack_static_siblings[idx];
+    for (idx = 0; idx < conf->nencodings; idx++) {
+        sibling = conf->encodings[idx];
 
         rc = ngx_http_pack_static_try_sibling(
             &(pack_try_sibling_args_t) {
@@ -653,35 +693,33 @@ ngx_http_pack_static_create_conf(ngx_conf_t *const cf)
 
     conf->enable = NGX_CONF_UNSET_UINT;
 
-    /* conf->encodings is deliberately left at the zero ngx_pcalloc
-       wrote. A bitmask has no spare value to mean "unset" - every bit
-       is a legal encoding - so nginx reserves the empty set for it,
-       and that is what ngx_conf_merge_bitmask_value tests for.
-       Setting NGX_CONF_UNSET_UINT here would read as every bit set
-       and inherit nothing. */
+    /* conf->nencodings is deliberately left at the zero ngx_pcalloc
+       wrote, which is what merge_conf reads as "not set here". A
+       count has no spare value to mean unset the way an ngx_uint_t
+       does, and it does not need one: the directive cannot leave a
+       count of zero behind. */
 
     return conf;
 }
 
 typedef struct {
     ngx_uint_t enable;
-    ngx_uint_t encodings;
+    ngx_uint_t nencodings;
 } pack_is_ambiguous_args_t;
+
 /* Whether this pair leaves the served encoding up to whichever
    sibling happens to exist. "always" skips the Accept-Encoding test,
    so with more than one encoding configured the client gets whatever
    the probe reaches first, with no say in it.
 
-   "n & (n - 1)" clears the lowest set bit: what is left is non-zero
-   only if some other bit was set too. It reads an unset mask, zero,
-   as not ambiguous, which is what the caller below wants of a parent
-   that named no encodings. */
+   A count of zero reads as not ambiguous, which is what the caller
+   below wants of a parent that named no encodings. */
 static ngx_uint_t
 ngx_http_pack_static_is_ambiguous(
     pack_is_ambiguous_args_t *const args)
 {
-    return (args->enable == NGX_HTTP_PACK_STATIC_ALWAYS) &&
-           (args->encodings & (args->encodings - 1)) != 0;
+    return args->enable == NGX_HTTP_PACK_STATIC_ALWAYS &&
+           args->nencodings > 1;
 }
 
 static char *
@@ -691,6 +729,7 @@ ngx_http_pack_static_merge_conf(
     pack_conf_t *prev;
     pack_conf_t *conf;
     ngx_uint_t   inherited;
+    ngx_uint_t   idx;
 
     prev = parent;
     conf = child;
@@ -704,25 +743,39 @@ ngx_http_pack_static_merge_conf(
        entirely. Asking what the parent already meant does not. */
     inherited = ngx_http_pack_static_is_ambiguous(
         &(pack_is_ambiguous_args_t) {
-            .enable    = prev->enable,
-            .encodings = prev->encodings,
+            .enable     = prev->enable,
+            .nencodings = prev->nencodings,
         });
 
     ngx_conf_merge_uint_value(
         conf->enable, prev->enable, NGX_HTTP_PACK_STATIC_OFF);
 
-    ngx_conf_merge_bitmask_value(conf->encodings, prev->encodings,
-        NGX_HTTP_PACK_STATIC_ENCODING_BR |
-            NGX_HTTP_PACK_STATIC_ENCODING_GZIP |
-            NGX_HTTP_PACK_STATIC_ENCODING_ZSTD);
+    /* No ngx_conf_merge_* covers a list, so the two cases the macros
+       would have handled are written out: inherit the enclosing
+       block's order, or - if it had none either - default to every
+       encoding the module knows, in table order. */
+    if (conf->nencodings == 0) {
+        if (prev->nencodings != 0) {
+            ngx_memcpy(conf->encodings, prev->encodings,
+                sizeof(conf->encodings));
+            conf->nencodings = prev->nencodings;
+        } else {
+            for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS;
+                idx++) {
+                conf->encodings[idx] =
+                    &ngx_http_pack_static_siblings[idx];
+            }
+            conf->nencodings = NGX_HTTP_PACK_STATIC_NSIBLINGS;
+        }
+    }
 
     /* Warned about rather than rejected, since the combination is
        servable - a location whose clients are all known to take the
        same encoding is a fair use of it. */
     if (!inherited && ngx_http_pack_static_is_ambiguous(
                           &(pack_is_ambiguous_args_t) {
-                              .enable    = conf->enable,
-                              .encodings = conf->encodings,
+                              .enable     = conf->enable,
+                              .nencodings = conf->nencodings,
                           })) {
         ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
             "\"pack_static always\" with more than one encoding in "
