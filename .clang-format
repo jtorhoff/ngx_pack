@@ -126,9 +126,12 @@ AlignTrailingComments:
   OverEmptyLines: 1
 AllowAllArgumentsOnNextLine: true
 AllowAllParametersOfDeclarationOnNextLine: true
+AllowShortBlocksOnASingleLine: Never
 AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: false
 AllowShortLoopsOnASingleLine: false
+BraceWrapping:
+  AfterStruct: true
 BreakAfterReturnType: AllDefinitions
 BreakBeforeBraces: Linux
 ColumnLimit: 70
