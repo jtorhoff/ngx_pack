@@ -566,7 +566,7 @@ ngx_http_pack_static_send(pack_send_args_t *const args)
 
     r = args->request;
 
-    buf = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+    buf = ngx_calloc_buf(r->pool);
     if (buf == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
