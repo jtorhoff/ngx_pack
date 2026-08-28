@@ -18,15 +18,15 @@ enum {
     NGX_HTTP_PACK_STATIC_ALWAYS,
 };
 
-/* One row per encoding the module knows: the token it goes by in
-   Accept-Encoding and Content-Encoding, and the suffix its
-   pre-compressed sibling carries. */
 typedef struct {
     ngx_str_t name;
     ngx_str_t ext;
-} pack_sibling_t;
+} pack_encoding_t;
 
-static pack_sibling_t const ngx_http_pack_static_siblings[] = {
+/* One row per encoding the module knows: the token it goes by in
+   Accept-Encoding and Content-Encoding, and the suffix its
+   pre-compressed sibling carries. */
+static pack_encoding_t const ngx_http_pack_static_encodings[] = {
     {
         .name = ngx_string("br"),
         .ext  = ngx_string(".br"),
@@ -41,8 +41,8 @@ static pack_sibling_t const ngx_http_pack_static_siblings[] = {
     },
 };
 
-#define NGX_HTTP_PACK_STATIC_NSIBLINGS                               \
-    (sizeof(ngx_http_pack_static_siblings) / sizeof(pack_sibling_t))
+#define NGX_HTTP_PACK_STATIC_NENCODINGS                              \
+    (sizeof(ngx_http_pack_static_encodings) / sizeof(pack_encoding_t))
 
 /* The encodings this location may serve, in the order they are to be
    tried, which is the order pack_static_encodings named them. Held as
@@ -55,9 +55,10 @@ static pack_sibling_t const ngx_http_pack_static_siblings[] = {
    It cannot arise any other way: NGX_CONF_1MORE refuses an empty
    directive, and every argument that parses adds a row. */
 typedef struct {
-    ngx_uint_t            enable;
-    pack_sibling_t const *encodings[NGX_HTTP_PACK_STATIC_NSIBLINGS];
-    ngx_uint_t            nencodings;
+    ngx_uint_t enable;
+    ngx_uint_t nencodings;
+
+    pack_encoding_t const *encodings[NGX_HTTP_PACK_STATIC_NENCODINGS];
 } pack_conf_t;
 
 static ngx_conf_enum_t ngx_http_pack_static[] = {
@@ -79,73 +80,80 @@ static ngx_conf_enum_t ngx_http_pack_static[] = {
     },
 };
 
-
 /* Reads pack_static_encodings, keeping the order it was written in.
 
-   ngx_conf_set_bitmask_slot would be the stock setter for a directive
-   that takes several values from a fixed set, but it ORs them into a
-   mask and the order is gone. Recording rows instead costs this
-   function and buys the admin a say in which sibling is preferred.
-
-   An unknown value is refused, naming it, as the stock setter does. A
-   repeat is a warning and then ignored, also as the stock setter does
-   - the second mention cannot mean anything the first did not, and
-   dropping it keeps the row count inside the table's bounds. */
+   An unknown value will make nginx refuse the whole configuration.
+   A repeat is logged as a warning and ignored. The list of encodings
+   is upper bounded by NGX_HTTP_PACK_STATIC_NENCODINGS. */
 static char *
 ngx_http_pack_static_set_encodings(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    pack_conf_t          *pcf;
-    ngx_str_t            *value;
-    pack_sibling_t const *sibling;
-    ngx_uint_t            arg;
-    ngx_uint_t            idx;
-    ngx_str_t const      *lhs;
-    ngx_str_t const      *rhs;
+    pack_conf_t           *pcf;
+    ngx_str_t             *value;
+    ngx_uint_t             arg;
+    pack_encoding_t const *sibling_encoding;
+    ngx_uint_t             idx;
+    ngx_str_t const       *lhs;
+    ngx_str_t const       *rhs;
 
     pcf = conf;
+    /* Checks whether the pack_static_encodings directive has been
+       specified in the same block already. */
     if (pcf->nencodings != 0) {
         return "is duplicate";
     }
 
+    /* Iterates over encodings' args and adds valid, unique values
+       to the encodings array. The dedupe makes the count bounded.
+       The files that end with the corresponding extension
+       (aka siblings) are probed by this module on request. */
     value = cf->args->elts;
     for (arg = 1; arg < cf->args->nelts; arg++) {
-        sibling = NULL;
-        for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS; idx++) {
-            lhs = &ngx_http_pack_static_siblings[idx].name;
+        sibling_encoding = NULL;
+        for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NENCODINGS; idx++) {
+            lhs = &ngx_http_pack_static_encodings[idx].name;
             rhs = &value[arg];
 
             if (lhs->len != rhs->len) {
                 continue;
             }
 
+            /* The directive's arguments are case-sensitive.
+               Accept-Encoding is not: ngx_http_pack_check_encoding
+               matches it case-insensitively, as per RFC 9110. */
             if (ngx_strncmp(lhs->data, rhs->data, lhs->len)) {
                 continue;
             }
 
-            sibling = &ngx_http_pack_static_siblings[idx];
+            sibling_encoding = &ngx_http_pack_static_encodings[idx];
             break;
         }
 
-        if (sibling == NULL) {
+        if (sibling_encoding == NULL) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                 "invalid value \"%V\"", &value[arg]);
             return NGX_CONF_ERROR;
         }
 
-        for (idx = 0; idx < pcf->nencodings; idx++) {
-            if (pcf->encodings[idx] == sibling) {
-                break;
+        /* Checks whether the given encoding has been specified
+           already. Logs a warning in this case. */
+        {
+            for (idx = 0; idx < pcf->nencodings; idx++) {
+                if (pcf->encodings[idx] == sibling_encoding) {
+                    break;
+                }
+            }
+
+            if (idx != pcf->nencodings) {
+                ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                    "duplicate value \"%V\"", &value[arg]);
+                continue;
             }
         }
 
-        if (idx != pcf->nencodings) {
-            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
-                "duplicate value \"%V\"", &value[arg]);
-            continue;
-        }
-
-        pcf->encodings[pcf->nencodings++] = sibling;
+        /* Appends a new, unique, and valid encoding value */
+        pcf->encodings[pcf->nencodings++] = sibling_encoding;
     }
 
     return NGX_CONF_OK;
@@ -168,10 +176,6 @@ static ngx_int_t ngx_http_pack_static_init(
 );
 /* clang-format on */
 
-/* Fenced for the contexts below, which are written one per line so
-   that adding or dropping one is a one-line diff. clang-format would
-   pack them back together; the trailing commas that hold the tables
-   above in shape do not reach inside an expression. */
 static ngx_command_t ngx_http_pack_static_commands[] = {
     {
         ngx_string("pack_static"),
@@ -245,12 +249,12 @@ typedef struct {
 static ngx_int_t
 ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
 {
-    ngx_http_request_t   *r;
-    pack_conf_t          *conf;
-    size_t                reserved;
-    ngx_uint_t            idx;
-    pack_sibling_t const *sibling;
-    size_t                root_len;
+    ngx_http_request_t    *r;
+    pack_conf_t           *conf;
+    size_t                 reserved;
+    ngx_uint_t             idx;
+    pack_encoding_t const *sibling_encoding;
+    size_t                 root_len;
 
     r = args->request;
 
@@ -284,10 +288,10 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
        last, so the reservation has to cover the widest of them rather
        than the first. */
     reserved = 0;
-    for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS; idx++) {
-        sibling = &ngx_http_pack_static_siblings[idx];
-        if (sibling->ext.len > reserved) {
-            reserved = sibling->ext.len;
+    for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NENCODINGS; idx++) {
+        sibling_encoding = &ngx_http_pack_static_encodings[idx];
+        if (sibling_encoding->ext.len > reserved) {
+            reserved = sibling_encoding->ext.len;
         }
     }
 
@@ -400,11 +404,11 @@ ngx_http_pack_static_stat(pack_stat_args_t *const args)
 }
 
 typedef struct {
-    ngx_http_request_t   *request;
-    pack_sibling_t const *sibling;
-    ngx_str_t            *path;
-    u_char               *suffix;
-    ngx_open_file_info_t *file_info;
+    ngx_http_request_t    *request;
+    pack_encoding_t const *encoding;
+    ngx_str_t             *path;
+    u_char                *suffix;
+    ngx_open_file_info_t  *file_info;
 } pack_try_sibling_args_t;
 
 /* Tries one encoding: writes its suffix over "suffix", which points
@@ -432,7 +436,7 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
        "on" has to ask whether this client takes the encoding. */
     if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
         ngx_http_pack_claim_request(
-            args->request, &args->sibling->name) != NGX_OK) {
+            args->request, &args->encoding->name) != NGX_OK) {
         return NGX_DECLINED;
     }
 
@@ -441,8 +445,8 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
 
     /* ngx_cpystrn returns the terminating zero it wrote, which is
        where the string now ends. */
-    last = ngx_cpystrn(args->suffix, args->sibling->ext.data,
-        args->sibling->ext.len + 1);
+    last = ngx_cpystrn(args->suffix, args->encoding->ext.data,
+        args->encoding->ext.len + 1);
 
     args->path->len = last - args->path->data;
 
@@ -492,13 +496,6 @@ typedef struct {
     ngx_str_t const      *encoding;
 } pack_set_headers_args_t;
 
-/* Sends the open sibling as the whole response body: one buffer that
-   is the file itself, which the output filters turn into a sendfile
-   or a read, so nothing is copied through the worker.
-
-   The headers have been described by the caller and go out here.
-   Returns whatever the filter chain returns, which the handler passes
-   straight back to nginx. */
 /* Describes the response the found sibling will be: its size and
    mtime, the ETag and Content-Type derived from them, and the
    Content-Encoding that says which sibling this is. Nothing goes out
@@ -528,7 +525,6 @@ ngx_http_pack_static_set_headers(pack_set_headers_args_t *const args)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    /* Set "Content-Encoding" header. */
     if (ngx_http_pack_set_encoding(r, args->encoding) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -550,6 +546,21 @@ typedef struct {
     ngx_str_t            *path;
 } pack_send_args_t;
 
+/* Sends the response: the headers set above, then the sibling itself
+   as a single buffer.
+
+   The body is described rather than read. The buffer carries the
+   descriptor ngx_open_cached_file left in file_info and the range of
+   it to send, so the output chain hands the file to the kernel -
+   with sendfile, without the bytes entering this process at all.
+   Closing that descriptor belongs to the cleanup ngx_open_cached_file
+   registered on the request pool, which is why no path out of here
+   closes anything.
+
+   Returns NGX_HTTP_INTERNAL_SERVER_ERROR if the buffer could not be
+   allocated, the result of ngx_http_send_header when it fails or
+   when the response ends at the headers - a HEAD request, a 304 -
+   and otherwise whatever the filter chain makes of the body. */
 static ngx_int_t
 ngx_http_pack_static_send(pack_send_args_t *const args)
 {
@@ -597,14 +608,14 @@ ngx_http_pack_static_send(pack_send_args_t *const args)
 static ngx_int_t
 ngx_http_pack_static_handler(ngx_http_request_t *const r)
 {
-    ngx_int_t             rc;
-    ngx_str_t             path;
-    u_char               *suffix;
-    pack_conf_t          *conf;
-    pack_sibling_t const *found;
-    ngx_uint_t            idx;
-    pack_sibling_t const *sibling;
-    ngx_open_file_info_t  file_info;
+    ngx_int_t              rc;
+    ngx_str_t              path;
+    u_char                *suffix;
+    pack_conf_t           *conf;
+    pack_encoding_t const *found;
+    ngx_uint_t             idx;
+    pack_encoding_t const *sibling_encoding;
+    ngx_open_file_info_t   file_info;
 
     rc = ngx_http_pack_static_preflight(&(pack_preflight_args_t) {
         .request = r,
@@ -622,18 +633,18 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
 
     found = NULL;
     for (idx = 0; idx < conf->nencodings; idx++) {
-        sibling = conf->encodings[idx];
+        sibling_encoding = conf->encodings[idx];
 
         rc = ngx_http_pack_static_try_sibling(
             &(pack_try_sibling_args_t) {
                 .request   = r,
-                .sibling   = sibling,
+                .encoding  = sibling_encoding,
                 .path      = &path,
                 .suffix    = suffix,
                 .file_info = &file_info,
             });
         if (rc == NGX_OK) {
-            found = sibling;
+            found = sibling_encoding;
             break;
         }
 
@@ -729,7 +740,8 @@ ngx_http_pack_static_merge_conf(
     pack_conf_t *prev;
     pack_conf_t *conf;
     ngx_uint_t   inherited;
-    ngx_uint_t   idx;
+    ngx_uint_t   i;
+    ngx_uint_t   is_ambiguous;
 
     prev = parent;
     conf = child;
@@ -760,23 +772,24 @@ ngx_http_pack_static_merge_conf(
                 sizeof(conf->encodings));
             conf->nencodings = prev->nencodings;
         } else {
-            for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS;
-                idx++) {
-                conf->encodings[idx] =
-                    &ngx_http_pack_static_siblings[idx];
+            for (i = 0; i < NGX_HTTP_PACK_STATIC_NENCODINGS; i++) {
+                conf->encodings[i] =
+                    &ngx_http_pack_static_encodings[i];
             }
-            conf->nencodings = NGX_HTTP_PACK_STATIC_NSIBLINGS;
+            conf->nencodings = NGX_HTTP_PACK_STATIC_NENCODINGS;
         }
     }
 
+    is_ambiguous = ngx_http_pack_static_is_ambiguous(
+        &(pack_is_ambiguous_args_t) {
+            .enable     = conf->enable,
+            .nencodings = conf->nencodings,
+        });
+
     /* Warned about rather than rejected, since the combination is
-       servable - a location whose clients are all known to take the
-       same encoding is a fair use of it. */
-    if (!inherited && ngx_http_pack_static_is_ambiguous(
-                          &(pack_is_ambiguous_args_t) {
-                              .enable     = conf->enable,
-                              .nencodings = conf->nencodings,
-                          })) {
+       servable - a location whose clients are all known to take
+       the same encoding is a fair use of it. */
+    if (!inherited && is_ambiguous) {
         ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
             "\"pack_static always\" with more than one encoding in "
             "\"pack_static_encodings\" serves whatever is found "
