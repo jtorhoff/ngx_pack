@@ -208,12 +208,12 @@ typedef struct {
 static ngx_int_t
 ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
 {
-    ngx_http_request_t *r;
-    pack_conf_t        *conf;
-    size_t              reserved;
-    ngx_uint_t          idx;
-    pack_sibling_t     *sibling;
-    size_t              root_len;
+    ngx_http_request_t   *r;
+    pack_conf_t          *conf;
+    size_t                reserved;
+    ngx_uint_t            idx;
+    pack_sibling_t const *sibling;
+    size_t                root_len;
 
     r = args->request;
 
@@ -248,8 +248,7 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
        than the first. */
     reserved = 0;
     for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS; idx++) {
-        sibling =
-            (pack_sibling_t *) &ngx_http_pack_static_siblings[idx];
+        sibling = &ngx_http_pack_static_siblings[idx];
         if (sibling->ext.len > reserved) {
             reserved = sibling->ext.len;
         }
@@ -365,7 +364,7 @@ ngx_http_pack_static_stat(pack_stat_args_t *const args)
 
 typedef struct {
     ngx_http_request_t   *request;
-    pack_sibling_t       *sibling;
+    pack_sibling_t const *sibling;
     ngx_str_t            *path;
     u_char               *suffix;
     ngx_open_file_info_t *file_info;
@@ -456,7 +455,7 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
 typedef struct {
     ngx_http_request_t   *request;
     ngx_open_file_info_t *file_info;
-    ngx_str_t            *encoding;
+    ngx_str_t const      *encoding;
 } pack_set_headers_args_t;
 
 /* Sends the open sibling as the whole response body: one buffer that
@@ -564,13 +563,13 @@ ngx_http_pack_static_send(pack_send_args_t *const args)
 static ngx_int_t
 ngx_http_pack_static_handler(ngx_http_request_t *const r)
 {
-    ngx_int_t            rc;
-    ngx_str_t            path;
-    u_char              *suffix;
-    pack_sibling_t      *found;
-    ngx_uint_t           idx;
-    pack_sibling_t      *sibling;
-    ngx_open_file_info_t file_info;
+    ngx_int_t             rc;
+    ngx_str_t             path;
+    u_char               *suffix;
+    pack_sibling_t const *found;
+    ngx_uint_t            idx;
+    pack_sibling_t const *sibling;
+    ngx_open_file_info_t  file_info;
 
     rc = ngx_http_pack_static_preflight(&(pack_preflight_args_t) {
         .request = r,
@@ -583,8 +582,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
 
     found = NULL;
     for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NSIBLINGS; idx++) {
-        sibling =
-            (pack_sibling_t *) &ngx_http_pack_static_siblings[idx];
+        sibling = &ngx_http_pack_static_siblings[idx];
 
         rc = ngx_http_pack_static_try_sibling(
             &(pack_try_sibling_args_t) {

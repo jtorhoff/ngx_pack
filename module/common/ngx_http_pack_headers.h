@@ -106,10 +106,9 @@ ngx_http_pack_is_zero_weighted(
    ignored.
    Returns NGX_OK on a match, NGX_DECLINE otherwise.
 */
-
 static ngx_int_t
 ngx_http_pack_check_encoding(
-    ngx_http_request_t *const r, ngx_str_t *const encoding)
+    ngx_http_request_t *const r, ngx_str_t const *const encoding)
 {
     ngx_table_elt_t *entry;
     u_char          *start;
@@ -179,7 +178,7 @@ ngx_http_pack_check_encoding(
    Returns NGX_OK on success, NGX_ERROR otherwise. */
 static ngx_int_t
 ngx_http_pack_set_encoding(
-    ngx_http_request_t *const r, ngx_str_t *const encoding)
+    ngx_http_request_t *const r, ngx_str_t const *const encoding)
 {
     ngx_table_elt_t *entry;
 
@@ -206,7 +205,7 @@ ngx_http_pack_set_encoding(
    */
 static ngx_int_t
 ngx_http_pack_claim_request(
-    ngx_http_request_t *const r, ngx_str_t *const encoding)
+    ngx_http_request_t *const r, ngx_str_t const *const encoding)
 {
     if (r != r->main) {
         return NGX_DECLINED;
