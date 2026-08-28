@@ -584,6 +584,14 @@ ngx_http_pack_static_send(pack_send_args_t *const args)
     buf->last_buf      = (r == r->main) ? 1 : 0;
     buf->last_in_chain = 1;
 
+    /* An empty sibling in a subrequest leaves a buffer with nothing
+       in it and nothing marking it: no data, no file, and no
+       last_buf, since the parent's response goes on. The write filter
+       calls that a bug - "zero size buf" at alert level, and a
+       debug_point that aborts the worker under "debug_points abort" -
+       unless "sync" says the emptiness is deliberate. */
+    buf->sync = (buf->last_buf || buf->in_file) ? 0 : 1;
+
     buf->file->fd       = args->file_info->fd;
     buf->file->name     = *args->path;
     buf->file->directio = args->file_info->is_directio;
