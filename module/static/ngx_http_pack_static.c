@@ -320,16 +320,16 @@ typedef struct {
     ngx_http_core_loc_conf_t *conf;
     ngx_str_t                *path;
     ngx_open_file_info_t     *file_info;
-} pack_fstat_args_t;
+} pack_open_sibling_args_t;
 
-/* Opens what the path now names. The name understates it:
-   ngx_open_cached_file returns a descriptor, not just a stat.
+/* Opens what the path now names.
 
    NGX_DECLINED covers a missing sibling, the ordinary case rather
    than a failure. What an operator would want to know about is logged
    first and then declined like the rest. */
 static ngx_int_t
-ngx_http_pack_static_fstat(pack_fstat_args_t *const args)
+ngx_http_pack_static_open_sibling(
+    pack_open_sibling_args_t *const args)
 {
     ngx_int_t  rc;
     ngx_uint_t level;
@@ -457,12 +457,13 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
             .file_info = args->file_info,
         });
 
-    rc = ngx_http_pack_static_fstat(&(pack_fstat_args_t) {
-        .request   = args->request,
-        .conf      = core_conf,
-        .path      = args->path,
-        .file_info = args->file_info,
-    });
+    rc = ngx_http_pack_static_open_sibling(
+        &(pack_open_sibling_args_t) {
+            .request   = args->request,
+            .conf      = core_conf,
+            .path      = args->path,
+            .file_info = args->file_info,
+        });
 
     if (rc != NGX_OK) {
         return rc;
