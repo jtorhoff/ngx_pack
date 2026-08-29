@@ -177,7 +177,7 @@ static ngx_int_t ngx_http_pack_static_init(
 );
 /* clang-format on */
 
-static ngx_command_t ngx_http_pack_static_commands[] = {
+static ngx_command_t const ngx_http_pack_static_commands[] = {
     {
         ngx_string("pack_static"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -203,7 +203,7 @@ static ngx_command_t ngx_http_pack_static_commands[] = {
     ngx_null_command,
 };
 
-static ngx_http_module_t ngx_http_pack_static_module_ctx = {
+static ngx_http_module_t const ngx_http_pack_static_module_ctx = {
     NULL,                             /* preconfiguration */
     ngx_http_pack_static_init,        /* postconfiguration */
     NULL,                             /* create main conf */
@@ -214,18 +214,23 @@ static ngx_http_module_t ngx_http_pack_static_module_ctx = {
     ngx_http_pack_static_merge_conf   /* merge location conf */
 };
 
+/* Not const, though the two tables above are: nginx writes into this
+   struct at startup - ngx_preinit_modules sets "index" and "name",
+   ngx_count_modules sets "ctx_index" - so a read-only placement dies
+   with SIGBUS before the first request. */
 ngx_module_t ngx_http_pack_static_module = {
     NGX_MODULE_V1,
-    &ngx_http_pack_static_module_ctx, /* module context */
-    ngx_http_pack_static_commands,    /* module directives */
-    NGX_HTTP_MODULE,                  /* module type */
-    NULL,                             /* init master */
-    NULL,                             /* init module */
-    NULL,                             /* init process */
-    NULL,                             /* init thread */
-    NULL,                             /* exit thread */
-    NULL,                             /* exit process */
-    NULL,                             /* exit master */
+    (void *) &ngx_http_pack_static_module_ctx, /* module context */
+    (ngx_command_t *)
+        ngx_http_pack_static_commands,         /* module directives */
+    NGX_HTTP_MODULE,                           /* module type */
+    NULL,                                      /* init master */
+    NULL,                                      /* init module */
+    NULL,                                      /* init process */
+    NULL,                                      /* init thread */
+    NULL,                                      /* exit thread */
+    NULL,                                      /* exit process */
+    NULL,                                      /* exit master */
     NGX_MODULE_V1_PADDING,
 };
 
