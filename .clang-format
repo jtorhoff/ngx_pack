@@ -85,7 +85,7 @@
 # anything under deps/.
 ---
 BasedOnStyle: LLVM
-AlignAfterOpenBracket: DontAlign
+AlignAfterOpenBracket: AlwaysBreak
 AlignConsecutiveAssignments:
   Enabled:          true
   # Same grouping rules as the declarations below: a blank line or a
@@ -130,17 +130,19 @@ AllowShortBlocksOnASingleLine: Never
 AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: false
 AllowShortLoopsOnASingleLine: false
+BinPackArguments: false
+BinPackParameters: OnePerLine
+BitFieldColonSpacing: After
 BraceWrapping:
   AfterStruct: true
 BreakAfterReturnType: AllDefinitions
-BreakBeforeBraces: Linux
+BreakBeforeBraces: WebKit
 ColumnLimit: 70
 ContinuationIndentWidth: 4
 DerivePointerAlignment: false
 IndentCaseLabels: true
 IndentWidth: 4
 InsertBraces: true
-KeepEmptyLinesAtTheStartOfBlocks: false
 MaxEmptyLinesToKeep: 2
 # LLVM's default of 2 makes breaking after "=" almost free, so a call
 # that will not fit gets split from its result rather than at its own
@@ -157,5 +159,7 @@ MaxEmptyLinesToKeep: 2
 # next - which is worse than what it fixes.
 PenaltyBreakAssignment: 100
 PointerAlignment: Right
+QualifierAlignment: Right
+SeparateDefinitionBlocks: Leave
 SortIncludes: Never
 SpaceAfterCStyleCast: true

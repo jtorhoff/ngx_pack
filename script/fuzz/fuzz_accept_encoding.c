@@ -47,7 +47,7 @@
 /* ngx_string.c is linked for ngx_strlcasestrn and refers to these.
    Nothing on the path under test reaches them; they exist to satisfy
    the linker. */
-volatile ngx_cycle_t *ngx_cycle;
+ngx_cycle_t volatile *ngx_cycle;
 
 void *
 ngx_alloc(size_t size, ngx_log_t *log)
@@ -64,7 +64,7 @@ ngx_pnalloc(ngx_pool_t *pool, size_t size)
 }
 
 int
-LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 {
     ngx_http_request_t r;
     ngx_table_elt_t    accept_encoding;

@@ -122,8 +122,12 @@ ngx_http_pack_static_set_encodings(
         }
 
         if (sibling_encoding == NULL) {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                "invalid value \"%V\"", &value[arg]);
+            ngx_conf_log_error(
+                NGX_LOG_EMERG,
+                cf,
+                0,
+                "invalid value \"%V\"",
+                &value[arg]);
             return NGX_CONF_ERROR;
         }
 
@@ -137,8 +141,12 @@ ngx_http_pack_static_set_encodings(
             }
 
             if (idx != pcf->nencodings) {
-                ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
-                    "duplicate value \"%V\"", &value[arg]);
+                ngx_conf_log_error(
+                    NGX_LOG_WARN,
+                    cf,
+                    0,
+                    "duplicate value \"%V\"",
+                    &value[arg]);
                 continue;
             }
         }
@@ -339,8 +347,11 @@ ngx_http_pack_static_open_sibling(pack_open_sibling_args *const args)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    rc = ngx_open_cached_file(args->conf->open_file_cache, args->path,
-        args->file_info, args->request->pool);
+    rc = ngx_open_cached_file(
+        args->conf->open_file_cache,
+        args->path,
+        args->file_info,
+        args->request->pool);
     if (rc == NGX_OK) {
         return NGX_OK;
     }
@@ -367,9 +378,13 @@ ngx_http_pack_static_open_sibling(pack_open_sibling_args *const args)
             break;
     }
 
-    ngx_log_error(level, args->request->connection->log,
-        args->file_info->err, "%s \"%s\" failed",
-        args->file_info->failed, args->path->data);
+    ngx_log_error(
+        level,
+        args->request->connection->log,
+        args->file_info->err,
+        "%s \"%s\" failed",
+        args->file_info->failed,
+        args->path->data);
 
     return NGX_DECLINED;
 }
@@ -440,15 +455,21 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args *const args)
 
     /* ngx_cpystrn returns the terminating zero it wrote, which is
        where the string now ends. */
-    last = ngx_cpystrn(args->suffix, args->encoding->ext.data,
+    last = ngx_cpystrn(
+        args->suffix,
+        args->encoding->ext.data,
         args->encoding->ext.len + 1);
 
     args->path->len = last - args->path->data;
 
     log = args->request->connection->log;
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0,
-        "http filename: \"%s\"", args->path->data);
+    ngx_log_debug1(
+        NGX_LOG_DEBUG_HTTP,
+        log,
+        0,
+        "http filename: \"%s\"",
+        args->path->data);
 
     ngx_http_pack_static_prepare_file_info(
         &(pack_prepare_file_info_args) {
@@ -467,7 +488,11 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args *const args)
         return rc;
     }
 
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "http static fd: %d",
+    ngx_log_debug1(
+        NGX_LOG_DEBUG_HTTP,
+        log,
+        0,
+        "http static fd: %d",
         args->file_info->fd);
 
     /* The suffixed path is not a file we can serve. Declined rather
@@ -482,8 +507,12 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args *const args)
     }
 #if !(NGX_WIN32)
     if (!args->file_info->is_file) {
-        ngx_log_error(NGX_LOG_CRIT, log, 0,
-            "\"%s\" is not a regular file", args->path->data);
+        ngx_log_error(
+            NGX_LOG_CRIT,
+            log,
+            0,
+            "\"%s\" is not a regular file",
+            args->path->data);
         return NGX_DECLINED;
     }
 #endif
@@ -746,7 +775,10 @@ ngx_http_pack_static_warn_ambiguous(
 
     if (is_ambiguous && !conf->warned) {
         conf->warned = 1;
-        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+        ngx_conf_log_error(
+            NGX_LOG_WARN,
+            cf,
+            0,
             "\"pack_static always\" with more than one encoding in "
             "\"pack_static_encodings\" serves whatever is found "
             "first to every client");
@@ -782,7 +814,9 @@ ngx_http_pack_static_merge_conf(
        encoding the module knows, in table order. */
     if (conf->nencodings == 0) {
         if (prev->nencodings != 0) {
-            ngx_memcpy(conf->encodings, prev->encodings,
+            ngx_memcpy(
+                conf->encodings,
+                prev->encodings,
                 sizeof(conf->encodings));
             conf->nencodings = prev->nencodings;
         } else {

@@ -32,17 +32,19 @@ typedef struct {
 } ngx_http_fault_conf_t;
 
 static ngx_int_t ngx_http_fault_header_filter(ngx_http_request_t *r);
-static void     *ngx_http_fault_create_conf(ngx_conf_t *cf);
-static char     *ngx_http_fault_merge_conf(ngx_conf_t *cf, void *parent,
-    void *child);
+static void *ngx_http_fault_create_conf(ngx_conf_t *cf);
+static char *
+ngx_http_fault_merge_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_fault_init(ngx_conf_t *cf);
 
 static ngx_command_t ngx_http_fault_commands[] = {
     {ngx_string("fault_header_status"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_CONF_TAKE1,
-        ngx_conf_set_num_slot, NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_fault_conf_t, status), NULL},
+     NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+         NGX_CONF_TAKE1,
+     ngx_conf_set_num_slot,
+     NGX_HTTP_LOC_CONF_OFFSET,
+     offsetof(ngx_http_fault_conf_t, status),
+     NULL},
 
     ngx_null_command};
 
@@ -60,7 +62,8 @@ static ngx_http_module_t ngx_http_fault_filter_module_ctx = {
     ngx_http_fault_merge_conf   /* merge location configuration */
 };
 
-ngx_module_t ngx_http_fault_filter_module = {NGX_MODULE_V1,
+ngx_module_t ngx_http_fault_filter_module = {
+    NGX_MODULE_V1,
     &ngx_http_fault_filter_module_ctx, /* module context */
     ngx_http_fault_commands,           /* module directives */
     NGX_HTTP_MODULE,                   /* module type */
@@ -80,8 +83,8 @@ ngx_http_fault_header_filter(ngx_http_request_t *r)
 {
     ngx_http_fault_conf_t *conf;
 
-    conf =
-        ngx_http_get_module_loc_conf(r, ngx_http_fault_filter_module);
+    conf = ngx_http_get_module_loc_conf(
+        r, ngx_http_fault_filter_module);
 
     /* A status, not NGX_OK/NGX_AGAIN/NGX_ERROR - which is the whole
        point of this module. Everything above us in the chain sees it
@@ -123,7 +126,7 @@ static ngx_int_t
 ngx_http_fault_init(ngx_conf_t *cf)
 {
     ngx_http_next_header_filter = ngx_http_top_header_filter;
-    ngx_http_top_header_filter = ngx_http_fault_header_filter;
+    ngx_http_top_header_filter  = ngx_http_fault_header_filter;
 
     return NGX_OK;
 }
