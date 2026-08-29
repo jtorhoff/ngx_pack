@@ -450,7 +450,7 @@ ngx_http_pack_static_try_sibling(try_sibling_args *const args)
        because a sibling that exists means the resource varies on
        Accept-Encoding and the declined client's plain response must
        say so. "always" asks nothing, which the short circuit is. */
-    accepted = (conf->enable != NGX_HTTP_PACK_STATIC_ON) ||
+    accepted = (conf->enable == NGX_HTTP_PACK_STATIC_ALWAYS) ||
                (ngx_http_pack_static_accepts(&(accepts_args) {
                    .request  = args->request,
                    .encoding = args->encoding,
