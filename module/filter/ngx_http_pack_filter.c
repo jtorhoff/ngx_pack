@@ -467,7 +467,7 @@ static ngx_command_t ngx_http_zstd_filter_commands[] = {
     ngx_null_command};
 
 /* Module context hooks. */
-static ngx_http_module_t ngx_http_zstd_filter_module_ctx = {
+static ngx_http_module_t ngx_http_pack_filter_module_ctx = {
     NULL,                      /* pre-configuration */
     ngx_http_zstd_filter_init, /* post-configuration */
 
@@ -482,8 +482,8 @@ static ngx_http_module_t ngx_http_zstd_filter_module_ctx = {
 };
 
 /* Module descriptor. */
-ngx_module_t ngx_http_zstd_filter_module = {NGX_MODULE_V1,
-    &ngx_http_zstd_filter_module_ctx, /* module context */
+ngx_module_t ngx_http_pack_filter_module = {NGX_MODULE_V1,
+    &ngx_http_pack_filter_module_ctx, /* module context */
     ngx_http_zstd_filter_commands,    /* module directives */
     NGX_HTTP_MODULE,                  /* module type */
     NULL,                             /* init master */
@@ -508,7 +508,7 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
     ngx_http_zstd_ctx_t  *ctx;
 
     conf = ngx_http_get_module_loc_conf(
-        r, ngx_http_zstd_filter_module);
+        r, ngx_http_pack_filter_module);
 
     /* Filter only if enabled. */
     if (!conf->enable) {
@@ -580,7 +580,7 @@ ngx_http_zstd_header_filter(ngx_http_request_t *r)
 
     ctx->request        = r;
     ctx->content_length = r->headers_out.content_length_n;
-    ngx_http_set_ctx(r, ctx, ngx_http_zstd_filter_module);
+    ngx_http_set_ctx(r, ctx, ngx_http_pack_filter_module);
 
     r->main_filter_need_in_memory = 1;
 
@@ -678,7 +678,7 @@ ngx_http_zstd_filter_get_buf(
     }
 
     conf = ngx_http_get_module_loc_conf(
-        r, ngx_http_zstd_filter_module);
+        r, ngx_http_pack_filter_module);
     if ((ngx_int_t) ctx->buffers >= conf->buffers) {
         return NGX_DECLINED;
     }
@@ -693,7 +693,7 @@ ngx_http_zstd_filter_get_buf(
        rather than dropping the link. "recycled" tells the filters
        below that this memory is going to be reused, so they must not
        sit on it. */
-    buf->tag      = (ngx_buf_tag_t) &ngx_http_zstd_filter_module;
+    buf->tag      = (ngx_buf_tag_t) &ngx_http_pack_filter_module;
     buf->recycled = 1;
 
     ctx->buffers++;
@@ -1093,7 +1093,7 @@ ngx_http_zstd_filter_prepare(ngx_http_zstd_ctx_t *ctx, ngx_int_t *rc)
        downstream is waiting, so decide immediately and compress. */
     if (!ctx->state->headers_sent) {
         conf = ngx_http_get_module_loc_conf(
-            ctx->request, ngx_http_zstd_filter_module);
+            ctx->request, ngx_http_pack_filter_module);
 
         if (complete) {
             ctx->state->accepted_for_compression =
@@ -1179,7 +1179,7 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
     r = ctx->request;
 
     conf = ngx_http_get_module_loc_conf(
-        r, ngx_http_zstd_filter_module);
+        r, ngx_http_pack_filter_module);
 
     /* Encoder memory is not owned by the pool, so arrange for it to
        be released even if the request is aborted mid-stream.
@@ -1342,7 +1342,7 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_int_t            rc;
     ngx_http_zstd_step_e step;
 
-    ctx = ngx_http_get_module_ctx(r, ngx_http_zstd_filter_module);
+    ctx = ngx_http_get_module_ctx(r, ngx_http_pack_filter_module);
 
     /* r->connection->log inline rather than through a local: this is
        the only use in the function, and ngx_log_debug0 compiles to
@@ -1419,7 +1419,7 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         }
 
         ngx_chain_update_chains(r->pool, &ctx->free, &ctx->busy,
-            &ctx->out, (ngx_buf_tag_t) &ngx_http_zstd_filter_module);
+            &ctx->out, (ngx_buf_tag_t) &ngx_http_pack_filter_module);
         ctx->last_out = &ctx->out;
 
         /* What nginx has to be told to come back for. Buffers the

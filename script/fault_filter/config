@@ -1,3 +1,8 @@
+#!/bin/sh
+# shellcheck disable=SC1091,SC2034,SC2154
+
+# Copyright (C) Igor Sysoev
+# Copyright (C) Nginx, Inc.
 # Copyright (C) 2026 Juri Torhoff
 #
 # Test-only. See the comment at the top of the source.
@@ -11,21 +16,23 @@ ngx_module_srcs="$ngx_addon_dir/ngx_http_fault_filter_module.c"
 . auto/module
 
 if [ "$ngx_module_link" != DYNAMIC ]; then
-    # This module has to sit BELOW the zstd filter, so that what it
-    # returns is what zstd's send_headers sees coming back from
-    # ngx_http_next_header_filter.
-    #
-    # Earlier in HTTP_FILTER_MODULES means lower in the chain - the
-    # list is registration order, each filter prepends itself to the
-    # top, so the first entry ends up at the bottom. That is why
-    # ngx_http_write_filter_module leads the stock list.
-    #
-    # auto/module appends, which would put this at the very top
-    # instead. Move it to just after the range header filter, which is
-    # unconditionally present and sits below both gzip and the zstd
-    # filter that inserts itself beside gzip.
-    anchor=ngx_http_range_header_filter_module
-    HTTP_FILTER_MODULES=`echo $HTTP_FILTER_MODULES \
-                         | sed "s/$ngx_module_name//" \
-                         | sed "s/$anchor/$anchor $ngx_module_name/"`
+	# This module has to sit BELOW the zstd filter, so that what it
+	# returns is what zstd's send_headers sees coming back from
+	# ngx_http_next_header_filter.
+	#
+	# Earlier in HTTP_FILTER_MODULES means lower in the chain - the
+	# list is registration order, each filter prepends itself to the
+	# top, so the first entry ends up at the bottom. That is why
+	# ngx_http_write_filter_module leads the stock list.
+	#
+	# auto/module appends, which would put this at the very top
+	# instead. Move it to just after the range header filter, which is
+	# unconditionally present and sits below both gzip and the zstd
+	# filter that inserts itself beside gzip.
+	anchor=ngx_http_range_header_filter_module
+	HTTP_FILTER_MODULES=$(
+		echo "$HTTP_FILTER_MODULES" |
+			sed "s/$ngx_module_name//" |
+			sed "s/$anchor/$anchor $ngx_module_name/"
+	)
 fi
