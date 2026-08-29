@@ -262,6 +262,20 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
         return NGX_DECLINED;
     }
 
+    /* A subrequest's body is spliced into its parent's - an SSI
+       include, an addition, a slice - so it has no headers of its own
+       to say what encoding it is in. Serving a sibling here would put
+       compressed bytes in the middle of the parent's response and
+       label them nothing.
+
+       ngx_http_pack_claim_request refuses one too, but that is asked
+       only under "on". This is the same question asked where "always"
+       cannot skip it: it means no questions about the client, and
+       this is not one. */
+    if (r != r->main) {
+        return NGX_DECLINED;
+    }
+
     conf = ngx_http_get_module_loc_conf(
         r, ngx_http_pack_static_module);
     if (conf->enable == NGX_HTTP_PACK_STATIC_OFF) {
