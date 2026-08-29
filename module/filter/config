@@ -56,7 +56,7 @@ PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
 
 ngx_module_incs="$PACK_ZSTD_DIR/lib"
 ngx_module_deps="$ZSTD_H $PACK_COMMON_H"
-ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_filter.c"
+ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_filter.c"
 ngx_module_libs="-L$ZSTD_OUTPUT_DIRECTORY/lib -lzstd"
 ngx_module_order="$ngx_module_name \
                   ngx_pagespeed \

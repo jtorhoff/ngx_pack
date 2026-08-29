@@ -1977,7 +1977,7 @@ def test_head(ctx):
 # Output buffers
 # ---------------------------------------------------------------------------
 
-# module/filter/ngx_http_pack_filter.c, the zstd_buffers default.
+# module/filter/ngx_http_pack_zstd_filter.c, the zstd_buffers default.
 DEFAULT_BUFFERS = 4
 
 
@@ -2042,7 +2042,7 @@ def test_buffers_directive_is_honoured(ctx):
 # Flush folding
 # ---------------------------------------------------------------------------
 
-# module/filter/ngx_http_pack_filter.c
+# module/filter/ngx_http_pack_zstd_filter.c
 MAX_FOLDED_FLUSHES = 4
 
 
