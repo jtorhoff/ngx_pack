@@ -28,10 +28,11 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 # zstd first: nginx links -lzstd out of deps/zstd/out, so the
 # library has to exist before nginx is built. Static, to keep the
 # test runs free of LD_LIBRARY_PATH handling; multithreading and
-# legacy-format decoding are both off, since neither is used here -
-# see PORTING.md. The "zstd" target pulls in the library and adds the
-# command line tool, which the shell suite decompresses responses
-# with.
+# legacy-format decoding are both off, since neither is used here:
+# ZSTD_c_nbWorkers is pinned to 0 by the filter, and nothing this
+# serves predates the modern frame format. The "zstd" target pulls in
+# the library and adds the command line tool, which the shell suite
+# decompresses responses with.
 cmake -S "$ROOT/deps/zstd/build/cmake" -B "$ROOT/deps/zstd/out" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_SHARED=OFF \

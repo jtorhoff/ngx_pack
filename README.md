@@ -24,9 +24,6 @@ including CI that compiles the modules with both GCC and Clang. The tests are
 executed against the latest stable branch of nginx
 (1.30.x at the time of writing).
 
-If you're interested how this fork was created off the Brotli fork,
-check out [PORTING.md](PORTING.md).
-
 
 ## Filter module
 

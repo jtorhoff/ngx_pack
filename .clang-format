@@ -149,7 +149,7 @@ MaxEmptyLinesToKeep: 2
 # AlignAfterOpenBracket above indents it one continuation width:
 #
 #     conf = ngx_http_get_module_loc_conf(
-#         r, ngx_http_zstd_filter_module);
+#         r, ngx_http_pack_filter_module);
 #
 # 100 is enough to move every call in the tree and no more. Higher
 # starts breaking member chains apart as well - measured at 300,

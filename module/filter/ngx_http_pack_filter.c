@@ -15,7 +15,7 @@
    with default visibility in a normal (dynamically linked) libzstd -
    "static linking only" is a promise about API stability across
    releases, not a linker restriction - so this does not commit the
-   module to actually linking libzstd statically. See PORTING.md.
+   module to actually linking libzstd statically.
 
    ZSTD_c_srcSizeHint is the one of those that is genuinely
    experimental rather than merely gated: it is a numbered slot
@@ -68,8 +68,8 @@ static ngx_str_t ENCODING = ngx_string("zstd");
 /* Size of the buffer the module allocates and hands ZSTD_outBuffer.
    zstd has no equivalent of Brotli's BrotliEncoderTakeOutput, which
    returned a pointer into encoder-owned memory and so needed no
-   buffer of the filter's own - see PORTING.md - so this exists
-   purely because we now own that memory.
+   buffer of the filter's own, so this exists purely because we now
+   own that memory.
 
    Deliberately far below ZSTD_CStreamOutSize(), and not for memory
    reasons alone: that value is 128.5 KB because it is sized from
@@ -354,7 +354,7 @@ typedef struct {
 
     /* Output buffers, in the three states nginx's chain helpers keep
        them in. Unlike the Brotli filter these point at memory *we*
-       allocated, not at anything the encoder owns - see PORTING.md.
+       allocated, not at anything the encoder owns.
 
        "out" holds what has been filled this call and not yet handed
        on, "busy" what has been handed on and not yet fully consumed,
@@ -709,8 +709,7 @@ ngx_http_zstd_filter_get_buf(
    buffer to ctx->out. This is where the Brotli module's take_output
    and feed_encoder merge into one step: ZSTD_compressStream2 moves
    input and output in a single call, so there is no separate "does
-   the encoder have output ready" phase to ask about first - see
-   PORTING.md section 3. */
+   the encoder have output ready" phase to ask about first. */
 static ngx_http_zstd_step_e
 ngx_http_zstd_filter_compress(ngx_http_zstd_ctx_t *ctx)
 {
@@ -1238,9 +1237,9 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
     }
 
     /* nginx already parallelises across worker processes, one per
-       core, so a per-request thread pool would only oversubscribe -
-       see PORTING.md. 0 is the library default, set explicitly so a
-       vendored update cannot change it under us. */
+       core, so a per-request thread pool would only oversubscribe.
+       0 is the library default, set explicitly so a vendored update
+       cannot change it under us. */
     zrc = ZSTD_CCtx_setParameter(
         ctx->zstd->cctx, ZSTD_c_nbWorkers, 0);
     if (ZSTD_isError(zrc)) {
@@ -1252,8 +1251,7 @@ ngx_http_zstd_filter_ensure_stream_init(ngx_http_zstd_ctx_t *ctx)
     }
 
     /* Writes the size into the frame header when it is known, which
-       helps the decoder allocate. Brotli has no equivalent - see
-       PORTING.md.
+       helps the decoder allocate. Brotli has no equivalent.
 
        It does more than help the decoder, and is worth keeping for
        the other reason: told the source size, zstd sizes its own
@@ -1439,8 +1437,7 @@ ngx_http_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
                so the encoder has nothing left to do for this
                response. Freeing here rather than waiting for the
                request pool to be destroyed is what keeps its memory
-               from outliving the response - see PORTING.md section 1.
-             */
+               from outliving the response. */
             if (ctx->state->frame_closed && ctx->busy == NULL) {
                 ngx_http_zstd_filter_close(ctx);
             }
@@ -1612,17 +1609,17 @@ ngx_http_zstd_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 
     /* 16 bits (64 KB), matching the Brotli filter's compiled-in
        default and for the same reason: per-request memory outranks
-       compression ratio - see PORTING.md section 1. Confirmed rather
-       than assumed, since zstd's memory climbs with the window where
-       Brotli's own curve was flat. Against script/corpus at level 3,
+       compression ratio. Confirmed rather than assumed, since zstd's
+       memory climbs with the window where Brotli's own curve was
+       flat. Against script/corpus at level 3,
        compressed bytes versus peak live encoder bytes: 265,093 /
        0.32 MB at 16 KB, 241,626 / 1.20 MB here, 234,205 / 1.62 MB at
        128 KB, 230,211 / 1.74 MB at 256 KB, 230,210 / 2.49 MB at 1 MB.
 
        So 128 KB would buy 3.1% in ratio for +0.42 MB per request -
        1.2 GB against 1.6 GB at a thousand concurrent requests, which
-       section 1 decides against. It is the one alternative worth
-       knowing about, being the largest window that is still free in
+       the same ordering decides against. It is the one alternative
+       worth knowing about, being the largest window still free in
        block terms: a block is MIN(window, ZSTD_BLOCKSIZE_MAX), so
        past 128 KB the window buffer grows alone. The apparent
        flattening past 256 KB is an artifact of corpus files being
@@ -1636,9 +1633,9 @@ ngx_http_zstd_merge_conf(ngx_conf_t *cf, void *parent, void *child)
        ZSTD_compressStream2 call, so at the 64 KB window default four
        16 KB buffers already cover a whole block with room to spare.
        They also cost - 4 x NGX_HTTP_ZSTD_OUT_SIZE, held for the life
-       of the response, against a per-request encoder that section 1
-       worked to keep near 1 MB - and gzip's 32 x 4K would be 128 KB
-       per response for a case this module does not have. */
+       of the response, against a per-request encoder the window
+       default works to keep near 1 MB - and gzip's 32 x 4K would be
+       128 KB per response for a case this module does not have. */
     ngx_conf_merge_value(conf->buffers, prev->buffers, 4);
 
     /* zstd's per-frame overhead is a handful of bytes against

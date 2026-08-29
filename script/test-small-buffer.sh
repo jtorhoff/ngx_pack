@@ -18,9 +18,9 @@
 # Note that it does NOT check the compressed bytes against those of a
 # normal build. They are not stable enough to compare: a streamed
 # response's flush points follow socket timing, so two runs of the
-# *same* binary can differ by a few dozen bytes - see PORTING.md
-# section 8. What must hold, and what the suites check, is that
-# whatever comes out decompresses to the original.
+# *same* binary can differ by a few dozen bytes. What must hold, and
+# what the suites check, is that whatever comes out decompresses to
+# the original.
 #
 # Required:
 #   NGINX_REF   git ref of nginx to build against, as script/build.sh
