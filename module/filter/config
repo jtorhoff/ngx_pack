@@ -21,7 +21,7 @@ fi
 
 ngx_addon_name=ngx_pack_filter
 ngx_module_type=HTTP_FILTER
-ngx_module_name=ngx_http_pack_filter_module
+ngx_module_name=ngx_http_pack_zstd_module
 
 # Vendored rather than taken from the system: some distributions ship
 # a zstd old enough to be missing API this module relies on, and
