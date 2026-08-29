@@ -368,6 +368,31 @@ def build_fixtures(work):
     # Only the middle one.
     fixtures.update(write_siblings(html, "zst_only.html", body, ("zstd",)))
 
+    # Siblings that exist but cannot be served. Each must be stepped over
+    # like a missing one, leaving the plain file to be served - a stray
+    # file with the right suffix must not take the resource down with it.
+    for stem in ("odd_dir.html", "odd_fifo.html", "odd_perm.html"):
+        with open(os.path.join(html, stem), "wb") as handle:
+            handle.write(body)
+        fixtures[stem] = body
+
+    os.makedirs(os.path.join(html, "odd_dir.html.br"), exist_ok=True)
+
+    fifo = os.path.join(html, "odd_fifo.html.br")
+    if hasattr(os, "mkfifo") and not os.path.exists(fifo):
+        os.mkfifo(fifo)
+
+    # Unreadable, which root would read anyway - the test skips there.
+    perm = os.path.join(html, "odd_perm.html.br")
+    with open(perm, "wb") as handle:
+        handle.write(b"unreadable")
+    os.chmod(perm, 0o000)
+
+    # The body of an SSI include is spliced into its parent, so it can
+    # carry no Content-Encoding of its own.
+    with open(os.path.join(html, "include.shtml"), "w") as handle:
+        handle.write('BEGIN<!--# include virtual="/subreq/multi.html" -->END')
+
     for name, blob in load_corpus().items():
         with open(os.path.join(html, name), "wb") as handle:
             handle.write(blob)
@@ -1243,6 +1268,71 @@ def test_static_siblings_distinct(ctx):
         len(set(seen.values())) == len(seen),
         f"the three siblings are not distinct, so serving the wrong one "
         f"would not be visible: { {k: len(v) for k, v in seen.items()} }",
+    )
+
+
+@test("a sibling that cannot be served is stepped over, not fatal")
+def test_static_odd_siblings(ctx):
+    """A sibling is an optimization, so anything wrong with one means only
+    that it is not taken. gzip_static answers 404 for a file that is not
+    regular, which is right where the odd file IS the resource asked for
+    and wrong here, where it merely sits beside it: a stray fifo named
+    "a.html.br" would take "a.html" down with it.
+
+    Three shapes, each of which opens successfully or fails in its own
+    way, and each of which must leave the plain file served."""
+    cases = [("odd_dir.html", "a directory"), ("odd_fifo.html", "a fifo")]
+
+    # Root reads a mode-000 file regardless, so the sibling would be
+    # served and the case would prove nothing.
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        cases.append(("odd_perm.html", "unreadable"))
+
+    for stem, shape in cases:
+        if not os.path.exists(
+            os.path.join(ctx.nginx.work, "html", stem + ".br")
+        ):
+            continue
+        status, headers, body = fetch(ctx.port, f"/static/{stem}", "br")
+        check(
+            status == 200,
+            f"{stem} ({shape} sibling): expected 200, got {status}",
+        )
+        check(
+            headers.get("content-encoding") is None,
+            f"{stem} ({shape} sibling): served it anyway as "
+            f"{headers.get('content-encoding')!r}",
+        )
+        check(
+            body == ctx.fixtures[stem],
+            f"{stem} ({shape} sibling): body is not the plain file",
+        )
+
+
+@test("a subrequest is never served a sibling")
+def test_static_subrequest_declined(ctx):
+    """An SSI include splices the child's body into the parent, so a
+    sibling served there would put compressed bytes mid-page under a
+    Content-Type that says text.
+
+    The include target is a "pack_static always" location, which is the
+    only setting a subrequest can reach the probe under: "on" goes
+    through ngx_http_pack_claim_request, which turns a subrequest away
+    before preflight's check would matter. Pointing this at an "on"
+    location would pass whether or not that check exists."""
+    status, headers, body = fetch(ctx.port, "/ssi/include.shtml", "br, gzip, zstd")
+    check(status == 200, f"/ssi/include.shtml: expected 200, got {status}")
+
+    want = b"BEGIN" + ctx.fixtures["multi.html"] + b"END"
+    check(
+        body == want,
+        f"the include spliced {len(body)} bytes, not the plain file's "
+        f"{len(want)} - a sibling reached the parent's body",
+    )
+    check(
+        headers.get("content-encoding") is None,
+        f"the parent carries Content-Encoding "
+        f"{headers.get('content-encoding')!r}",
     )
 
 

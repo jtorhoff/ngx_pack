@@ -471,7 +471,12 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "http static fd: %d",
         args->file_info->fd);
 
-    /* The suffixed path is not a file we can serve. */
+    /* The suffixed path is not a file we can serve. Declined rather
+       than refused, which is where this parts company with
+       gzip_static: there the odd file is the resource asked for, so
+       404 is the answer, but here it is only a sibling. A fifo left
+       lying about named "a.txt.br" must not take "a.txt" down with
+       it. Still logged - nothing should be creating one. */
     if (args->file_info->is_dir) {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, log, 0, "http dir");
         return NGX_DECLINED;
@@ -480,7 +485,7 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
     if (!args->file_info->is_file) {
         ngx_log_error(NGX_LOG_CRIT, log, 0,
             "\"%s\" is not a regular file", args->path->data);
-        return NGX_HTTP_NOT_FOUND;
+        return NGX_DECLINED;
     }
 #endif
 
