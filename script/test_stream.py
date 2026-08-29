@@ -1246,6 +1246,157 @@ def test_static_siblings_distinct(ctx):
     )
 
 
+AMBIGUOUS_WARNING = "serves whatever is found first"
+
+
+def ambiguity_warnings(ctx, http_block):
+    """Runs "nginx -t" over a configuration and counts the ambiguity
+    warnings it produced. Everything else in the suite drives a running
+    server; this is the only thing that reads what nginx says at
+    configuration time, which is where merge_conf's warning lives."""
+    path = os.path.join(ctx.nginx.work, "conf-test.conf")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "daemon off;\n"
+            "error_log stderr notice;\n"
+            "events { worker_connections 64; }\n" + http_block + "\n"
+        )
+
+    done = subprocess.run(
+        [ctx.nginx.binary, "-p", ctx.nginx.work, "-c", path, "-t"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = (done.stderr or "") + (done.stdout or "")
+    check("syntax is ok" in text, f"configuration was refused:\n{text}")
+    return text.count(AMBIGUOUS_WARNING)
+
+
+# "pack_static always" skips the Accept-Encoding test, so with more than
+# one encoding configured the client gets whichever sibling the probe
+# reaches first. Each of these writes that combination once; the warning
+# has to name it once, wherever in the block hierarchy it was written.
+AMBIGUITY_CASES = [
+    (
+        "both directives at http{}",
+        """http { pack_static always; pack_static_encodings br gzip;
+             server { listen 127.0.0.1:8999; location /a/ { } } }""",
+        1,
+    ),
+    (
+        "both at server{}",
+        """http { server { listen 127.0.0.1:8999;
+             pack_static always; pack_static_encodings br gzip;
+             location /a/ { } } }""",
+        1,
+    ),
+    (
+        "both at location{}",
+        """http { server { listen 127.0.0.1:8999;
+             location /a/ { pack_static always;
+                            pack_static_encodings br gzip; } } }""",
+        1,
+    ),
+    (
+        # No list written, so the default of all three applies and the
+        # combination only becomes ambiguous once the merge fills it in.
+        "always at http{}, encodings defaulted",
+        """http { pack_static always;
+             server { listen 127.0.0.1:8999; location /a/ { } } }""",
+        1,
+    ),
+    (
+        # Six merges see the same ambiguous parent. Still one warning:
+        # the setting was written once.
+        "http{} inherited by four locations across two servers",
+        """http { pack_static always; pack_static_encodings br gzip;
+             server { listen 127.0.0.1:8999;
+               location /a/ { } location /b/ { } location /c/ { } }
+             server { listen 127.0.0.1:8998; location /d/ { } } }""",
+        1,
+    ),
+    (
+        "http{} and server{} both write it",
+        """http { pack_static always; pack_static_encodings br gzip;
+             server { listen 127.0.0.1:8999;
+               pack_static always; pack_static_encodings br gzip;
+               location /a/ { } } }""",
+        1,
+    ),
+    (
+        # Neither half of the pair is ambiguous on its own.
+        "always with a single encoding",
+        """http { pack_static always; pack_static_encodings br;
+             server { listen 127.0.0.1:8999; location /a/ { } } }""",
+        0,
+    ),
+    (
+        "on with several encodings",
+        """http { pack_static on; pack_static_encodings br gzip;
+             server { listen 127.0.0.1:8999; location /a/ { } } }""",
+        0,
+    ),
+    (
+        "one ambiguous location beside a plain one",
+        """http { server { listen 127.0.0.1:8999; pack_static on;
+             location /a/ { pack_static always;
+                            pack_static_encodings br gzip; }
+             location /b/ { } } }""",
+        1,
+    ),
+    (
+        "a nested location narrows it to on",
+        """http { pack_static always; pack_static_encodings br gzip;
+             server { listen 127.0.0.1:8999;
+               location /a/ { pack_static on;
+                 location /a/n/ { } } } }""",
+        1,
+    ),
+]
+
+
+@test("the ambiguous combination is warned about exactly once")
+def test_static_ambiguity_warned_once(ctx):
+    """merge_conf runs once per block, so an ambiguous setting written in
+    an enclosing block is seen again by every block that inherits it. The
+    warning has to land where the combination takes effect and stay quiet
+    down the rest of the tree - and http{}, which nginx only ever passes
+    as a parent and never as a child, has to be reported too."""
+    for label, http_block, expected in AMBIGUITY_CASES:
+        got = ambiguity_warnings(ctx, http_block)
+        check(
+            got == expected,
+            f"{label}: expected {expected} warning(s), got {got}",
+        )
+
+
+@test("a block that re-creates the ambiguity is warned about again")
+def test_static_ambiguity_recreated(ctx):
+    """Suppressing the repeat cannot be done by marking a block reported
+    and trusting that mark further down: a location can turn the
+    combination off and one nested inside it can write it again, which is
+    a fresh decision by the admin and a second thing to say.
+
+    The control below is the same shape with an http{} that was never
+    ambiguous, so only the innermost block is - if both answer 1, the
+    suppression is keying on the wrong thing."""
+    recreated = """http { pack_static always; pack_static_encodings br gzip;
+      server { listen 127.0.0.1:8999;
+        location /a/ { pack_static on;
+          location /a/n/ { pack_static always; } } } }"""
+    control = """http { pack_static on; pack_static_encodings br gzip;
+      server { listen 127.0.0.1:8999;
+        location /a/ { pack_static on;
+          location /a/n/ { pack_static always; } } } }"""
+
+    got = ambiguity_warnings(ctx, recreated)
+    check(got == 2, f"http{{}} and the nested location: expected 2, got {got}")
+
+    got = ambiguity_warnings(ctx, control)
+    check(got == 1, f"the nested location alone: expected 1, got {got}")
+
+
 @test("pack_static falls through when there is no .zst sibling")
 def test_static_module_without_sibling(ctx):
     if "plain_only.html" not in ctx.fixtures:
