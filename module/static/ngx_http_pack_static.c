@@ -222,7 +222,7 @@ typedef struct {
     ngx_http_request_t *request;
     ngx_str_t          *path;
     u_char            **suffix;
-} pack_preflight_args_t;
+} pack_preflight_args;
 
 /* Settles what holds for the request as a whole, so the loop below
    repeats none of it.
@@ -230,7 +230,7 @@ typedef struct {
    NGX_OK leaves path mapped and suffix pointing at the reserved room;
    NGX_DECLINED leaves the request to the handler behind this one. */
 static ngx_int_t
-ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
+ngx_http_pack_static_preflight(pack_preflight_args *const args)
 {
     ngx_http_request_t    *r;
     pack_conf_t           *conf;
@@ -294,7 +294,7 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
 typedef struct {
     ngx_http_core_loc_conf_t *conf;
     ngx_open_file_info_t     *file_info;
-} pack_prepare_file_info_args_t;
+} pack_prepare_file_info_args;
 
 /* Zeroed first because one struct serves every candidate in turn and
    ngx_open_cached_file writes its result back into the same fields it
@@ -302,7 +302,7 @@ typedef struct {
    file. */
 static void
 ngx_http_pack_static_prepare_file_info(
-    pack_prepare_file_info_args_t *const args)
+    pack_prepare_file_info_args *const args)
 {
     ngx_memzero(args->file_info, sizeof(ngx_open_file_info_t));
 
@@ -320,7 +320,7 @@ typedef struct {
     ngx_http_core_loc_conf_t *conf;
     ngx_str_t                *path;
     ngx_open_file_info_t     *file_info;
-} pack_open_sibling_args_t;
+} pack_open_sibling_args;
 
 /* Opens what the path now names.
 
@@ -328,8 +328,7 @@ typedef struct {
    than a failure. What an operator would want to know about is logged
    first and then declined like the rest. */
 static ngx_int_t
-ngx_http_pack_static_open_sibling(
-    pack_open_sibling_args_t *const args)
+ngx_http_pack_static_open_sibling(pack_open_sibling_args *const args)
 {
     ngx_int_t  rc;
     ngx_uint_t level;
@@ -378,14 +377,14 @@ ngx_http_pack_static_open_sibling(
 typedef struct {
     ngx_http_request_t    *request;
     pack_encoding_t const *encoding;
-} pack_accepts_args_t;
+} pack_accepts_args;
 
 /* Whether this client may be served the sibling under "on". It has to
    name the encoding, and it must not have reached us through a proxy:
    a "Via" header is what nginx's "gzip_proxied off" turns away, and
    what it defaults to. No directive relaxes that yet. */
 static ngx_uint_t
-ngx_http_pack_static_accepts(pack_accepts_args_t *const args)
+ngx_http_pack_static_accepts(pack_accepts_args *const args)
 {
     if (args->request->headers_in.via != NULL) {
         return 0;
@@ -405,7 +404,7 @@ typedef struct {
     ngx_str_t             *path;
     u_char                *suffix;
     ngx_open_file_info_t  *file_info;
-} pack_try_sibling_args_t;
+} pack_try_sibling_args;
 
 /* Tries one encoding: writes its suffix into the room reserved after
    the path and opens what that names.
@@ -414,7 +413,7 @@ typedef struct {
    only that this candidate is out and the next is worth a look;
    anything but that or NGX_OK finishes the request. */
 static ngx_int_t
-ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
+ngx_http_pack_static_try_sibling(pack_try_sibling_args *const args)
 {
     pack_conf_t              *conf;
     ngx_uint_t                accepted;
@@ -431,7 +430,7 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
        Accept-Encoding and the declined client's plain response must
        say so. "always" asks nothing, which the short circuit is. */
     accepted = (conf->enable != NGX_HTTP_PACK_STATIC_ON) ||
-               (ngx_http_pack_static_accepts(&(pack_accepts_args_t) {
+               (ngx_http_pack_static_accepts(&(pack_accepts_args) {
                    .request  = args->request,
                    .encoding = args->encoding,
                }));
@@ -452,18 +451,17 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
         "http filename: \"%s\"", args->path->data);
 
     ngx_http_pack_static_prepare_file_info(
-        &(pack_prepare_file_info_args_t) {
+        &(pack_prepare_file_info_args) {
             .conf      = core_conf,
             .file_info = args->file_info,
         });
 
-    rc = ngx_http_pack_static_open_sibling(
-        &(pack_open_sibling_args_t) {
-            .request   = args->request,
-            .conf      = core_conf,
-            .path      = args->path,
-            .file_info = args->file_info,
-        });
+    rc = ngx_http_pack_static_open_sibling(&(pack_open_sibling_args) {
+        .request   = args->request,
+        .conf      = core_conf,
+        .path      = args->path,
+        .file_info = args->file_info,
+    });
 
     if (rc != NGX_OK) {
         return rc;
@@ -511,13 +509,13 @@ typedef struct {
     ngx_http_request_t   *request;
     ngx_open_file_info_t *file_info;
     ngx_str_t const      *encoding;
-} pack_set_headers_args_t;
+} pack_set_headers_args;
 
 /* Describes the response without sending it: nothing goes out until
    ngx_http_pack_static_send has a buffer for the body, which has to
    be allocated while a 500 is still possible. */
 static ngx_int_t
-ngx_http_pack_static_set_headers(pack_set_headers_args_t *const args)
+ngx_http_pack_static_set_headers(pack_set_headers_args *const args)
 {
     ngx_http_request_t *r;
 
@@ -554,7 +552,7 @@ typedef struct {
     ngx_http_request_t   *request;
     ngx_open_file_info_t *file_info;
     ngx_str_t            *path;
-} pack_send_args_t;
+} pack_send_args;
 
 /* Sends the headers, then the sibling as one buffer. The body is
    described rather than read, so sendfile can hand the file to the
@@ -562,7 +560,7 @@ typedef struct {
    ngx_open_cached_file put on the request pool - which is why no path
    out of here closes anything. */
 static ngx_int_t
-ngx_http_pack_static_send(pack_send_args_t *const args)
+ngx_http_pack_static_send(pack_send_args *const args)
 {
     ngx_http_request_t *r;
     ngx_buf_t          *buf;
@@ -623,7 +621,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
     pack_encoding_t const *sibling_encoding;
     ngx_open_file_info_t   file_info;
 
-    rc = ngx_http_pack_static_preflight(&(pack_preflight_args_t) {
+    rc = ngx_http_pack_static_preflight(&(pack_preflight_args) {
         .request = r,
         .path    = &path,
         .suffix  = &suffix,
@@ -643,7 +641,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         sibling_encoding = conf->encodings[idx];
 
         rc = ngx_http_pack_static_try_sibling(
-            &(pack_try_sibling_args_t) {
+            &(pack_try_sibling_args) {
                 .request   = r,
                 .encoding  = sibling_encoding,
                 .path      = &path,
@@ -679,7 +677,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         return rc;
     }
 
-    rc = ngx_http_pack_static_set_headers(&(pack_set_headers_args_t) {
+    rc = ngx_http_pack_static_set_headers(&(pack_set_headers_args) {
         .request   = r,
         .file_info = &file_info,
         .encoding  = &found->name,
@@ -689,7 +687,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         return rc;
     }
 
-    return ngx_http_pack_static_send(&(pack_send_args_t) {
+    return ngx_http_pack_static_send(&(pack_send_args) {
         .request   = r,
         .path      = &path,
         .file_info = &file_info,
@@ -718,15 +716,14 @@ ngx_http_pack_static_create_conf(ngx_conf_t *const cf)
 typedef struct {
     ngx_uint_t enable;
     ngx_uint_t nencodings;
-} pack_is_ambiguous_args_t;
+} pack_is_ambiguous_args;
 
 /* "always" skips the Accept-Encoding test, so with more than one
    encoding the client gets whatever the probe reaches first, with no
    say in it. A count of zero reads as not ambiguous, which is what
    the caller wants of a parent that named no encodings. */
 static ngx_uint_t
-ngx_http_pack_static_is_ambiguous(
-    pack_is_ambiguous_args_t *const args)
+ngx_http_pack_static_is_ambiguous(pack_is_ambiguous_args *const args)
 {
     return args->enable == NGX_HTTP_PACK_STATIC_ALWAYS &&
            args->nencodings > 1;
@@ -742,7 +739,7 @@ ngx_http_pack_static_warn_ambiguous(
     ngx_uint_t is_ambiguous;
 
     is_ambiguous = ngx_http_pack_static_is_ambiguous(
-        &(pack_is_ambiguous_args_t) {
+        &(pack_is_ambiguous_args) {
             .enable     = conf->enable,
             .nencodings = conf->nencodings,
         });
