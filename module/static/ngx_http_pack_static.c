@@ -55,7 +55,7 @@ typedef struct {
     ngx_uint_t _warned;
 } conf_t;
 
-static ngx_conf_enum_t const ngx_http_pack_static[] = {
+static ngx_conf_enum_t const ngx_http_pack_static_mode[] = {
     {
         .name  = ngx_string("off"),
         .value = NGX_HTTP_PACK_STATIC_OFF,
@@ -185,7 +185,7 @@ static ngx_command_t const ngx_http_pack_static_commands[] = {
         ngx_conf_set_enum_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, enable),
-        (void *) &ngx_http_pack_static,
+        (void *) &ngx_http_pack_static_mode,
     },
     /* 1MORE rather than TAKE123: the setter names the offending
        value where an argument count could not, and the table's three
@@ -221,8 +221,7 @@ static ngx_http_module_t const ngx_http_pack_static_module_ctx = {
 ngx_module_t ngx_http_pack_static_module = {
     NGX_MODULE_V1,
     (void *) &ngx_http_pack_static_module_ctx, /* module context */
-    (ngx_command_t *)
-        ngx_http_pack_static_commands,         /* module directives */
+    (void *) ngx_http_pack_static_commands,    /* module directives */
     NGX_HTTP_MODULE,                           /* module type */
     NULL,                                      /* init master */
     NULL,                                      /* init module */
