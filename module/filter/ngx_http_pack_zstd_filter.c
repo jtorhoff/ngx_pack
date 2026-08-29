@@ -136,6 +136,7 @@ static ngx_str_t ENCODING = ngx_string("zstd");
 #define NGX_HTTP_PACK_ZSTD_NBUFFERS_MIN 1
 #define NGX_HTTP_PACK_ZSTD_NBUFFERS_MAX 64
 
+
 typedef struct {
     ngx_flag_t enable;
 
@@ -444,7 +445,7 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
     ngx_null_command,
 };
 
-static ngx_http_module_t ngx_http_pack_zstd_module_ctx = {
+static ngx_http_module_t const ngx_http_pack_zstd_module_ctx = {
     NULL,                           /* pre-configuration */
     ngx_http_pack_zstd_init,        /* post-configuration */
     NULL,                           /* create main conf */
@@ -457,16 +458,16 @@ static ngx_http_module_t ngx_http_pack_zstd_module_ctx = {
 
 ngx_module_t ngx_http_pack_zstd_module = {
     NGX_MODULE_V1,
-    &ngx_http_pack_zstd_module_ctx,       /* module context */
-    (void *) ngx_http_pack_zstd_commands, /* module directives */
-    NGX_HTTP_MODULE,                      /* module type */
-    NULL,                                 /* init master */
-    NULL,                                 /* init module */
-    NULL,                                 /* init process */
-    NULL,                                 /* init thread */
-    NULL,                                 /* exit thread */
-    NULL,                                 /* exit process */
-    NULL,                                 /* exit master */
+    (void *) &ngx_http_pack_zstd_module_ctx, /* module context */
+    (void *) ngx_http_pack_zstd_commands,    /* module directives */
+    NGX_HTTP_MODULE,                         /* module type */
+    NULL,                                    /* init master */
+    NULL,                                    /* init module */
+    NULL,                                    /* init process */
+    NULL,                                    /* init thread */
+    NULL,                                    /* exit thread */
+    NULL,                                    /* exit process */
+    NULL,                                    /* exit master */
     NGX_MODULE_V1_PADDING,
 };
 
@@ -1213,29 +1214,21 @@ ngx_http_pack_zstd_prepare(ctx_t *ctx, ngx_int_t *rc)
     return NGX_HTTP_PACK_ZSTD_OK;
 }
 
-/* Initializes encoder, output chain and buffer, if necessary. */
+/* Brings the encoder into existence with the request pool behind its
+   allocator, and arranges for it to be released even if the request
+   is aborted mid-stream - the encoder's memory is not the pool's, so
+   nothing else would. The cleanup is registered first, deliberately:
+   a failure there must not be able to strand an allocated instance.
+ */
 static ngx_int_t
-ngx_http_pack_zstd_ensure_stream_init(ctx_t *ctx)
+ngx_http_pack_zstd_create_cctx(ctx_t *const ctx)
 {
     ngx_http_request_t *r;
-    conf_t             *conf;
     ngx_pool_cleanup_t *cln;
     ZSTD_customMem      zmem;
-    ngx_log_t          *log;
-    size_t              zrc;
-
-    if (ctx->state->initialized) {
-        return NGX_OK;
-    }
 
     r = ctx->request;
 
-    conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_zstd_module);
-
-    /* Encoder memory is not owned by the pool, so arrange for it to
-       be released even if the request is aborted mid-stream.
-       Registered before the encoder exists, so that a failure here
-       cannot strand an allocated instance. */
     cln = ngx_pool_cleanup_add(r->pool, 0);
     if (cln == NULL) {
         return NGX_ERROR;
@@ -1248,51 +1241,130 @@ ngx_http_pack_zstd_ensure_stream_init(ctx_t *ctx)
     zmem.customFree  = ngx_http_pack_zstd_free;
     zmem.opaque      = r->pool;
 
-    log = r->connection->log;
-
     ctx->zstd->cctx = ZSTD_createCCtx_advanced(zmem);
     if (ctx->zstd->cctx == NULL) {
         ngx_log_error(
-            NGX_LOG_ALERT, log, 0, "OOM / ZSTD_createCCtx_advanced");
+            NGX_LOG_ALERT,
+            r->connection->log,
+            0,
+            "OOM / ZSTD_createCCtx_advanced");
 
         return NGX_ERROR;
     }
 
+    return NGX_OK;
+}
+
+typedef struct {
+    ctx_t           *ctx;
+    ZSTD_cParameter  param;
+    int32_t          value;
+    ngx_str_t const *name;
+} set_param_args;
+
+/* One ZSTD_CCtx_setParameter call with its failure handled the same
+   way as every other. "name" is the parameter as zstd.h spells it:
+   the enum carries no name at runtime, and the number alone would
+   make the log line useless to whoever reads it. */
+static ngx_int_t
+ngx_http_pack_zstd_set_param(set_param_args *const args)
+{
+    size_t zrc;
+
     zrc = ZSTD_CCtx_setParameter(
-        ctx->zstd->cctx, ZSTD_c_compressionLevel, (int) conf->level);
+        args->ctx->zstd->cctx, args->param, args->value);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(
             NGX_LOG_ALERT,
-            log,
+            args->ctx->request->connection->log,
             0,
-            "ZSTD_CCtx_setParameter(compressionLevel, %i) failed: %s",
-            conf->level,
+            "error while trying to set %V=%D: %s",
+            args->name,
+            args->value,
             ZSTD_getErrorName(zrc));
 
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+typedef struct {
+    ctx_t   *ctx;
+    uint64_t size;
+} set_pledged_size_args;
+
+static ngx_int_t
+ngx_http_pack_zstd_set_pledged_size(set_pledged_size_args *const args)
+{
+    size_t zrc;
+
+    zrc = ZSTD_CCtx_setPledgedSrcSize(
+        args->ctx->zstd->cctx, args->size);
+    if (ZSTD_isError(zrc)) {
+        ngx_log_error(
+            NGX_LOG_ALERT,
+            args->ctx->request->connection->log,
+            0,
+            "error while trying to set pledgedSrcSize=%uL: %s",
+            args->size,
+            ZSTD_getErrorName(zrc));
+
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+typedef struct {
+    ctx_t  *ctx;
+    conf_t *conf;
+} configure_cctx_args;
+
+/* Tells the encoder what the directives asked for and what to expect
+   of the body. Every rejection here is fatal rather than skipped:
+   libzstd is vendored and pinned (see deps/zstd), so one means a
+   broken build and not a host carrying an older library. */
+static ngx_int_t
+ngx_http_pack_zstd_configure_cctx(configure_cctx_args *const args)
+{
+    static ngx_str_t const level    = ngx_string("compressionLevel");
+    static ngx_str_t const window   = ngx_string("windowLog");
+    static ngx_str_t const workers  = ngx_string("nbWorkers");
+    static ngx_str_t const sizeHint = ngx_string("srcSizeHint");
+
+    ngx_int_t rc;
+
+    rc = ngx_http_pack_zstd_set_param(&(set_param_args) {
+        .ctx   = args->ctx,
+        .param = ZSTD_c_compressionLevel,
+        .value = args->conf->level,
+        .name  = &level,
+    });
+
+    if (rc != NGX_OK) {
         return NGX_ERROR;
     }
 
     /* A ceiling, not a target. Sizing the window down to a known
        response was once done here by hand, which was work zstd
        already does: ZSTD_adjustCParams_internal runs after
-       ZSTD_overrideCParams and lowers windowLog to ceil(log2(pledged
-       size)) - the same value the loop computed, and it lowers
-       hashLog and chainLog to match, which the loop did not. Checked
-       across 208 combinations of window ceiling, level and body size:
-       identical frame window descriptor and identical peak encoder
-       allocation either way. So the ceiling is all this has to set,
-       and the pledge below does the rest. */
-    zrc = ZSTD_CCtx_setParameter(
-        ctx->zstd->cctx, ZSTD_c_windowLog, (int) conf->window_bits);
-    if (ZSTD_isError(zrc)) {
-        ngx_log_error(
-            NGX_LOG_ALERT,
-            log,
-            0,
-            "ZSTD_CCtx_setParameter(windowLog, %uz) failed: %s",
-            conf->window_bits,
-            ZSTD_getErrorName(zrc));
+       ZSTD_overrideCParams and lowers windowLog to
+       ceil(log2(pledged size)) - the same value the loop
+       computed, and it lowers hashLog and chainLog to match,
+       which the loop did not. Checked across 208 combinations of
+       window ceiling, level and body size: identical frame window
+       descriptor and identical peak encoder allocation either
+       way. So the ceiling is all this has to set, and the pledge
+       below does the rest. */
+    rc = ngx_http_pack_zstd_set_param(&(set_param_args) {
+        .ctx   = args->ctx,
+        .param = ZSTD_c_windowLog,
+        .value = args->conf->window_bits,
+        .name  = &window,
+    });
 
+    if (rc != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -1300,16 +1372,14 @@ ngx_http_pack_zstd_ensure_stream_init(ctx_t *ctx)
        core, so a per-request thread pool would only oversubscribe.
        0 is the library default, set explicitly so a vendored update
        cannot change it under us. */
-    zrc = ZSTD_CCtx_setParameter(
-        ctx->zstd->cctx, ZSTD_c_nbWorkers, 0);
-    if (ZSTD_isError(zrc)) {
-        ngx_log_error(
-            NGX_LOG_ALERT,
-            log,
-            0,
-            "ZSTD_CCtx_setParameter(nbWorkers, 0) failed: %s",
-            ZSTD_getErrorName(zrc));
+    ngx_http_pack_zstd_set_param(&(set_param_args) {
+        .ctx   = args->ctx,
+        .param = ZSTD_c_nbWorkers,
+        .value = 0,
+        .name  = &workers,
+    });
 
+    if (rc != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -1334,49 +1404,60 @@ ngx_http_pack_zstd_ensure_stream_init(ctx_t *ctx)
        The cast must stay 64-bit: content_length is an off_t, and
        "unsigned" would truncate a body over 4 GiB into a pledge zstd
        then rejects. */
-    if (ctx->content_length >= 0) {
-        zrc = ZSTD_CCtx_setPledgedSrcSize(
-            ctx->zstd->cctx, (uint64_t) ctx->content_length);
-        if (ZSTD_isError(zrc)) {
-            ngx_log_error(
-                NGX_LOG_ALERT,
-                log,
-                0,
-                "ZSTD_CCtx_setPledgedSrcSize(%O) failed: %s",
-                ctx->content_length,
-                ZSTD_getErrorName(zrc));
+    if (args->ctx->content_length >= 0) {
+        rc = ngx_http_pack_zstd_set_pledged_size(
+            &(set_pledged_size_args) {
+                .ctx  = args->ctx,
+                .size = args->ctx->content_length,
+            });
 
+        if (rc != NGX_OK) {
             return NGX_ERROR;
         }
-
     } else {
         /* No length to pledge, so give the guess instead - which is
            the difference between tables sized to the body and tables
            sized to the worst case the window allows. See
            NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT for what it costs and why
-           it is that number.
+           it is that number. */
+        rc = ngx_http_pack_zstd_set_param(&(set_param_args) {
+            .ctx   = args->ctx,
+            .param = ZSTD_c_srcSizeHint,
+            .value = NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT,
+            .name  = &sizeHint,
+        });
 
-           Fatal like the parameters above rather than skipped on
-           error, deliberately: libzstd is vendored and pinned (see
-           deps/zstd), so a rejection here is a broken build and not
-           a library that merely happens to be older, and failing
-           loudly beats every stream quietly costing three times the
-           memory it should. */
-        zrc = ZSTD_CCtx_setParameter(
-            ctx->zstd->cctx,
-            ZSTD_c_srcSizeHint,
-            NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT);
-        if (ZSTD_isError(zrc)) {
-            ngx_log_error(
-                NGX_LOG_ALERT,
-                log,
-                0,
-                "ZSTD_CCtx_setParameter(srcSizeHint, %d) failed: %s",
-                NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT,
-                ZSTD_getErrorName(zrc));
-
+        if (rc != NGX_OK) {
             return NGX_ERROR;
         }
+    }
+
+    return NGX_OK;
+}
+
+/* Initializes encoder, output chain and buffer, if necessary. */
+static ngx_int_t
+ngx_http_pack_zstd_ensure_stream_init(ctx_t *const ctx)
+{
+    ngx_http_request_t *r;
+    conf_t             *conf;
+
+    if (ctx->state->initialized) {
+        return NGX_OK;
+    }
+
+    r    = ctx->request;
+    conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_zstd_module);
+
+    if (ngx_http_pack_zstd_create_cctx(ctx) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_pack_zstd_configure_cctx(&(configure_cctx_args) {
+            .ctx  = ctx,
+            .conf = conf,
+        }) != NGX_OK) {
+        return NGX_ERROR;
     }
 
     /* The buffers themselves are created on demand by get_buf, up to
@@ -1396,7 +1477,7 @@ ngx_http_pack_zstd_ensure_stream_init(ctx_t *ctx)
        does exactly that. */
     ngx_log_debug3(
         NGX_LOG_DEBUG_HTTP,
-        log,
+        r->connection->log,
         0,
         "zstd encoder initialized: lvl:%i win:%uz len:%O",
         conf->level,
@@ -1414,7 +1495,7 @@ ngx_http_pack_zstd_ensure_stream_init(ctx_t *ctx)
    make progress on buffers they are already holding, which is the
    only way a busy buffer is ever returned. */
 static ngx_int_t
-ngx_http_pack_zstd_drain(ctx_t *ctx)
+ngx_http_pack_zstd_drain(ctx_t *const ctx)
 {
     ngx_http_request_t *r;
     ngx_int_t           rc;
@@ -1455,7 +1536,7 @@ ngx_http_pack_zstd_drain(ctx_t *ctx)
    last buffer has been taken, since buffers still outstanding mean
    the response is not finished whatever the encoder says. */
 static ngx_int_t
-ngx_http_pack_zstd_finish(ctx_t *ctx)
+ngx_http_pack_zstd_finish(ctx_t *const ctx)
 {
     if (ctx->state->frame_closed && ctx->busy == NULL) {
         ngx_http_pack_zstd_close(ctx);
@@ -1469,7 +1550,8 @@ ngx_http_pack_zstd_finish(ctx_t *ctx)
 }
 
 static ngx_int_t
-ngx_http_pack_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
+ngx_http_pack_zstd_body_filter(
+    ngx_http_request_t *const r, ngx_chain_t *const in)
 {
     ctx_t    *ctx;
     ngx_int_t rc;
@@ -1577,7 +1659,7 @@ ngx_http_pack_zstd_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
    pool-backed ones would pile up until the request ends. "opaque" is
    still the pool, but only for logging. */
 static void *
-ngx_http_pack_zstd_alloc(void *opaque, size_t size)
+ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
 {
     ngx_pool_t *pool;
     ngx_log_t  *log;
@@ -1599,7 +1681,7 @@ ngx_http_pack_zstd_alloc(void *opaque, size_t size)
 }
 
 static void
-ngx_http_pack_zstd_free(void *opaque, void *address)
+ngx_http_pack_zstd_free(void *const opaque, void *const address)
 {
 #if (NGX_DEBUG)
     ngx_pool_t *pool;
@@ -1619,7 +1701,7 @@ ngx_http_pack_zstd_free(void *opaque, void *address)
    compression is finished, i.e. when ngx_http_pack_zstd_close is
    never reached. */
 static void
-ngx_http_pack_zstd_cleanup(void *data)
+ngx_http_pack_zstd_cleanup(void *const data)
 {
     zctx_t *zctx = data;
     /* Normally the encoder is already gone:
@@ -1632,7 +1714,7 @@ ngx_http_pack_zstd_cleanup(void *data)
 }
 
 static void *
-ngx_http_pack_zstd_create_conf(ngx_conf_t *cf)
+ngx_http_pack_zstd_create_conf(ngx_conf_t *const cf)
 {
     conf_t *conf;
 
@@ -1656,7 +1738,7 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *cf)
 
 static char *
 ngx_http_pack_zstd_merge_conf(
-    ngx_conf_t *cf, void *parent, void *child)
+    ngx_conf_t *const cf, void *const parent, void *const child)
 {
     conf_t *prev;
     conf_t *conf;
@@ -1715,7 +1797,7 @@ ngx_http_pack_zstd_merge_conf(
 
 /* Prepend to filter chain. */
 static ngx_int_t
-ngx_http_pack_zstd_init(ngx_conf_t *cf)
+ngx_http_pack_zstd_init(ngx_conf_t *const cf)
 {
     ngx_http_next_header_filter = ngx_http_top_header_filter;
     ngx_http_top_header_filter  = ngx_http_pack_zstd_header_filter;
@@ -1729,7 +1811,7 @@ ngx_http_pack_zstd_init(ngx_conf_t *cf)
 /* Translate "window size" to windowLog (log2), and check bounds. */
 static char *
 ngx_http_pack_zstd_parse_window(
-    ngx_conf_t *cf, void *post, void *data)
+    ngx_conf_t *const cf, void *const post, void *const data)
 {
     size_t *parameter;
     size_t  bits;
