@@ -204,8 +204,8 @@ static ngx_command_t const ngx_http_pack_static_commands[] = {
 };
 
 static ngx_http_module_t const ngx_http_pack_static_module_ctx = {
-    NULL,                             /* preconfiguration */
-    ngx_http_pack_static_init,        /* postconfiguration */
+    NULL,                             /* pre-configuration */
+    ngx_http_pack_static_init,        /* post-configuration */
     NULL,                             /* create main conf */
     NULL,                             /* init main conf */
     NULL,                             /* create server conf */
