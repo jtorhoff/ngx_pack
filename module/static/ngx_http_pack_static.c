@@ -44,8 +44,8 @@ static pack_encoding_t const ngx_http_pack_static_encodings[] = {
 #define NGX_HTTP_PACK_STATIC_NENCODINGS                              \
     (sizeof(ngx_http_pack_static_encodings) / sizeof(pack_encoding_t))
 
-/* Rows of the table above, in the order the directive named them. A
-   count of zero means it was not written in this block. */
+/* Rows of the table above, in the order the directive named them.
+   A count of zero means it was not written in this block. */
 typedef struct {
     ngx_uint_t enable;
     ngx_uint_t nencodings;
@@ -247,7 +247,7 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
     }
 
     /* A URI ending in "/" names a directory, not a file to serve. */
-    if (r->uri.data[r->uri.len - 1] == '/') {
+    if (r->uri.len > 0 && r->uri.data[r->uri.len - 1] == '/') {
         return NGX_DECLINED;
     }
 
@@ -622,6 +622,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         .path    = &path,
         .suffix  = &suffix,
     });
+
     if (rc != NGX_OK) {
         return rc;
     }
@@ -728,15 +729,11 @@ ngx_http_pack_static_is_ambiguous(
 /* At most once for any one block. Warned about rather than rejected:
    a location whose clients are all known to take the same encoding is
    a fair use of the combination. */
-static void
+static ngx_uint_t
 ngx_http_pack_static_warn_ambiguous(
     ngx_conf_t *const cf, pack_conf_t *const conf)
 {
     ngx_uint_t is_ambiguous;
-
-    if (conf->warned) {
-        return;
-    }
 
     is_ambiguous = ngx_http_pack_static_is_ambiguous(
         &(pack_is_ambiguous_args_t) {
@@ -744,13 +741,15 @@ ngx_http_pack_static_warn_ambiguous(
             .nencodings = conf->nencodings,
         });
 
-    if (is_ambiguous) {
+    if (is_ambiguous && !conf->warned) {
         conf->warned = 1;
         ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
             "\"pack_static always\" with more than one encoding in "
             "\"pack_static_encodings\" serves whatever is found "
             "first to every client");
     }
+
+    return is_ambiguous;
 }
 
 static char *
@@ -769,17 +768,7 @@ ngx_http_pack_static_merge_conf(
        into a child, and http{} is only ever the parent - so it is
        reported here. Every other block has already passed through as
        a child by now, so this call speaks for http{} alone. */
-    ngx_http_pack_static_warn_ambiguous(cf, prev);
-
-    /* What the parent already meant, so the warning lands where the
-       combination first takes effect instead of repeating down every
-       block that inherits it. Asking "did this block write it" would
-       miss a setting made in an enclosing one. */
-    inherited = ngx_http_pack_static_is_ambiguous(
-        &(pack_is_ambiguous_args_t) {
-            .enable     = prev->enable,
-            .nencodings = prev->nencodings,
-        });
+    inherited = ngx_http_pack_static_warn_ambiguous(cf, prev);
 
     ngx_conf_merge_uint_value(
         conf->enable, prev->enable, NGX_HTTP_PACK_STATIC_OFF);
