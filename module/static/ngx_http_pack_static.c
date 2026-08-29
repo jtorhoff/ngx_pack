@@ -75,10 +75,8 @@ static ngx_conf_enum_t ngx_http_pack_static[] = {
 };
 
 /* Reads pack_static_encodings, keeping the order it was written in.
-
-   An unknown value will make nginx refuse the whole configuration.
-   A repeat is logged as a warning and ignored. The list of encodings
-   is upper bounded by NGX_HTTP_PACK_STATIC_NENCODINGS. */
+   An unknown value refuses the whole configuration; a repeat is a
+   warning and then ignored. */
 static char *
 ngx_http_pack_static_set_encodings(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
@@ -98,10 +96,9 @@ ngx_http_pack_static_set_encodings(
         return "is duplicate";
     }
 
-    /* Iterates over encodings' args and adds valid, unique values
-       to the encodings array. The dedupe makes the count bounded.
-       The files that end with the corresponding extension
-       (aka siblings) are probed by this module on request. */
+    /* The dedupe is what bounds the count. NGX_CONF_1MORE sets no
+       upper limit on arguments, but there are only three rows and
+       each can be added once, so the fixed array cannot overflow. */
     value = cf->args->elts;
     for (arg = 1; arg < cf->args->nelts; arg++) {
         sibling_encoding = NULL;
@@ -146,7 +143,6 @@ ngx_http_pack_static_set_encodings(
             }
         }
 
-        /* Appends a new, unique, and valid encoding value */
         pcf->encodings[pcf->nencodings++] = sibling_encoding;
     }
 
@@ -180,14 +176,10 @@ static ngx_command_t ngx_http_pack_static_commands[] = {
         offsetof(pack_conf_t, enable),
         &ngx_http_pack_static,
     },
-    /* 1MORE rather than TAKE123: the table has three rows, so the
-       count is already bounded, and the setter refuses an unknown
-       value and warns on a repeat. A fourth argument is caught either
-       way, with a message naming the offending value instead of
-       counting arguments.
-
-       The setter reaches the conf directly, so the offset and post
-       slots the stock setters read are left empty. */
+    /* 1MORE rather than TAKE123: the setter names the offending
+       value where an argument count could not, and the table's three
+       rows bound the list anyway. Offset and post stay empty because
+       that setter reaches the conf itself. */
     {
         ngx_string("pack_static_encodings"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -232,14 +224,11 @@ typedef struct {
     u_char            **suffix;
 } pack_preflight_args_t;
 
-/* Settles everything that holds for the request as a whole, before
-   any one encoding is considered: whether this handler has business
-   here at all, the Vary the answer will carry either way, and the
-   path buffer the candidates are written into.
+/* Settles what holds for the request as a whole, so the loop below
+   repeats none of it.
 
-   Returns NGX_OK with path mapped and suffix pointing at the room
-   reserved after it, NGX_DECLINED to leave the request to the handler
-   behind this one, or an HTTP status that finishes it. */
+   NGX_OK leaves path mapped and suffix pointing at the reserved room;
+   NGX_DECLINED leaves the request to the handler behind this one. */
 static ngx_int_t
 ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
 {
@@ -262,16 +251,11 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
         return NGX_DECLINED;
     }
 
-    /* A subrequest's body is spliced into its parent's - an SSI
-       include, an addition, a slice - so it has no headers of its own
-       to say what encoding it is in. Serving a sibling here would put
-       compressed bytes in the middle of the parent's response and
-       label them nothing.
-
-       ngx_http_pack_claim_request refuses one too, but that is asked
-       only under "on". This is the same question asked where "always"
-       cannot skip it: it means no questions about the client, and
-       this is not one. */
+    /* A subrequest's body is spliced into its parent's, so it has no
+       headers to say what encoding it is in - compressed bytes would
+       land mid-response labelled as nothing. claim_request refuses
+       one too, but only under "on"; asked here, "always" cannot skip
+       it either. */
     if (r != r->main) {
         return NGX_DECLINED;
     }
@@ -282,10 +266,9 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
         return NGX_DECLINED;
     }
 
-    /* Room for the longest suffix any candidate might need. The path
-       is mapped once and each candidate's suffix is written over the
-       last, so the reservation has to cover the widest of them rather
-       than the first. */
+    /* The path is mapped once and each candidate's suffix is written
+       over the last, so the room reserved has to cover the widest
+       suffix rather than the first. */
     reserved = 0;
     for (idx = 0; idx < NGX_HTTP_PACK_STATIC_NENCODINGS; idx++) {
         sibling_encoding = &ngx_http_pack_static_encodings[idx];
@@ -294,14 +277,11 @@ ngx_http_pack_static_preflight(pack_preflight_args_t *const args)
         }
     }
 
-    /* Get the path. ngx_http_map_uri_to_path leaves path.len holding
-       the size of the buffer it allocated - the path, the room asked
-       for here, and a terminating zero - not the length of the string
-       in it. So the length has to come from the write pointer, as
-       nginx's own gzip_static does; adding the suffix length to what
-       it returned would overshoot the string and the allocation. The
-       pointer it returns is where every candidate's suffix goes, one
-       after another, and each sets path.len to match. */
+    /* ngx_http_map_uri_to_path leaves path.len holding the size of
+       the buffer it allocated, not the length of the string in it, so
+       every candidate's length comes from the write pointer instead.
+       Adding a suffix length to what it returned would overshoot both
+       the string and the allocation. */
     *args->suffix = ngx_http_map_uri_to_path(
         r, args->path, &root_len, reserved);
     if (*args->suffix == NULL) {
@@ -316,13 +296,9 @@ typedef struct {
     ngx_open_file_info_t     *file_info;
 } pack_prepare_file_info_args_t;
 
-/* Fills in what ngx_open_cached_file consults before it opens
-   anything: the read-ahead and directio thresholds, and the terms the
-   open file cache is to be used on.
-
-   Zeroed first because one struct serves every candidate in turn and
+/* Zeroed first because one struct serves every candidate in turn and
    ngx_open_cached_file writes its result back into the same fields it
-   reads. Carrying one candidate's over would describe the wrong
+   reads - carrying one candidate's over would describe the wrong
    file. */
 static void
 ngx_http_pack_static_prepare_file_info(
@@ -346,15 +322,12 @@ typedef struct {
     ngx_open_file_info_t     *file_info;
 } pack_fstat_args_t;
 
-/* Opens whatever the path now names and says whether it can be
-   served. The name understates it: ngx_open_cached_file returns a
-   descriptor, not just the stat that decides.
+/* Opens what the path now names. The name understates it:
+   ngx_open_cached_file returns a descriptor, not just a stat.
 
-   Returns NGX_OK with file_info describing an open file, NGX_DECLINED
-   when there is nothing usable there - a missing sibling being the
-   ordinary case rather than a failure - or an HTTP status that
-   finishes the request. What an operator would want to know about is
-   logged first, then declined like the rest. */
+   NGX_DECLINED covers a missing sibling, the ordinary case rather
+   than a failure. What an operator would want to know about is logged
+   first and then declined like the rest. */
 static ngx_int_t
 ngx_http_pack_static_fstat(pack_fstat_args_t *const args)
 {
@@ -434,15 +407,12 @@ typedef struct {
     ngx_open_file_info_t  *file_info;
 } pack_try_sibling_args_t;
 
-/* Tries one encoding: writes its suffix over "suffix", which points
-   into the room ngx_http_map_uri_to_path reserved, and opens what
-   that names.
+/* Tries one encoding: writes its suffix into the room reserved after
+   the path and opens what that names.
 
-   Three outcomes, so the caller can stay a loop. NGX_OK means the
-   sibling is open and servable, with file_info describing it and path
-   naming it. NGX_DECLINED means this encoding is not on offer or has
-   no sibling worth serving, and the next candidate is still worth a
-   look. Anything else is an HTTP status that finishes the request. */
+   Three outcomes so the caller can stay a loop. NGX_DECLINED means
+   only that this candidate is out and the next is worth a look;
+   anything but that or NGX_OK finishes the request. */
 static ngx_int_t
 ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
 {
@@ -456,13 +426,10 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
     conf = ngx_http_get_module_loc_conf(
         args->request, ngx_http_pack_static_module);
 
-    /* "always" asks neither question, serving whatever is on disk to
-       everyone, so the short circuit is the whole of it there.
-
-       The verdict is only recorded. The probe below runs either way,
+    /* Recorded, not acted on: the probe below has to run either way,
        because a sibling that exists means the resource varies on
-       Accept-Encoding, and that has to be said in the plain response
-       a declined client is about to fall through to. */
+       Accept-Encoding and the declined client's plain response must
+       say so. "always" asks nothing, which the short circuit is. */
     accepted = (conf->enable != NGX_HTTP_PACK_STATIC_ON) ||
                (ngx_http_pack_static_accepts(&(pack_accepts_args_t) {
                    .request  = args->request,
@@ -517,19 +484,11 @@ ngx_http_pack_static_try_sibling(pack_try_sibling_args_t *const args)
     }
 #endif
 
-    /* A servable sibling exists, so the resource does vary on
-       Accept-Encoding - said here, where that is known, rather than
-       for every request the location handles. gzip_static sets it in
-       the same place and for the same reason, one step earlier: it
-       has no loop to come back round, so a sibling that turns out to
-       be a directory cannot leave it advertising a resource that
-       never varied.
-
-       Set even for a client about to be declined below, which is the
-       whole point: the plain response it falls through to is the one
-       a shared cache must not hand to the next client. Under
-       "always" there is nothing to vary on - everyone gets the same
-       bytes. */
+    /* Said where a servable sibling is known to exist, not for every
+       request: a resource with no sibling does not vary, and claiming
+       it does fragments every cache downstream. Set even for the
+       client declined below - the plain response it falls through to
+       is the one a cache must not hand to the next client. */
     if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
         ngx_http_pack_set_vary(args->request) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -548,14 +507,9 @@ typedef struct {
     ngx_str_t const      *encoding;
 } pack_set_headers_args_t;
 
-/* Describes the response the found sibling will be: its size and
-   mtime, the ETag and Content-Type derived from them, and the
-   Content-Encoding that says which sibling this is. Nothing goes out
-   yet - ngx_http_pack_static_send sends the headers along with the
-   body, once the buffer for it exists.
-
-   Returns NGX_OK, or NGX_HTTP_INTERNAL_SERVER_ERROR if a header list
-   could not be grown. */
+/* Describes the response without sending it: nothing goes out until
+   ngx_http_pack_static_send has a buffer for the body, which has to
+   be allocated while a 500 is still possible. */
 static ngx_int_t
 ngx_http_pack_static_set_headers(pack_set_headers_args_t *const args)
 {
@@ -581,12 +535,10 @@ ngx_http_pack_static_set_headers(pack_set_headers_args_t *const args)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    /* Offers byte ranges over the sibling, which the range filter
-       declines to do for anyone who has not said so. The ranges count
-       in the bytes actually sent - the encoded ones - which is what a
-       client resuming an interrupted download of this response asks
-       for. Both of nginx's own file handlers set it here; without it
-       a Range request is answered with the whole body and a 200. */
+    /* The range filter offers nothing to a handler that has not said
+       so: without this a Range request is answered with the whole
+       body and a 200. Ranges count in the encoded bytes, which is
+       what a client resuming this response asks for. */
     r->allow_ranges = 1;
 
     return NGX_OK;
@@ -598,21 +550,11 @@ typedef struct {
     ngx_str_t            *path;
 } pack_send_args_t;
 
-/* Sends the response: the headers set above, then the sibling itself
-   as a single buffer.
-
-   The body is described rather than read. The buffer carries the
-   descriptor ngx_open_cached_file left in file_info and the range of
-   it to send, so the output chain hands the file to the kernel -
-   with sendfile, without the bytes entering this process at all.
-   Closing that descriptor belongs to the cleanup ngx_open_cached_file
-   registered on the request pool, which is why no path out of here
-   closes anything.
-
-   Returns NGX_HTTP_INTERNAL_SERVER_ERROR if the buffer could not be
-   allocated, the result of ngx_http_send_header when it fails or
-   when the response ends at the headers - a HEAD request, a 304 -
-   and otherwise whatever the filter chain makes of the body. */
+/* Sends the headers, then the sibling as one buffer. The body is
+   described rather than read, so sendfile can hand the file to the
+   kernel untouched, and closing the descriptor belongs to the cleanup
+   ngx_open_cached_file put on the request pool - which is why no path
+   out of here closes anything. */
 static ngx_int_t
 ngx_http_pack_static_send(pack_send_args_t *const args)
 {
@@ -641,12 +583,10 @@ ngx_http_pack_static_send(pack_send_args_t *const args)
     buf->last_buf      = (r == r->main) ? 1 : 0;
     buf->last_in_chain = 1;
 
-    /* An empty sibling in a subrequest leaves a buffer with nothing
-       in it and nothing marking it: no data, no file, and no
-       last_buf, since the parent's response goes on. The write filter
-       calls that a bug - "zero size buf" at alert level, and a
-       debug_point that aborts the worker under "debug_points abort" -
-       unless "sync" says the emptiness is deliberate. */
+    /* An empty body would leave a buffer with no data, no file and
+       no last_buf, which the write filter treats as a bug: "zero size
+       buf" at alert level, and a debug_point that aborts the worker
+       under "debug_points abort". "sync" says it is deliberate. */
     buf->sync = (buf->last_buf || buf->in_file) ? 0 : 1;
 
     buf->file->fd       = args->file_info->fd;
@@ -721,17 +661,12 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         return NGX_DECLINED;
     }
 
-    /* Records that the document root has been shown to exist, which
-       opening the sibling above just did. Its one reader is the log
-       module, which stats the root before writing an access_log whose
-       path contains a variable; the flag saves it that stat.
-
-       Not simply 1: an error page can redirect the request into a
-       location with a different root, and what was proven about this
-       one says nothing about that one. */
+    /* Saves the log module a stat of the document root, which
+       opening the sibling just proved exists. Not simply 1: an error
+       page can redirect into a location with a different root, and
+       what was proven about this one says nothing about that one. */
     r->root_tested = !r->error_page;
 
-    /* Discard the request body, then describe the response. */
     rc = ngx_http_discard_request_body(r);
     if (rc != NGX_OK) {
         return rc;
@@ -766,11 +701,9 @@ ngx_http_pack_static_create_conf(ngx_conf_t *const cf)
 
     conf->enable = NGX_CONF_UNSET_UINT;
 
-    /* conf->nencodings is deliberately left at the zero ngx_pcalloc
-       wrote, which is what merge_conf reads as "not set here". A
-       count has no spare value to mean unset the way an ngx_uint_t
-       does, and it does not need one: the directive cannot leave a
-       count of zero behind. */
+    /* nencodings stays at the zero ngx_pcalloc wrote: that is what
+       merge_conf reads as "not set here", and a count has no spare
+       value to mean unset the way an ngx_uint_t does. */
 
     return conf;
 }
@@ -780,13 +713,10 @@ typedef struct {
     ngx_uint_t nencodings;
 } pack_is_ambiguous_args_t;
 
-/* Whether this pair leaves the served encoding up to whichever
-   sibling happens to exist. "always" skips the Accept-Encoding test,
-   so with more than one encoding configured the client gets whatever
-   the probe reaches first, with no say in it.
-
-   A count of zero reads as not ambiguous, which is what the caller
-   below wants of a parent that named no encodings. */
+/* "always" skips the Accept-Encoding test, so with more than one
+   encoding the client gets whatever the probe reaches first, with no
+   say in it. A count of zero reads as not ambiguous, which is what
+   the caller wants of a parent that named no encodings. */
 static ngx_uint_t
 ngx_http_pack_static_is_ambiguous(
     pack_is_ambiguous_args_t *const args)
@@ -795,11 +725,9 @@ ngx_http_pack_static_is_ambiguous(
            args->nencodings > 1;
 }
 
-/* Reports the combination, at most once for any one block.
-
-   Warned about rather than rejected, since it is servable - a
-   location whose clients are all known to take the same encoding is
-   a fair use of it. */
+/* At most once for any one block. Warned about rather than rejected:
+   a location whose clients are all known to take the same encoding is
+   a fair use of the combination. */
 static void
 ngx_http_pack_static_warn_ambiguous(
     ngx_conf_t *const cf, pack_conf_t *const conf)
@@ -837,19 +765,16 @@ ngx_http_pack_static_merge_conf(
     prev = parent;
     conf = child;
 
-    /* The parent is reported here rather than on a merge of its own,
-       because http{} never gets one: nginx merges a parent into a
-       child, and http{} is only ever the parent. Every other block
-       has already passed through as a child by the time it appears
-       here, so in practice this call speaks for http{} alone. */
+    /* http{} never gets a merge of its own - nginx merges a parent
+       into a child, and http{} is only ever the parent - so it is
+       reported here. Every other block has already passed through as
+       a child by now, so this call speaks for http{} alone. */
     ngx_http_pack_static_warn_ambiguous(cf, prev);
 
-    /* Whether the block above was already ambiguous, so that the
-       warning below lands where the combination first takes effect
-       rather than repeating down every block that inherits it.
-       Asking "did this block write it" would miss a setting made in
-       an enclosing one; asking what the parent already meant does
-       not. */
+    /* What the parent already meant, so the warning lands where the
+       combination first takes effect instead of repeating down every
+       block that inherits it. Asking "did this block write it" would
+       miss a setting made in an enclosing one. */
     inherited = ngx_http_pack_static_is_ambiguous(
         &(pack_is_ambiguous_args_t) {
             .enable     = prev->enable,
