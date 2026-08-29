@@ -154,7 +154,7 @@ typedef struct {
 
     /* How many output buffers one response may have in flight. Their
        size is not configurable - see NGX_HTTP_PACK_ZSTD_OUT_SIZE. */
-    ngx_int_t buffers;
+    ngx_int_t nbuffers;
 } conf_t;
 
 /* What the body filter should do once ngx_http_pack_zstd_prepare
@@ -429,7 +429,7 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
             NGX_CONF_TAKE1,
         ngx_conf_set_num_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(conf_t, buffers),
+        offsetof(conf_t, nbuffers),
         (void *) &ngx_http_pack_zstd_buffers,
     },
     {
@@ -683,17 +683,17 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         args->ctx->free = link->next;
         buf             = link->buf;
 
-
         ngx_free_chain(r->pool, link);
 
         /* ngx_chain_update_chains has already rewound pos and last to
            start; the flags are this filter's to set per round. */
         *args->out = buf;
+
         return NGX_OK;
     }
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_zstd_module);
-    if ((ngx_int_t) args->ctx->nbuffers >= conf->buffers) {
+    if ((ngx_int_t) args->ctx->nbuffers >= conf->nbuffers) {
         return NGX_DECLINED;
     }
 
@@ -721,6 +721,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         args->ctx->nbuffers);
 
     *args->out = buf;
+
     return NGX_OK;
 }
 
@@ -1647,7 +1648,7 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *cf)
     conf->enable      = NGX_CONF_UNSET;
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
-    conf->buffers     = NGX_CONF_UNSET;
+    conf->nbuffers    = NGX_CONF_UNSET;
     conf->min_length  = NGX_CONF_UNSET;
 
     return conf;
@@ -1691,7 +1692,7 @@ ngx_http_pack_zstd_merge_conf(
        They also cost - 4 x NGX_HTTP_PACK_ZSTD_OUT_SIZE, held for the
        life of the response - and gzip's 32 x 4K would be 128 KB per
        response for a case this module does not have. */
-    ngx_conf_merge_value(conf->buffers, prev->buffers, 4);
+    ngx_conf_merge_value(conf->nbuffers, prev->nbuffers, 4);
 
     /* Below this a response is not worth encoding: the frame's own
        overhead and the "Content-Encoding" header can together cost

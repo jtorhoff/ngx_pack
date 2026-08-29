@@ -515,7 +515,7 @@ class Upstream:
 
         nginx then reads them together and ngx_http_proxy_chunked_filter
         appends one buffer per chunk, each with flush set, into one chain -
-        the case NGX_HTTP_ZSTD_MAX_FOLDED_FLUSHES exists for. Sending them as
+        the case NGX_HTTP_PACK_ZSTD_MAX_FOLDED_FLUSHES exists for. Sending them as
         separate writes would let nginx read them one at a time, and the
         chain would hold a single flush marker with nothing to fold.
         """
@@ -2463,14 +2463,14 @@ def test_output_rounds_account_for_the_body(ctx):
 
     # Only meaningful when the caller has said what the build should have.
     # It is what stops the small-buffer run from passing as a plain re-run of
-    # the suite if -DNGX_HTTP_ZSTD_OUT_SIZE ever stops reaching the compiler.
+    # the suite if -DNGX_HTTP_PACK_ZSTD_OUT_SIZE ever stops reaching the compiler.
     cap = max(sizes)
     if ctx.max_out_size is not None:
         check(
             cap <= ctx.max_out_size,
             f"largest committed round was {cap} bytes, above the "
             f"{ctx.max_out_size} this build was meant to be limited to: "
-            f"NGX_HTTP_ZSTD_OUT_SIZE did not reach the compiler",
+            f"NGX_HTTP_PACK_ZSTD_OUT_SIZE did not reach the compiler",
         )
 
 
@@ -2488,7 +2488,7 @@ class Context:
         self.decode = decode
         self.fixtures = fixtures
         self.nginx = nginx
-        # What NGX_HTTP_ZSTD_OUT_SIZE was built with, when the caller knows;
+        # What NGX_HTTP_PACK_ZSTD_OUT_SIZE was built with, when the caller knows;
         # None means "whatever the default is", and the check is skipped.
         self.max_out_size = max_out_size
 
@@ -2504,7 +2504,7 @@ def main():
         "--max-out-size",
         type=int,
         help="assert the module's output buffer is at most this many bytes, "
-        "i.e. that -DNGX_HTTP_ZSTD_OUT_SIZE reached the build "
+        "i.e. that -DNGX_HTTP_PACK_ZSTD_OUT_SIZE reached the build "
         "(see script/test-small-buffer.sh)",
     )
     parser.add_argument(
