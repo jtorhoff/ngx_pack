@@ -172,8 +172,10 @@ Enables or disables checking for the existence of a pre-compressed file with
 the `.zst` extension.
 
 With `on`, the file is served only to a client whose `Accept-Encoding` takes
-Zstandard, and `Vary: Accept-Encoding` is set whether or not this module ends
-up serving the request - what varies is the resource, not the one request.
+Zstandard, and `Vary: Accept-Encoding` is set on every response the location
+serves - whether or not this module ends up serving the request, and whether
+or not a pre-compressed file exists at all. What varies is the location, not
+the one request.
 
 With `always`, the pre-compressed file is used in all cases, without checking
 whether the client supports it. Nothing is added to `Vary`, since every client
@@ -182,9 +184,11 @@ receives the same bytes.
 
 ### Notes on the static module
 
-Every eligible request probes for `<path>.zst`. When that file does not exist
-the probe reaches the filesystem **on every request** unless negative results
-are cached too. Caching both requires the following directives:
+An eligible request probes only for the encodings its own `Accept-Encoding`
+takes, so a client that negotiates nothing costs no probe at all. When the
+file a probe names does not exist, that probe reaches the filesystem **on
+every request** unless negative results are cached too. Caching both requires
+the following directives:
 
 ```nginx
 open_file_cache        max=1000 inactive=60s;

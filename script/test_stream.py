@@ -1121,30 +1121,51 @@ def test_static_module_declines_plain_client(ctx):
     )
 
 
-@test("a declined client's plain response still says the resource varies")
-def test_static_vary_on_declined_client(ctx):
-    """The sibling exists but this client cannot be served it, so the
-    uncompressed file goes out instead - and that is exactly the response a
-    shared cache must not hand to the next client, which can take zstd. The
-    module has to probe encodings the client refused to find that out.
+@test("every response from a pack_static location says it varies")
+def test_static_vary_is_unconditional(ctx):
+    """"pack_static on" is what makes the body depend on Accept-Encoding,
+    and that is a property of the location rather than of the file, so the
+    header goes out whether or not this client is served a sibling and
+    whether or not one exists. A cache that stored the plain response
+    without it could hand that response to a client the module would have
+    served a sibling.
 
-    The negative half is what keeps it honest: a resource with no sibling
-    does not vary, and saying it does fragments every cache downstream."""
+    "always" is the exception, and the case that keeps this honest: it
+    serves the encoded file to everyone whatever they asked for, so
+    nothing about the response varies with Accept-Encoding."""
     if "precompressed.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the .zst fixture")
 
+    # A sibling exists and this client cannot take it.
     _, headers, _ = fetch(
         ctx.port, "/static/precompressed.html", accept_encoding=None
     )
     check(
         headers.get("vary") == "Accept-Encoding",
-        f"a sibling exists, so the plain response must vary; got {headers!r}",
+        f"declined client, sibling on disk: {headers!r}",
     )
 
+    # A sibling exists and this client is served it.
+    _, headers, _ = fetch(ctx.port, "/static/precompressed.html")
+    check(
+        headers.get("vary") == "Accept-Encoding",
+        f"served client: {headers!r}",
+    )
+
+    # No sibling at all: the location still varies, even though this
+    # particular file could only ever be served one way.
     _, headers, _ = fetch(ctx.port, "/static/plain_only.html", accept_encoding=None)
     check(
+        headers.get("vary") == "Accept-Encoding",
+        f"no sibling on disk: {headers!r}",
+    )
+
+    # "always" ignores Accept-Encoding, so it must not claim to vary.
+    _, headers, _ = fetch(ctx.port, "/subreq/multi.html", accept_encoding=None)
+    check(
         "vary" not in headers,
-        f"no sibling exists, so nothing varies; got {headers!r}",
+        f"\"always\" serves one file to everyone, so nothing varies; "
+        f"got {headers!r}",
     )
 
 
