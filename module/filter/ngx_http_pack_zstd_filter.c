@@ -207,6 +207,17 @@ typedef enum {
     NGX_HTTP_PACK_ZSTD_STEP_FAILED
 } step_e;
 
+/* Whether the body filter's loop turns again. Its own type rather
+   than NGX_OK and NGX_AGAIN, which would read as the filter's return
+   codes sitting beside the one this actually carries. */
+typedef enum {
+    /* Go round: the send handed a buffer back and the encoder can
+       use it. */
+    NGX_HTTP_PACK_ZSTD_PUMP_CONTINUE = 0,
+    /* The call is over; "rc" is what the body filter returns. */
+    NGX_HTTP_PACK_ZSTD_PUMP_STOP
+} pump_e;
+
 /* The response's flags, in the order the response passes through
    them: decided, committed, the encoder built, then what each call
    brings and what the encoder is still holding, and last the two
@@ -1767,10 +1778,9 @@ typedef struct {
    buffer at a time; here a stalled write only costs the encoder its
    remaining buffers, not its next byte.
 
-   NGX_AGAIN means go round: the send handed a buffer back and the
-   encoder can use it. Anything else is what the body filter returns,
-   and "rc" carries it. */
-static ngx_int_t
+   Only STOP settles anything, and then "rc" is what the body filter
+   returns - see pump_e. */
+static pump_e
 ngx_http_pack_zstd_pump(pump_args *const args)
 {
     ctx_t *ctx;
@@ -1786,26 +1796,26 @@ ngx_http_pack_zstd_pump(pump_args *const args)
         ngx_http_pack_zstd_close(ctx);
 
         *args->rc = NGX_ERROR;
-        return NGX_OK;
+        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
     }
 
     /* Nothing new to send and nothing outstanding: the encoder is
        waiting for input rather than for the filters below. */
     if (ctx->out == NULL && ctx->busy == NULL) {
         *args->rc = NGX_OK;
-        return NGX_OK;
+        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
     }
 
     if (ngx_http_pack_zstd_drain(ctx) != NGX_OK) {
         ngx_http_pack_zstd_close(ctx);
 
         *args->rc = NGX_ERROR;
-        return NGX_OK;
+        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
     }
 
     if (step == NGX_HTTP_PACK_ZSTD_STEP_DONE) {
         *args->rc = ngx_http_pack_zstd_finish(ctx);
-        return NGX_OK;
+        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
     }
 
     /* Stopped for want of a buffer. If the send handed one back, go
@@ -1813,10 +1823,10 @@ ngx_http_pack_zstd_pump(pump_args *const args)
        more this call can do. */
     if (ctx->free == NULL) {
         *args->rc = NGX_AGAIN;
-        return NGX_OK;
+        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
     }
 
-    return NGX_AGAIN;
+    return NGX_HTTP_PACK_ZSTD_PUMP_CONTINUE;
 }
 
 static ngx_int_t
@@ -1881,7 +1891,7 @@ ngx_http_pack_zstd_body_filter(
         if (ngx_http_pack_zstd_pump(&(pump_args) {
                 .ctx = ctx,
                 .rc  = &rc,
-            }) != NGX_AGAIN) {
+            }) == NGX_HTTP_PACK_ZSTD_PUMP_STOP) {
             return rc;
         }
     }
