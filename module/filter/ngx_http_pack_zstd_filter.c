@@ -1715,16 +1715,12 @@ ngx_http_pack_zstd_configure_encoder(ctx_t *const ctx)
         }
     }
 
-    ngx_log_debug0(
-        NGX_LOG_DEBUG_HTTP,
-        ctx->request->connection->log,
-        0,
-        "zstd encoder instance created and configured");
-
     return NGX_OK;
 }
 
-/* Initializes encoder, output chain and buffer, if necessary. */
+/* Builds the encoder and the output chain's tail, once per response.
+   No output buffer yet - get_buf creates those on demand, up to
+   zstd_buffers of them, and most responses never need a second. */
 static ngx_int_t
 ngx_http_pack_zstd_ensure_stream(ctx_t *const ctx)
 {
@@ -1744,9 +1740,7 @@ ngx_http_pack_zstd_ensure_stream(ctx_t *const ctx)
         return NGX_ERROR;
     }
 
-    /* The buffers themselves are created on demand by get_buf, up to
-       zstd_buffers of them; most responses never need a second. Only
-       the tail pointer has to exist before the first one is
+    /* Only the tail pointer has to exist before the first buffer is
        committed, and ngx_pcalloc cannot set it. */
     ctx->out_size = NGX_HTTP_PACK_ZSTD_OUT_SIZE;
     ctx->last_out = &ctx->out;
@@ -1754,10 +1748,19 @@ ngx_http_pack_zstd_ensure_stream(ctx_t *const ctx)
     /* Last, so that the flag means what it says. */
     ctx->state.initialized = 1;
 
+    /* Both halves are done, which is what the line says and why it is
+       here rather than at the end of either one. script/
+       test_stream.py counts it to know how many encoders a slice of
+       the log built. */
+    ngx_log_debug0(
+        NGX_LOG_DEBUG_HTTP,
+        ctx->request->connection->log,
+        0,
+        "zstd encoder instance created and configured");
+
     return NGX_OK;
 }
 
-/* Response body filtration (compression). */
 /* Hands what the encoder produced to the filters below, then takes
    account of what came back.
 
@@ -1902,6 +1905,7 @@ ngx_http_pack_zstd_pump(pump_args *const args)
     return NGX_HTTP_PACK_ZSTD_PUMP_CONTINUE;
 }
 
+/* Response body filtration (compression). */
 static ngx_int_t
 ngx_http_pack_zstd_body_filter(
     ngx_http_request_t *const r, ngx_chain_t *const in)
