@@ -1121,6 +1121,33 @@ def test_static_module_declines_plain_client(ctx):
     )
 
 
+@test("a declined client's plain response still says the resource varies")
+def test_static_vary_on_declined_client(ctx):
+    """The sibling exists but this client cannot be served it, so the
+    uncompressed file goes out instead - and that is exactly the response a
+    shared cache must not hand to the next client, which can take zstd. The
+    module has to probe encodings the client refused to find that out.
+
+    The negative half is what keeps it honest: a resource with no sibling
+    does not vary, and saying it does fragments every cache downstream."""
+    if "precompressed.html" not in ctx.fixtures:
+        raise Failure("no zstd encoder available to build the .zst fixture")
+
+    _, headers, _ = fetch(
+        ctx.port, "/static/precompressed.html", accept_encoding=None
+    )
+    check(
+        headers.get("vary") == "Accept-Encoding",
+        f"a sibling exists, so the plain response must vary; got {headers!r}",
+    )
+
+    _, headers, _ = fetch(ctx.port, "/static/plain_only.html", accept_encoding=None)
+    check(
+        "vary" not in headers,
+        f"no sibling exists, so nothing varies; got {headers!r}",
+    )
+
+
 def check_sibling_served(ctx, stem, accept_encoding, encoding, prefix="static"):
     """Fetches "stem" and asserts which sibling came back.
 

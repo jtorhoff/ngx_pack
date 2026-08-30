@@ -400,13 +400,22 @@ typedef struct {
     encoding_t const   *encoding;
 } accepts_args;
 
-/* Whether this client may be served the sibling under "on". It has to
+/* Whether this client may be served the sibling. "always" asks
+   nothing, which the short circuit is. Under "on" the client has to
    name the encoding, and it must not have reached us through a proxy:
    a "Via" header is what nginx's "gzip_proxied off" turns away, and
    what it defaults to. No directive relaxes that yet. */
 static ngx_uint_t
 ngx_http_pack_static_accepts(accepts_args *const args)
 {
+    conf_t *conf;
+
+    conf = ngx_http_get_module_loc_conf(
+        args->request, ngx_http_pack_static_module);
+    if (conf->enable == NGX_HTTP_PACK_STATIC_ALWAYS) {
+        return 1;
+    }
+
     if (args->request->headers_in.via != NULL) {
         return 0;
     }
@@ -420,8 +429,10 @@ ngx_http_pack_static_accepts(accepts_args *const args)
 }
 
 typedef struct {
-    ngx_http_request_t   *request;
-    encoding_t const     *encoding;
+    ngx_http_request_t *request;
+    encoding_t const   *encoding;
+    /* What ngx_http_pack_static_accepts said of this encoding. */
+    ngx_uint_t            accepted;
     ngx_str_t            *path;
     u_char               *suffix;
     ngx_open_file_info_t *file_info;
@@ -430,31 +441,21 @@ typedef struct {
 /* Tries one encoding: writes its suffix into the room reserved after
    the path and opens what that names.
 
+   Called for encodings this client would not take as well, because a
+   sibling that exists means the resource varies on Accept-Encoding
+   and the declined client's plain response must say so.
+
    Three outcomes so the caller can stay a loop. NGX_DECLINED means
    only that this candidate is out and the next is worth a look;
    anything but that or NGX_OK finishes the request. */
 static ngx_int_t
 ngx_http_pack_static_try_sibling(try_sibling_args *const args)
 {
-    conf_t                   *conf;
-    ngx_uint_t                accepted;
     ngx_http_core_loc_conf_t *core_conf;
     u_char                   *last;
     ngx_log_t                *log;
     ngx_int_t                 rc;
-
-    conf = ngx_http_get_module_loc_conf(
-        args->request, ngx_http_pack_static_module);
-
-    /* Recorded, not acted on: the probe below has to run either way,
-       because a sibling that exists means the resource varies on
-       Accept-Encoding and the declined client's plain response must
-       say so. "always" asks nothing, which the short circuit is. */
-    accepted = (conf->enable == NGX_HTTP_PACK_STATIC_ALWAYS) ||
-               (ngx_http_pack_static_accepts(&(accepts_args) {
-                   .request  = args->request,
-                   .encoding = args->encoding,
-               }));
+    conf_t                   *conf;
 
     core_conf = ngx_http_get_module_loc_conf(
         args->request, ngx_http_core_module);
@@ -527,16 +528,81 @@ ngx_http_pack_static_try_sibling(try_sibling_args *const args)
        it does fragments every cache downstream. Set even for the
        client declined below - the plain response it falls through to
        is the one a cache must not hand to the next client. */
+    conf = ngx_http_get_module_loc_conf(
+        args->request, ngx_http_pack_static_module);
+
     if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
         ngx_http_pack_set_vary(args->request) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    if (!accepted) {
+    if (!args->accepted) {
         return NGX_DECLINED;
     }
 
     return NGX_OK;
+}
+
+typedef struct {
+    ngx_http_request_t *request;
+    /* Which group to probe: 1 the encodings this client would take, 0
+       the rest. Compared against ngx_http_pack_static_accepts. */
+    ngx_uint_t            accepted;
+    ngx_str_t            *path;
+    u_char               *suffix;
+    ngx_open_file_info_t *file_info;
+    encoding_t const    **found;
+} probe_pass_args;
+
+/* Probes one group of encodings, in the order pack_static_encodings
+   named them, so the admin decides which sibling a client taking
+   several is served.
+
+   NGX_OK sets *found to the encoding answering the request.
+   NGX_DECLINED means the group is exhausted, and only then is the
+   other one worth running. Anything else finishes the request. */
+static ngx_int_t
+ngx_http_pack_static_probe_pass(probe_pass_args *const args)
+{
+    conf_t           *conf;
+    ngx_uint_t        idx;
+    encoding_t const *sibling_encoding;
+    ngx_int_t         rc;
+
+    conf = ngx_http_get_module_loc_conf(
+        args->request, ngx_http_pack_static_module);
+
+    for (idx = 0; idx < conf->nencodings; idx++) {
+        sibling_encoding = conf->encodings[idx];
+
+        if (ngx_http_pack_static_accepts(&(accepts_args) {
+                .request  = args->request,
+                .encoding = sibling_encoding,
+            }) != args->accepted) {
+            continue;
+        }
+
+        rc = ngx_http_pack_static_try_sibling(&(try_sibling_args) {
+            .request   = args->request,
+            .encoding  = sibling_encoding,
+            .accepted  = args->accepted,
+            .path      = args->path,
+            .suffix    = args->suffix,
+            .file_info = args->file_info,
+        });
+
+        if (rc == NGX_OK) {
+            *args->found = sibling_encoding;
+            return NGX_OK;
+        }
+
+        /* Anything but "try the next one" ends the request here. */
+        if (rc != NGX_DECLINED) {
+            return rc;
+        }
+    }
+
+    return NGX_DECLINED;
 }
 
 typedef struct {
@@ -649,10 +715,7 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
     ngx_int_t            rc;
     ngx_str_t            path;
     u_char              *suffix;
-    conf_t              *conf;
     encoding_t const    *found;
-    ngx_uint_t           idx;
-    encoding_t const    *sibling_encoding;
     ngx_open_file_info_t file_info;
 
     rc = ngx_http_pack_static_preflight(&(preflight_args) {
@@ -665,38 +728,42 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         return rc;
     }
 
-    /* In the order pack_static_encodings named them, so the admin
-       decides which sibling a client taking several is served. */
-    conf = ngx_http_get_module_loc_conf(
-        r, ngx_http_pack_static_module);
-
+    /* The encodings this client would take come first, so a hit ends
+       the request at the first probe that could serve it rather than
+       after every candidate ahead of it in the configured order. */
     found = NULL;
-    for (idx = 0; idx < conf->nencodings; idx++) {
-        sibling_encoding = conf->encodings[idx];
 
-        rc = ngx_http_pack_static_try_sibling(&(try_sibling_args) {
+    rc = ngx_http_pack_static_probe_pass(&(probe_pass_args) {
+        .request   = r,
+        .accepted  = 1,
+        .path      = &path,
+        .suffix    = suffix,
+        .file_info = &file_info,
+        .found     = &found,
+    });
+
+    /* None of them had a sibling. The rest are probed only to learn
+       whether the resource varies: this client cannot be served one,
+       but a hit means another client would be, and the plain response
+       about to go out must say so. Nothing here can return NGX_OK -
+       try_sibling declines what the client would not take - so found
+       stays NULL and the request falls through below. */
+    if (rc == NGX_DECLINED) {
+        rc = ngx_http_pack_static_probe_pass(&(probe_pass_args) {
             .request   = r,
-            .encoding  = sibling_encoding,
+            .accepted  = 0,
             .path      = &path,
             .suffix    = suffix,
             .file_info = &file_info,
+            .found     = &found,
         });
-
-        if (rc == NGX_OK) {
-            found = sibling_encoding;
-            break;
-        }
-
-        /* Anything but "try the next one" ends the request here. */
-        if (rc != NGX_DECLINED) {
-            return rc;
-        }
     }
 
-    /* No encoding the client would take had a sibling on disk, so
-       leave the request to the static handler behind this one. */
-    if (found == NULL) {
-        return NGX_DECLINED;
+    /* NGX_DECLINED: no encoding the client would take had a sibling
+       on disk, so leave the request to the static handler behind this
+       one. Anything else ends it here. */
+    if (rc != NGX_OK) {
+        return rc;
     }
 
     /* Saves the log module a stat of the document root, which
@@ -715,7 +782,6 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         .file_info = &file_info,
         .encoding  = &found->name,
     });
-
     if (rc != NGX_OK) {
         return rc;
     }
