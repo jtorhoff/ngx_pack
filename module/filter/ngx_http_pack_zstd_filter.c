@@ -343,24 +343,22 @@ typedef struct {
 } zctx_t;
 
 /* Instance context. Members follow the path a request takes through
-   the module: the two sub-structs come first, holding what is known
-   before there is anything to record in them, then the header filter
-   records what it knows, the body filter takes in a chain, the
-   encoder is built, buffers are drawn and filled, and the filled ones
-   are handed on.
+   the module: the request itself and the two sub-structs that track
+   what becomes of it, then what the header filter learns, the chain
+   the body filter takes in, the buffers drawn and filled, and the
+   filled ones handed on.
 
    The sub-structs are members rather than pointers: they are made
    with the context, live exactly as long as it, and are never shared
-   or reseated, so three pool allocations and two of the header
-   filter's error paths bought nothing that one allocation does not.
+   or reseated.
 
    Two groups sit at the position of their earliest member rather
    than being split across it, since one comment covers each. */
 typedef struct {
-    /* The response, and the pool and log reached through it. */
+    /* The request, and the pool and log reached through it. */
     ngx_http_request_t *request;
 
-    /* The response's flags: what is decided, done and pending. */
+    /* The state of the filter: what is decided, done, and pending. */
     state_t state;
 
     /* The encoder and what is owed to it; see zctx_t. */
@@ -746,8 +744,8 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
 {
     ngx_http_request_t *r;
     ngx_chain_t        *link;
-    conf_t             *conf;
     ngx_buf_t          *buf;
+    conf_t             *conf;
 
     r = args->ctx->request;
 
@@ -1178,13 +1176,13 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
 static step_e
 ngx_http_pack_zstd_compress(ctx_t *const ctx)
 {
-    ngx_uint_t        folded;
-    ZSTD_EndDirective zmode;
-    ZSTD_inBuffer     zin;
     step_e            step;
     next_input_e      input_status;
-    ngx_buf_t        *out_buf;
+    ZSTD_EndDirective zmode;
+    ZSTD_inBuffer     zin;
+    ngx_uint_t        folded;
     ngx_int_t         rc;
+    ngx_buf_t        *out_buf;
     ZSTD_outBuffer    zout;
     size_t            zremaining;
 
@@ -1334,8 +1332,8 @@ typedef struct {
 static size_t
 ngx_http_pack_zstd_pending_input(pending_input_args *const args)
 {
-    size_t       total;
     ngx_chain_t *in;
+    size_t       total;
 
     in = args->in;
 
@@ -1932,11 +1930,9 @@ ngx_http_pack_zstd_body_filter(
     ngx_http_request_t *const r, ngx_chain_t *const in)
 {
     ctx_t *ctx;
-
-    /* What we return to the caller. */
+    /* What this function returns. Set by respective handler below. */
     ngx_int_t rc;
-
-    /* These are used to decide what to do next. */
+    /* Status dictates what this function decides to do next. */
     ngx_int_t chain_status;
     prepare_e prepare_status;
     ngx_int_t init_status;
@@ -1959,6 +1955,8 @@ ngx_http_pack_zstd_body_filter(
         return ngx_http_next_body_filter(r, in);
     }
 
+    rc = NGX_ERROR;
+
     /* Recorded before "in" is folded into ctx->in: ctx->in running
        dry says the filter has nothing left to compress, this says
        the caller brought nothing new. */
@@ -1968,18 +1966,11 @@ ngx_http_pack_zstd_body_filter(
         chain_status = ngx_chain_add_copy(r->pool, &ctx->in, in);
         if (chain_status != NGX_OK) {
             ngx_http_pack_zstd_close(ctx);
-            return NGX_ERROR;
+            return rc;
         }
 
         r->connection->buffered |= NGX_HTTP_PACK_ZSTD_BUFFERED;
     }
-
-    /* prepare sets rc on every path that does not accept, and this is
-       what those paths return. Seeded anyway: it is an out-parameter,
-       so a path that forgot would return whatever the stack held, and
-       being passed by pointer puts it beyond what
-       -Wconditional-uninitialized can see. */
-    rc = NGX_ERROR;
 
     prepare_status = ngx_http_pack_zstd_prepare(&(prepare_args) {
         .ctx = ctx,
