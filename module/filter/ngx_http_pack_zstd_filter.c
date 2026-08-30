@@ -159,7 +159,7 @@ typedef struct {
    to the filters below untouched.
 
    Its own type rather than NGX_OK and NGX_DECLINED: prepare_e and
-   pump_e already sit in this file with coinciding values, and a
+   step_e already sit in this file with coinciding values, and a
    third verdict spelled in nginx's codes would compare equal to
    their constants without a word from the compiler. Typed, the wrong
    one does not build. */
@@ -224,7 +224,7 @@ typedef enum {
 
 /* Whether the encoder has something to run on this round.
 
-   The same shape as pump_e and for the same reason: READY is 0 and so
+   Its own type for the reason the others here are: READY is 0 and so
    is NGX_HTTP_PACK_ZSTD_STEP_CONTINUE, so spelled in nginx's codes a
    test against the wrong one of the two would compile and be right by
    accident. DECIDED carries nothing itself - "step" says what the
@@ -235,17 +235,6 @@ typedef enum {
     /* The round is over before it starts; "step" says how. */
     NGX_HTTP_PACK_ZSTD_INPUT_DECIDED
 } next_input_e;
-
-/* Whether the body filter's loop turns again. Its own type rather
-   than NGX_OK and NGX_AGAIN, which would read as the filter's return
-   codes sitting beside the one this actually carries. */
-typedef enum {
-    /* Go round: the send handed a buffer back and the encoder can
-       use it. */
-    NGX_HTTP_PACK_ZSTD_PUMP_CONTINUE = 0,
-    /* The call is over; "rc" is what the body filter returns. */
-    NGX_HTTP_PACK_ZSTD_PUMP_STOP
-} pump_e;
 
 /* The response's flags, in the order the response passes through
    them: decided, committed, the encoder built, then what each call
@@ -1831,87 +1820,81 @@ ngx_http_pack_zstd_finish(ctx_t *const ctx)
     return NGX_OK;
 }
 
-typedef struct {
-    ctx_t     *ctx;
-    ngx_int_t *rc;
-} pump_args;
+/* Everything the body filter does once the encoder exists, and what
+   it returns.
 
-/* One turn of the body filter's loop, in two phases: fill every
-   output buffer the encoder can, then push the lot down in one chain.
+   Each turn has two phases: fill every output buffer the encoder can,
+   then push the lot down in one chain. Running the encoder to a
+   standstill before sending is the point of having more than one
+   buffer. With a single buffer the two phases had to alternate, so a
+   response was compressed and written one buffer at a time; here a
+   stalled write only costs the encoder its remaining buffers, not its
+   next byte.
 
-   Running the encoder to a standstill before sending is the point of
-   having more than one buffer. With a single buffer the two phases
-   had to alternate, so a response was compressed and written one
-   buffer at a time; here a stalled write only costs the encoder its
-   remaining buffers, not its next byte.
-
-   Only STOP settles anything, and then "rc" is what the body filter
-   returns - see pump_e. */
-static pump_e
-ngx_http_pack_zstd_pump(pump_args *const args)
+   The loop is here rather than split with the caller so that the one
+   condition that turns it - a buffer having come back from below -
+   sits with the four that end it. */
+static ngx_int_t
+ngx_http_pack_zstd_pump(ctx_t *const ctx)
 {
-    ctx_t *ctx;
     step_e step;
 
-    ctx = args->ctx;
+    for (;;) {
+        do {
+            step = ngx_http_pack_zstd_compress(ctx);
+        } while (step == NGX_HTTP_PACK_ZSTD_STEP_CONTINUE);
 
-    do {
-        step = ngx_http_pack_zstd_compress(ctx);
-    } while (step == NGX_HTTP_PACK_ZSTD_STEP_CONTINUE);
+        if (step == NGX_HTTP_PACK_ZSTD_STEP_FAILED) {
+            ngx_http_pack_zstd_close(ctx);
 
-    if (step == NGX_HTTP_PACK_ZSTD_STEP_FAILED) {
-        ngx_http_pack_zstd_close(ctx);
+            return NGX_ERROR;
+        }
 
-        *args->rc = NGX_ERROR;
-        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
+        /* Nothing new to send and nothing outstanding: the encoder is
+           waiting for input rather than for the filters below.
+
+           A closed frame is excluded rather than covered by "nothing
+           outstanding", because this return is the one path past
+           ngx_http_pack_zstd_finish - and finish is what closes the
+           encoder once the last buffer has been taken. Leaving here
+           with the frame closed would strand it until the request
+           pool is destroyed.
+
+           That cannot happen as the code stands: the round that
+           closes the frame commits a buffer, so "out" is not NULL on
+           that pass, and on any later call "busy" is what made finish
+           answer NGX_AGAIN rather than close. Both are consequences
+           of how commit_buf and finish happen to be written, neither
+           is stated anywhere, and the cost of one of them changing is
+           an encoder leak that no test would see. Cheaper to not
+           depend on them: with the frame closed this falls through to
+           a drain of nothing and then to finish, which is where it
+           belongs. */
+        if (!ctx->state.frame_closed && ctx->out == NULL &&
+            ctx->busy == NULL) {
+            return NGX_OK;
+        }
+
+        if (ngx_http_pack_zstd_drain(ctx) != NGX_OK) {
+            ngx_http_pack_zstd_close(ctx);
+
+            return NGX_ERROR;
+        }
+
+        if (step == NGX_HTTP_PACK_ZSTD_STEP_DONE) {
+            return ngx_http_pack_zstd_finish(ctx);
+        }
+
+        /* Stopped for want of a buffer. If the send handed one back,
+           go round; if not, the filters below are full and there is
+           nothing more this call can do. */
+        if (ctx->free == NULL) {
+            return NGX_AGAIN;
+        }
     }
 
-    /* Nothing new to send and nothing outstanding: the encoder is
-       waiting for input rather than for the filters below.
-
-       A closed frame is excluded rather than covered by "nothing
-       outstanding", because this return is the one path past
-       ngx_http_pack_zstd_finish - and finish is what closes the
-       encoder once the last buffer has been taken. Leaving here with
-       the frame closed would strand it until the request pool is
-       destroyed.
-
-       That cannot happen as the code stands: the round that closes
-       the frame commits a buffer, so "out" is not NULL on that pass,
-       and on any later call "busy" is what made finish answer
-       NGX_AGAIN rather than close. Both are consequences of how
-       commit_buf and finish happen to be written, neither is stated
-       anywhere, and the cost of one of them changing is an encoder
-       leak that no test would see. Cheaper to not depend on them:
-       with the frame closed this falls through to a drain of nothing
-       and then to finish, which is where it belongs. */
-    if (!ctx->state.frame_closed && ctx->out == NULL &&
-        ctx->busy == NULL) {
-        *args->rc = NGX_OK;
-        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
-    }
-
-    if (ngx_http_pack_zstd_drain(ctx) != NGX_OK) {
-        ngx_http_pack_zstd_close(ctx);
-
-        *args->rc = NGX_ERROR;
-        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
-    }
-
-    if (step == NGX_HTTP_PACK_ZSTD_STEP_DONE) {
-        *args->rc = ngx_http_pack_zstd_finish(ctx);
-        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
-    }
-
-    /* Stopped for want of a buffer. If the send handed one back, go
-       round; if not, the filters below are full and there is nothing
-       more this call can do. */
-    if (ctx->free == NULL) {
-        *args->rc = NGX_AGAIN;
-        return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
-    }
-
-    return NGX_HTTP_PACK_ZSTD_PUMP_CONTINUE;
+    /* Unreachable: the loop above either returns
+       or goes round again. */
 }
 
 /* Response body filtration (compression). */
@@ -1926,7 +1909,6 @@ ngx_http_pack_zstd_body_filter(
     ngx_int_t chain_status;
     prepare_e prepare_status;
     ngx_int_t init_status;
-    pump_e    pump_status;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_pack_zstd_module);
 
@@ -1977,19 +1959,7 @@ ngx_http_pack_zstd_body_filter(
         return NGX_ERROR;
     }
 
-    for (;;) {
-        pump_status = ngx_http_pack_zstd_pump(&(pump_args) {
-            .ctx = ctx,
-            .rc  = &rc,
-        });
-
-        if (pump_status == NGX_HTTP_PACK_ZSTD_PUMP_STOP) {
-            return rc;
-        }
-    }
-
-    /* Unreachable: the loop above either returns or goes round
-       again. */
+    return ngx_http_pack_zstd_pump(ctx);
 }
 
 /* The encoder allocates from the heap, not from the request pool. Its
