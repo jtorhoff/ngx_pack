@@ -155,29 +155,6 @@ typedef struct {
     ngx_int_t nbuffers;
 } conf_t;
 
-/* Whether the header filter carries on with a response or hands it
-   to the filters below untouched.
-
-   Its own type, as prepare_e and step_e are: all three carry on at 0,
-   so one of them spelled in nginx's codes and tested against
-   another's constant would compile and behave. Typed, -Wenum-compare
-   rejects it.
-
-   That warning reaches enum against enum only - an int converts to an
-   enum silently, C enums being compatible with int - so the rule
-   earns its keep on a verdict that is stored or passed on.
-   ngx_http_pack_zstd_next_input answers in NGX_OK and NGX_DONE
-   instead, its caller testing the code on the next line and keeping
-   nothing. */
-typedef enum {
-    /* Nothing about the response itself rules it out. Whether it is
-       actually compressed still depends on the client, which
-       ngx_http_pack_zstd_header_filter asks next. */
-    NGX_HTTP_PACK_ZSTD_PREFLIGHT_OK = 0,
-    /* Not a response this module touches. */
-    NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE
-} preflight_e;
-
 /* What the body filter should do once ngx_http_pack_zstd_prepare
    has settled the decisions that come before the encoder.
 
@@ -213,7 +190,16 @@ typedef enum {
 } prepare_e;
 
 /* What one turn of the encoder decided to do next. The loop owns the
-   returns; a step only says which one. */
+   returns; a step only says which one.
+
+   Its own type, as prepare_e is, because both outlive the call that
+   made them - this one is written by next_input, returned by compress
+   and then held across pump's loop and the three tests after it. The
+   carry-on case of every verdict in this file is 0, so one spelled in
+   nginx's codes and tested against another's constant would compile
+   and behave; typed, -Wenum-compare rejects it. A verdict consumed
+   where it is produced is owed none of that, which is why preflight
+   and next_input answer in nginx's codes instead. */
 typedef enum {
     /* Made progress; go round again. */
     NGX_HTTP_PACK_ZSTD_STEP_CONTINUE = 0,
@@ -603,7 +589,7 @@ ngx_http_pack_zstd_send_headers(ctx_t *const ctx)
    asked after ngx_http_pack_set_vary, since the response varies
    whether or not this particular client is served Zstandard, and a
    bypass from here has to leave that header alone. */
-static preflight_e
+static ngx_int_t
 ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
 {
     conf_t *conf;
@@ -612,12 +598,12 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
 
     /* Filter only if enabled. */
     if (!conf->enable) {
-        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
+        return NGX_DECLINED;
     }
 
     /* Bypass "header only" responses. */
     if (r->header_only) {
-        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
+        return NGX_DECLINED;
     }
 
     /* Bypass statuses that either carry no body, or carry one that
@@ -629,27 +615,27 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
         r->headers_out.status == NGX_HTTP_NO_CONTENT ||
         r->headers_out.status == NGX_HTTP_PARTIAL_CONTENT ||
         r->headers_out.status == NGX_HTTP_NOT_MODIFIED) {
-        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
+        return NGX_DECLINED;
     }
 
     /* Bypass already compressed responses. */
     if (r->headers_out.content_encoding &&
         r->headers_out.content_encoding->value.len) {
-        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
+        return NGX_DECLINED;
     }
 
     /* If response size is known, do not compress tiny responses. */
     if (r->headers_out.content_length_n != -1 &&
         r->headers_out.content_length_n < conf->min_length) {
-        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
+        return NGX_DECLINED;
     }
 
     /* Compress only certain MIME-typed responses. */
     if (ngx_http_test_content_type(r, &conf->types) == NULL) {
-        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
+        return NGX_DECLINED;
     }
 
-    return NGX_HTTP_PACK_ZSTD_PREFLIGHT_OK;
+    return NGX_OK;
 }
 
 /* Process headers and decide if request is eligible for zstd
@@ -659,8 +645,7 @@ ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
 {
     ctx_t *ctx;
 
-    if (ngx_http_pack_zstd_preflight(r) !=
-        NGX_HTTP_PACK_ZSTD_PREFLIGHT_OK) {
+    if (ngx_http_pack_zstd_preflight(r) != NGX_OK) {
         return ngx_http_next_header_filter(r);
     }
 
