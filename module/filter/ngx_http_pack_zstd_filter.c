@@ -976,7 +976,11 @@ ngx_http_pack_zstd_choose_mode(choose_mode_args *const args)
             .folded = args->ctx->folded_flushes,
         });
 
-    return *args->folded ? ZSTD_e_continue : ZSTD_e_flush;
+    if (*args->folded) {
+        return ZSTD_e_continue;
+    }
+
+    return ZSTD_e_flush;
 }
 
 typedef struct {
@@ -1051,8 +1055,7 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
             NGX_LOG_ALERT,
             r->connection->log,
             0,
-            "zstd got a buffer with file bytes and none in memory: "
-            "main_filter_need_in_memory was not honoured");
+            "zstd got a buffer with file bytes and none in memory");
 
         *args->step = NGX_HTTP_PACK_ZSTD_STEP_FAILED;
         return NGX_HTTP_PACK_ZSTD_INPUT_DECIDED;
@@ -1247,7 +1250,7 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
             NGX_LOG_ALERT,
             ctx->request->connection->log,
             0,
-            "ZSTD_compressStream2() failed: %s",
+            "zstd compress failed: %s",
             ZSTD_getErrorName(zremaining));
 
         return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
@@ -1280,7 +1283,7 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
             NGX_LOG_ALERT,
             ctx->request->connection->log,
             0,
-            "ZSTD_compressStream2() made no progress: mode:%d "
+            "zstd compress made no progress: mode:%d "
             "remaining:%uz",
             (int) zmode,
             zremaining);
@@ -1536,7 +1539,8 @@ ngx_http_pack_zstd_init_encoder(ctx_t *const ctx)
             NGX_LOG_ALERT,
             ctx->request->connection->log,
             0,
-            "OOM / ZSTD_createCCtx_advanced");
+            "zstd encoder instance creation failed: "
+            "out of memory?");
 
         return NGX_ERROR;
     }
@@ -1567,7 +1571,7 @@ ngx_http_pack_zstd_set_param(set_param_args *const args)
             NGX_LOG_ALERT,
             args->ctx->request->connection->log,
             0,
-            "error while trying to set %V=%D: %s",
+            "zstd error while trying to set %V=%D: %s",
             args->name,
             args->value,
             ZSTD_getErrorName(zrc));
@@ -1590,7 +1594,7 @@ ngx_http_pack_zstd_set_pledged_size(ctx_t *const ctx)
             NGX_LOG_ALERT,
             ctx->request->connection->log,
             0,
-            "error while trying to set pledgedSrcSize=%O: %s",
+            "zstd error while trying to set pledgedSrcSize=%O: %s",
             ctx->content_length,
             ZSTD_getErrorName(zrc));
 
