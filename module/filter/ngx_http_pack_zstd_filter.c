@@ -945,12 +945,16 @@ ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
 
 typedef struct {
     ctx_t      *ctx;
-    ngx_buf_t  *buf;
     ngx_uint_t *folded;
 } select_mode_args;
 
 /* Which directive the buffer at the head of the chain calls for, and
    whether its flush is being folded into the block being built.
+
+   The head buffer is taken from ctx rather than passed in, since the
+   fold below reads the chain behind it either way and one source for
+   both cannot disagree with itself. next_input has established that
+   ctx->in is not NULL before it can want a mode at all.
 
    The fold is reported rather than counted here: acquiring an output
    buffer can still fail, and a fold recorded on a round that never
@@ -959,13 +963,17 @@ typedef struct {
 static ZSTD_EndDirective
 ngx_http_pack_zstd_select_mode(select_mode_args *const args)
 {
+    ngx_buf_t *buf;
+
+    buf = args->ctx->in->buf;
+
     *args->folded = 0;
 
-    if (args->buf->last_buf) {
+    if (buf->last_buf) {
         return ZSTD_e_end;
     }
 
-    if (!args->buf->flush) {
+    if (!buf->flush) {
         return ZSTD_e_continue;
     }
 
@@ -1072,7 +1080,6 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
 
     *args->mode = ngx_http_pack_zstd_select_mode(&(select_mode_args) {
         .ctx    = ctx,
-        .buf    = buf,
         .folded = args->folded,
     });
 
