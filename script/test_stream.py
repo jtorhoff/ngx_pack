@@ -740,7 +740,7 @@ def fetch_and_abort(port, path, settle=1.5):
 ALLOC_RE = re.compile(r"\*(\d+) zstd alloc: (?:0x)?([0-9A-Fa-f]+), size:(\d+)")
 FREE_RE = re.compile(r"\*(\d+) zstd free: (?:0x)?([0-9A-Fa-f]+)")
 CLOSE_RE = re.compile(r"\*(\d+) http close request")
-INIT_RE = re.compile(r"\*(\d+) zstd encoder initialized: lvl:(-?\d+) win:(\d+)")
+INIT_RE = re.compile(r"\*(\d+) zstd encoder instance created and configured")
 OUT_RE = re.compile(r"\*(\d+) zstd out: (?:0x)?[0-9A-Fa-f]+, size:(\d+)")
 BUF_RE = re.compile(
     r"\*(\d+) zstd buffer created: (?:0x)?[0-9A-Fa-f]+, total:(\d+)"
@@ -761,11 +761,12 @@ def frame_window(data):
     """The window size the encoder declared, read from the zstd frame header.
 
     RFC 8878 section 3.1.1. Deliberately taken from the frame rather than
-    from the module's "zstd encoder initialized" line: that line reports the
-    zstd_window ceiling and the pledged length, because zstd picks the real
-    window from both when compression starts and offers no call that reports
-    it back. Reading the frame asserts what the encoder did instead of what
-    this module intended, so it also holds if zstd's own sizing changes.
+    from anything the module reports: zstd picks the real window from the
+    zstd_window ceiling and the pledged length together when compression
+    starts, and offers no call that reports the result back, so the module
+    could only ever log what it asked for. Reading the frame asserts what
+    the encoder did instead of what this module intended, so it also holds
+    if zstd's own sizing changes.
     """
     return _frame_header(data)[0]
 
