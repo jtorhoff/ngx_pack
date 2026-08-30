@@ -892,7 +892,7 @@ ngx_http_pack_zstd_release_buf(release_buf_args *const args)
    The caller has already established that ctx->in is not NULL - both
    reach the head buffer before they can decide to drop it. */
 static void
-ngx_http_pack_zstd_drop_head_buf(ctx_t *const ctx)
+ngx_http_pack_zstd_discard_head_buf(ctx_t *const ctx)
 {
     ngx_chain_t *link;
 
@@ -1064,7 +1064,7 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
        last or flush still has to reach the encoder to close the
        stream or the block. Anything else is dropped. */
     if (ngx_buf_size(buf) == 0 && !buf->last_buf && !buf->flush) {
-        ngx_http_pack_zstd_drop_head_buf(ctx);
+        ngx_http_pack_zstd_discard_head_buf(ctx);
 
         *args->step = NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
         return NGX_HTTP_PACK_ZSTD_INPUT_DECIDED;
@@ -1125,7 +1125,7 @@ ngx_http_pack_zstd_advance_input(advance_input_args *const args)
     }
 
     if (ngx_buf_size(buf) == 0) {
-        ngx_http_pack_zstd_drop_head_buf(ctx);
+        ngx_http_pack_zstd_discard_head_buf(ctx);
     }
 }
 
