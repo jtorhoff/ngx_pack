@@ -100,7 +100,7 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    flush stay inside the encoder until the fold ends, and a flush
    marker is a request to push data out now. Four holds the usual
    burst in one block while keeping the deferral short. */
-#define NGX_HTTP_PACK_ZSTD_MAX_FOLDED_FLUSHES 4
+#define NGX_HTTP_PACK_ZSTD_FLUSH_FOLD 4
 
 /* What the encoder is told to expect from a response whose length is
    never learned - see ZSTD_c_srcSizeHint at the call site.
@@ -358,7 +358,7 @@ typedef struct {
     ngx_chain_t  *free;
 
     /* How many flush-marked buffers have been folded into the block
-       still being built - see NGX_HTTP_PACK_ZSTD_MAX_FOLDED_FLUSHES.
+       still being built - see NGX_HTTP_PACK_ZSTD_FLUSH_FOLD.
        Reset whenever a flush or the end of the frame completes, since
        that is what starts the next block. */
     ngx_uint_t folded_flushes;
@@ -524,6 +524,7 @@ ngx_http_pack_zstd_close(ctx_t *const ctx)
     ctx->last_out = NULL;
     ctx->busy     = NULL;
     ctx->free     = NULL;
+
     ctx->nbuffers = 0;
     ctx->out_size = 0;
 }
@@ -717,15 +718,14 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
 
     if (ctx->free != NULL) {
         link      = ctx->free;
-        ctx->free = link->next;
         buf       = link->buf;
+        ctx->free = link->next;
 
         ngx_free_chain(r->pool, link);
 
         /* ngx_chain_update_chains has already rewound pos and last to
            start; the flags are this filter's to set per round. */
         *args->out = buf;
-
         return NGX_OK;
     }
 
@@ -758,7 +758,6 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         ctx->nbuffers);
 
     *args->out = buf;
-
     return NGX_OK;
 }
 
@@ -833,16 +832,18 @@ typedef struct {
 static ngx_int_t
 ngx_http_pack_zstd_release_buf(release_buf_args *const args)
 {
+    ctx_t       *ctx;
     ngx_chain_t *link;
 
-    link = ngx_alloc_chain_link(args->ctx->request->pool);
+    ctx  = args->ctx;
+    link = ngx_alloc_chain_link(ctx->request->pool);
     if (link == NULL) {
         return NGX_ERROR;
     }
 
-    link->buf       = args->buf;
-    link->next      = args->ctx->free;
-    args->ctx->free = link;
+    link->buf  = args->buf;
+    link->next = ctx->free;
+    ctx->free  = link;
 
     return NGX_OK;
 }
@@ -892,18 +893,23 @@ ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
     ngx_uint_t   lookahead;
     ngx_chain_t *link;
 
-    if (args->folded + 1 >= NGX_HTTP_PACK_ZSTD_MAX_FOLDED_FLUSHES) {
+    if (args->folded + 1 >= NGX_HTTP_PACK_ZSTD_FLUSH_FOLD) {
         return 0;
     }
 
-    lookahead = NGX_HTTP_PACK_ZSTD_MAX_FOLDED_FLUSHES - 1 -
-                args->folded;
-    for (link = args->rest; link != NULL && lookahead > 0;
-         link = link->next) {
+    lookahead = NGX_HTTP_PACK_ZSTD_FLUSH_FOLD - 1 - args->folded;
+
+    link = args->rest;
+    for (;;) {
+        if (link == NULL || lookahead == 0) {
+            break;
+        }
+
         if (link->buf->flush || link->buf->last_buf) {
             return 1;
         }
 
+        link = link->next;
         lookahead--;
     }
 

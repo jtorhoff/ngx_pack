@@ -515,7 +515,7 @@ class Upstream:
 
         nginx then reads them together and ngx_http_proxy_chunked_filter
         appends one buffer per chunk, each with flush set, into one chain -
-        the case NGX_HTTP_PACK_ZSTD_MAX_FOLDED_FLUSHES exists for. Sending them as
+        the case NGX_HTTP_PACK_ZSTD_FLUSH_FOLD exists for. Sending them as
         separate writes would let nginx read them one at a time, and the
         chain would hold a single flush marker with nothing to fold.
         """
@@ -2217,7 +2217,7 @@ def test_buffers_directive_is_honoured(ctx):
 # ---------------------------------------------------------------------------
 
 # module/filter/ngx_http_pack_zstd_filter.c
-MAX_FOLDED_FLUSHES = 4
+FLUSH_FOLD = 4
 
 
 @test("a burst of flush-marked chunks folds into fewer blocks", needs_decoder=True)
@@ -2242,7 +2242,7 @@ def test_flush_folding(ctx):
     )
 
     blocks = frame_blocks(body)
-    ceiling = -(-chunks // MAX_FOLDED_FLUSHES) + 2
+    ceiling = -(-chunks // FLUSH_FOLD) + 2
 
     check(
         blocks < chunks,
@@ -2252,7 +2252,7 @@ def test_flush_folding(ctx):
     check(
         blocks <= ceiling,
         f"{chunks} flush-marked chunks produced {blocks} blocks, more than "
-        f"the {ceiling} a fold of {MAX_FOLDED_FLUSHES} allows",
+        f"the {ceiling} a fold of {FLUSH_FOLD} allows",
     )
 
 
