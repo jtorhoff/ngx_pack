@@ -739,17 +739,19 @@ typedef struct {
 static ngx_int_t
 ngx_http_pack_zstd_get_buf(get_buf_args *const args)
 {
+    ctx_t              *ctx;
     ngx_http_request_t *r;
     ngx_chain_t        *link;
     ngx_buf_t          *buf;
     conf_t             *conf;
 
-    r = args->ctx->request;
+    ctx = args->ctx;
+    r   = ctx->request;
 
-    if (args->ctx->free != NULL) {
-        link            = args->ctx->free;
-        args->ctx->free = link->next;
-        buf             = link->buf;
+    if (ctx->free != NULL) {
+        link      = ctx->free;
+        ctx->free = link->next;
+        buf       = link->buf;
 
         ngx_free_chain(r->pool, link);
 
@@ -761,11 +763,11 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
     }
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_zstd_module);
-    if ((ngx_int_t) args->ctx->nbuffers >= conf->nbuffers) {
+    if ((ngx_int_t) ctx->nbuffers >= conf->nbuffers) {
         return NGX_DECLINED;
     }
 
-    buf = ngx_create_temp_buf(r->pool, args->ctx->out_size);
+    buf = ngx_create_temp_buf(r->pool, ctx->out_size);
     if (buf == NULL) {
         return NGX_ERROR;
     }
@@ -778,7 +780,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
     buf->tag      = (ngx_buf_tag_t) &ngx_http_pack_zstd_module;
     buf->recycled = 1;
 
-    args->ctx->nbuffers++;
+    ctx->nbuffers++;
 
     ngx_log_debug2(
         NGX_LOG_DEBUG_HTTP,
@@ -786,7 +788,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         0,
         "zstd buffer created: %p, total:%ui",
         buf,
-        args->ctx->nbuffers);
+        ctx->nbuffers);
 
     *args->out = buf;
 
