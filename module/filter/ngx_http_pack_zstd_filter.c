@@ -794,6 +794,68 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
 }
 
 typedef struct {
+    ctx_t            *ctx;
+    ngx_buf_t        *buf;
+    size_t            written;
+    ZSTD_EndDirective mode;
+} commit_buf_args;
+
+/* Hands the round's output buffer to ctx->out.
+
+   Reached even when nothing was written: should the call that finally
+   drives "remaining" to 0 ever not write new bytes, the last_buf
+   marker still has to land on some buffer or nginx never learns the
+   response ended.
+
+   That empty buffer has to be a *special* one, which is why
+   "temporary" is set here per round rather than once at
+   initialization. ngx_buf_special() is false for anything
+   ngx_buf_in_memory() accepts, and ngx_http_write_filter rejects a
+   zero-size non-special buffer outright - it logs "zero size buf in
+   writer" and returns NGX_ERROR, truncating the response rather than
+   merely complaining. So a buffer carrying no bytes must claim no
+   memory either.
+
+   That case is defence against a contract change rather than one seen
+   in practice: zstd is not known to report a fully flushed frame from
+   ZSTD_e_end while writing no bytes. */
+static ngx_int_t
+ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
+{
+    ngx_buf_t   *buf;
+    ngx_chain_t *link;
+
+    buf = args->buf;
+
+    buf->pos       = (buf->start);
+    buf->last      = (buf->start + args->written);
+    buf->temporary = (args->written > 0);
+    buf->sync      = (args->written == 0);
+    buf->flush     = (args->mode == ZSTD_e_flush);
+    buf->last_buf  = (args->ctx->state->frame_closed);
+
+    link = ngx_alloc_chain_link(args->ctx->request->pool);
+    if (link == NULL) {
+        return NGX_ERROR;
+    }
+
+    link->buf            = buf;
+    link->next           = NULL;
+    *args->ctx->last_out = link;
+    args->ctx->last_out  = &link->next;
+
+    ngx_log_debug2(
+        NGX_LOG_DEBUG_HTTP,
+        args->ctx->request->connection->log,
+        0,
+        "zstd out: %p, size:%O",
+        buf,
+        ngx_buf_size(buf));
+
+    return NGX_OK;
+}
+
+typedef struct {
     ctx_t     *ctx;
     ngx_buf_t *buf;
 } release_buf_args;
@@ -814,6 +876,28 @@ ngx_http_pack_zstd_release_buf(release_buf_args *const args)
     args->ctx->free = link;
 
     return NGX_OK;
+}
+
+/* Takes the head buffer off the *input* chain - the one nginx handed
+   us, not the output buffers the three above deal with - there being
+   no further reason to hold it: either it never carried anything to
+   compress, or the encoder has taken every byte it had.
+
+   The link goes back to the pool's own free list rather than being
+   abandoned to the request, which is what keeps a long response's
+   chain links a fixed cost instead of one allocation per buffer.
+
+   The caller has already established that ctx->in is not NULL - both
+   reach the head buffer before they can decide to drop it. */
+static void
+ngx_http_pack_zstd_drop_head_buf(ctx_t *const ctx)
+{
+    ngx_chain_t *link;
+
+    link    = ctx->in;
+    ctx->in = link->next;
+
+    ngx_free_chain(ctx->request->pool, link);
 }
 
 typedef struct {
@@ -912,7 +996,6 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     ctx_t              *ctx;
     ngx_http_request_t *r;
     ngx_buf_t          *buf;
-    ngx_chain_t        *link;
 
     ctx = args->ctx;
     r   = ctx->request;
@@ -972,10 +1055,7 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
        last or flush still has to reach the encoder to close the
        stream or the block. Anything else is dropped. */
     if (ngx_buf_size(buf) == 0 && !buf->last_buf && !buf->flush) {
-        link    = ctx->in;
-        ctx->in = link->next;
-
-        ngx_free_chain(r->pool, link);
+        ngx_http_pack_zstd_drop_head_buf(ctx);
 
         *args->step = NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
         return NGX_HTTP_PACK_ZSTD_INPUT_DECIDED;
@@ -1015,9 +1095,8 @@ typedef struct {
 static void
 ngx_http_pack_zstd_advance_input(advance_input_args *const args)
 {
-    ctx_t       *ctx;
-    ngx_buf_t   *buf;
-    ngx_chain_t *link;
+    ctx_t     *ctx;
+    ngx_buf_t *buf;
 
     ctx = args->ctx;
 
@@ -1037,10 +1116,7 @@ ngx_http_pack_zstd_advance_input(advance_input_args *const args)
     }
 
     if (ngx_buf_size(buf) == 0) {
-        link    = ctx->in;
-        ctx->in = link->next;
-
-        ngx_free_chain(ctx->request->pool, link);
+        ngx_http_pack_zstd_drop_head_buf(ctx);
     }
 }
 
@@ -1084,68 +1160,6 @@ ngx_http_pack_zstd_note_round(note_round_args *const args)
     } else { /* ZSTD_e_end */
         args->ctx->state->frame_closed = 1;
     }
-}
-
-typedef struct {
-    ctx_t            *ctx;
-    ngx_buf_t        *buf;
-    size_t            written;
-    ZSTD_EndDirective mode;
-} commit_buf_args;
-
-/* Hands the round's output buffer to ctx->out.
-
-   Reached even when nothing was written: should the call that finally
-   drives "remaining" to 0 ever not write new bytes, the last_buf
-   marker still has to land on some buffer or nginx never learns the
-   response ended.
-
-   That empty buffer has to be a *special* one, which is why
-   "temporary" is set here per round rather than once at
-   initialization. ngx_buf_special() is false for anything
-   ngx_buf_in_memory() accepts, and ngx_http_write_filter rejects a
-   zero-size non-special buffer outright - it logs "zero size buf in
-   writer" and returns NGX_ERROR, truncating the response rather than
-   merely complaining. So a buffer carrying no bytes must claim no
-   memory either.
-
-   That case is defence against a contract change rather than one seen
-   in practice: zstd is not known to report a fully flushed frame from
-   ZSTD_e_end while writing no bytes. */
-static ngx_int_t
-ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
-{
-    ngx_buf_t   *buf;
-    ngx_chain_t *link;
-
-    buf = args->buf;
-
-    buf->pos       = (buf->start);
-    buf->last      = (buf->start + args->written);
-    buf->temporary = (args->written > 0);
-    buf->sync      = (args->written == 0);
-    buf->flush     = (args->mode == ZSTD_e_flush);
-    buf->last_buf  = (args->ctx->state->frame_closed);
-
-    link = ngx_alloc_chain_link(args->ctx->request->pool);
-    if (link == NULL) {
-        return NGX_ERROR;
-    }
-
-    link->buf            = buf;
-    link->next           = NULL;
-    *args->ctx->last_out = link;
-    args->ctx->last_out  = &link->next;
-
-    ngx_log_debug2(
-        NGX_LOG_DEBUG_HTTP,
-        args->ctx->request->connection->log,
-        0,
-        "zstd out: %p, size:%O",
-        buf,
-        ngx_buf_size(buf));
-
-    return NGX_OK;
 }
 
 /* Runs the encoder once and, if it produced anything, appends a
