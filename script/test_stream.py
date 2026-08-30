@@ -1975,6 +1975,131 @@ def test_head(ctx):
 
 
 # ---------------------------------------------------------------------------
+# Directive bounds
+# ---------------------------------------------------------------------------
+
+
+def config_accepted(ctx, directive):
+    """Whether "nginx -t" takes a configuration carrying one directive,
+    and what it said about it.
+
+    ambiguity_warnings insists the configuration was accepted, because
+    what it measures is a warning. These directives are checked for the
+    opposite: refusing a value is the whole behaviour, and a refusal has
+    to be a startup error rather than a silent clamp, or an operator who
+    mistyped a window gets a server that runs with something they did
+    not ask for."""
+    path = os.path.join(ctx.nginx.work, "conf-bounds.conf")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "daemon off;\n"
+            "error_log stderr notice;\n"
+            "events { worker_connections 64; }\n"
+            "http { server { listen 127.0.0.1:8999;\n"
+            f"  {directive}\n"
+            "  location /a/ { } } }\n"
+        )
+
+    done = subprocess.run(
+        [ctx.nginx.binary, "-p", ctx.nginx.work, "-c", path, "-t"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = (done.stderr or "") + (done.stdout or "")
+    return done.returncode == 0 and "syntax is ok" in text, text
+
+
+# Every window the directive takes, and the sizes on either side of the
+# range. The accepted list is exhaustive rather than a sample: the
+# parser walks a loop from WINDOW_BITS_MIN to WINDOW_BITS_MAX comparing
+# against 1 << bits, so an off-by-one at either end is exactly the
+# mistake it can make.
+WINDOW_CASES = (
+    [(f"{1 << n}", True) for n in range(10, 21)]
+    + [(f"{1 << n}k", True) for n in range(11)]
+    + [
+        ("512", False),  # one bit below the floor
+        ("2m", False),  # one bit above the ceiling
+        ("128m", False),  # the old ceiling, before it was capped
+        ("1500", False),  # in range, but not a power of two
+        ("0", False),
+    ]
+)
+
+
+@test("zstd_window takes every power of two from 1k to 1m and no more")
+def test_window_bounds(ctx):
+    """The directive has a parser of its own rather than
+    ngx_conf_num_bounds_t, so nothing checks it but this. Both ends
+    matter: 128m was legal until the ceiling was cut to 1m for memory,
+    and a window is per request in flight."""
+    for size, want in WINDOW_CASES:
+        got, text = config_accepted(ctx, f"zstd_window {size};")
+        check(
+            got == want,
+            f"zstd_window {size}: expected "
+            f"{'accepted' if want else 'refused'}, got the opposite"
+            f"{'' if want else chr(10) + text}",
+        )
+
+
+@test("zstd_window names the sizes it takes when it refuses one")
+def test_window_message(ctx):
+    """The refusal is all the operator gets, so it has to list the
+    values rather than say the size was wrong."""
+    _, text = config_accepted(ctx, "zstd_window 2m;")
+    for size in ("1k", "64k", "1m"):
+        check(size in text, f"the refusal does not mention {size}:\n{text}")
+    check(
+        "128m" not in text,
+        f"the refusal still offers 128m, which is no longer taken:\n{text}",
+    )
+
+
+LEVEL_CASES = [
+    ("1", True),
+    ("3", True),
+    ("22", True),
+    ("0", False),
+    ("23", False),
+    ("-1", False),  # a real zstd level, deliberately not exposed
+]
+
+
+@test("zstd_comp_level is held to 1..22")
+def test_level_bounds(ctx):
+    for level, want in LEVEL_CASES:
+        got, text = config_accepted(ctx, f"zstd_comp_level {level};")
+        check(
+            got == want,
+            f"zstd_comp_level {level}: expected "
+            f"{'accepted' if want else 'refused'}, got the opposite"
+            f"{'' if want else chr(10) + text}",
+        )
+
+
+BUFFERS_CASES = [("1", True), ("4", True), ("64", True), ("0", False),
+                 ("65", False), ("-1", False)]
+
+
+@test("zstd_buffers is held to 1..64")
+def test_buffers_bounds(ctx):
+    """One buffer is enough to be correct - the filter stalls until the
+    filters below take it - so the floor is 1, and the ceiling is there
+    because each buffer costs NGX_HTTP_PACK_ZSTD_OUT_SIZE for the life
+    of the response."""
+    for count, want in BUFFERS_CASES:
+        got, text = config_accepted(ctx, f"zstd_buffers {count};")
+        check(
+            got == want,
+            f"zstd_buffers {count}: expected "
+            f"{'accepted' if want else 'refused'}, got the opposite"
+            f"{'' if want else chr(10) + text}",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Output buffers
 # ---------------------------------------------------------------------------
 
