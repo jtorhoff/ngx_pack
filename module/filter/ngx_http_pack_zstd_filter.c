@@ -1029,11 +1029,9 @@ typedef struct {
 static ngx_int_t
 ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
 {
-    ctx_t       *ctx;
     ngx_buf_t   *buf;
     ngx_chain_t *link;
 
-    ctx = args->ctx;
     buf = args->buf;
 
     buf->pos       = (buf->start);
@@ -1041,21 +1039,21 @@ ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
     buf->temporary = (args->written > 0);
     buf->sync      = (args->written == 0);
     buf->flush     = (args->mode == ZSTD_e_flush);
-    buf->last_buf  = (ctx->state->frame_closed);
+    buf->last_buf  = (args->ctx->state->frame_closed);
 
-    link = ngx_alloc_chain_link(ctx->request->pool);
+    link = ngx_alloc_chain_link(args->ctx->request->pool);
     if (link == NULL) {
         return NGX_ERROR;
     }
 
-    link->buf      = buf;
-    link->next     = NULL;
-    *ctx->last_out = link;
-    ctx->last_out  = &link->next;
+    link->buf            = buf;
+    link->next           = NULL;
+    *args->ctx->last_out = link;
+    args->ctx->last_out  = &link->next;
 
     ngx_log_debug2(
         NGX_LOG_DEBUG_HTTP,
-        ctx->request->connection->log,
+        args->ctx->request->connection->log,
         0,
         "zstd out: %p, size:%O",
         buf,
