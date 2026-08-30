@@ -1000,6 +1000,10 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     ctx = args->ctx;
     r   = ctx->request;
 
+    /* Not the same store as the one at the top of choose_mode, which
+       covers that function's own returns. This one covers the branch
+       below, which settles a round with no input of its own and never
+       reaches choose_mode to be told there is nothing folded. */
     *args->folded = 0;
 
     if (ctx->in == NULL) {
@@ -1125,13 +1129,13 @@ typedef struct {
     ZSTD_EndDirective mode;
     size_t            consumed;
     size_t            remaining;
-} note_round_args;
+} record_round_args;
 
 /* What this round leaves behind for the next one: whether the encoder
    is still holding input nobody has asked it to flush, whether the
    directive has to be repeated, and whether the frame is closed. */
 static void
-ngx_http_pack_zstd_note_round(note_round_args *const args)
+ngx_http_pack_zstd_record_round(record_round_args *const args)
 {
     if (args->mode == ZSTD_e_continue) {
         if (args->consumed > 0) {
@@ -1255,7 +1259,7 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
         .consumed = zin.pos,
     });
 
-    ngx_http_pack_zstd_note_round(&(note_round_args) {
+    ngx_http_pack_zstd_record_round(&(record_round_args) {
         .ctx       = ctx,
         .mode      = zmode,
         .consumed  = zin.pos,
