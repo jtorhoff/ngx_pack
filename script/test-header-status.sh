@@ -44,12 +44,26 @@ cd "$BUILD"
 # The fault filter is added first only for tidiness; its own config
 # moves it into place in HTTP_FILTER_MODULES regardless of the order
 # the two addons are given in.
-./auto/configure \
-	--prefix="$ROOT/script/test" \
-	--with-http_v2_module \
-	--with-debug \
-	--add-module="$ROOT/script/fault_filter" \
+configure_opts=(
+	--prefix="$ROOT/script/test"
+	--with-http_v2_module
+	--with-debug
+	--add-module="$ROOT/script/fault_filter"
 	--add-module="$ROOT"
+)
+
+# Where the headers and libraries live on this machine; empty
+# everywhere they are already on the search path. See the file.
+# shellcheck disable=SC1091
+. "$ROOT/script/toolchain.sh"
+if [ -n "$PACK_CC_OPT" ]; then
+	configure_opts+=(--with-cc-opt="$PACK_CC_OPT")
+fi
+if [ -n "$PACK_LD_OPT" ]; then
+	configure_opts+=(--with-ld-opt="$PACK_LD_OPT")
+fi
+
+./auto/configure "${configure_opts[@]}"
 make -j "$JOBS"
 
 cd "$ROOT"

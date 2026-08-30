@@ -67,6 +67,17 @@ if [ "$SANITIZE" = "1" ]; then
 	LD_OPT="-fsanitize=address"
 fi
 
+# Where the headers and libraries live on this machine; empty
+# everywhere they are already on the search path. See the file.
+# shellcheck disable=SC1091
+. "$ROOT/script/toolchain.sh"
+if [ -n "$PACK_CC_OPT" ]; then
+	CC_OPT="$CC_OPT $PACK_CC_OPT"
+fi
+if [ -n "$PACK_LD_OPT" ]; then
+	LD_OPT="$LD_OPT $PACK_LD_OPT"
+fi
+
 cd "$BUILD"
 # --with-debug as in script/build.sh: the streaming suite reads the
 # encoder's allocator tracing, and the output-round accounting this

@@ -57,16 +57,29 @@ cd "$ROOT/nginx"
 # -Werror rejects it - a break every --with-debug build in CI would
 # wave through. The release job in .github/workflows/ci.yml exists
 # for exactly that, and this is how it asks for it.
-debug_flag="--with-debug"
-if [ "${WITH_DEBUG:-1}" = "0" ]; then
-	debug_flag=""
-fi
-# Unquoted on purpose: empty must expand to no argument at all, not
-# to an empty one, which configure would reject.
-# shellcheck disable=SC2086
-./auto/configure \
-	--prefix="$ROOT/script/test" \
-	--with-http_v2_module \
-	$debug_flag \
+#
+# Collected into an array rather than a string so that an option
+# either appears or does not: an empty one expands to an empty
+# argument, which configure rejects.
+configure_opts=(
+	--prefix="$ROOT/script/test"
+	--with-http_v2_module
 	--add-module="$ROOT"
+)
+if [ "${WITH_DEBUG:-1}" != "0" ]; then
+	configure_opts+=(--with-debug)
+fi
+
+# Where the headers and libraries live on this machine; empty
+# everywhere they are already on the search path. See the file.
+# shellcheck disable=SC1091
+. "$ROOT/script/toolchain.sh"
+if [ -n "$PACK_CC_OPT" ]; then
+	configure_opts+=(--with-cc-opt="$PACK_CC_OPT")
+fi
+if [ -n "$PACK_LD_OPT" ]; then
+	configure_opts+=(--with-ld-opt="$PACK_LD_OPT")
+fi
+
+./auto/configure "${configure_opts[@]}"
 make -j "$JOBS"
