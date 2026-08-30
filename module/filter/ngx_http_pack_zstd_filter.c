@@ -947,7 +947,7 @@ typedef struct {
     ctx_t      *ctx;
     ngx_buf_t  *buf;
     ngx_uint_t *folded;
-} choose_mode_args;
+} select_mode_args;
 
 /* Which directive the buffer at the head of the chain calls for, and
    whether its flush is being folded into the block being built.
@@ -957,7 +957,7 @@ typedef struct {
    reached the encoder would spend part of the allowance on nothing.
  */
 static ZSTD_EndDirective
-ngx_http_pack_zstd_choose_mode(choose_mode_args *const args)
+ngx_http_pack_zstd_select_mode(select_mode_args *const args)
 {
     *args->folded = 0;
 
@@ -1006,10 +1006,10 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     ctx = args->ctx;
     r   = ctx->request;
 
-    /* Not the same store as the one at the top of choose_mode, which
+    /* Not the same store as the one at the top of select_mode, which
        covers that function's own returns. This one covers the branch
        below, which settles a round with no input of its own and never
-       reaches choose_mode to be told there is nothing folded. */
+       reaches select_mode to be told there is nothing folded. */
     *args->folded = 0;
 
     if (ctx->in == NULL) {
@@ -1070,7 +1070,7 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
         return NGX_HTTP_PACK_ZSTD_INPUT_DECIDED;
     }
 
-    *args->mode = ngx_http_pack_zstd_choose_mode(&(choose_mode_args) {
+    *args->mode = ngx_http_pack_zstd_select_mode(&(select_mode_args) {
         .ctx    = ctx,
         .buf    = buf,
         .folded = args->folded,
