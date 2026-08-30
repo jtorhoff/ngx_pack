@@ -791,6 +791,41 @@ ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
 }
 
 typedef struct {
+    ctx_t      *ctx;
+    ngx_buf_t  *buf;
+    ngx_uint_t *folded;
+} choose_mode_args;
+
+/* Which directive the buffer at the head of the chain calls for, and
+   whether its flush is being folded into the block being built.
+
+   The fold is reported rather than counted here: acquiring an output
+   buffer can still fail, and a fold recorded on a round that never
+   reached the encoder would spend part of the allowance on nothing.
+ */
+static ZSTD_EndDirective
+ngx_http_pack_zstd_choose_mode(choose_mode_args *const args)
+{
+    *args->folded = 0;
+
+    if (args->buf->last_buf) {
+        return ZSTD_e_end;
+    }
+
+    if (!args->buf->flush) {
+        return ZSTD_e_continue;
+    }
+
+    *args->folded = ngx_http_pack_zstd_may_fold_flush(
+        &(may_fold_flush_args) {
+            .rest   = args->ctx->in->next,
+            .folded = args->ctx->folded_flushes,
+        });
+
+    return *args->folded ? ZSTD_e_continue : ZSTD_e_flush;
+}
+
+typedef struct {
     ctx_t             *ctx;
     ZSTD_EndDirective *mode;
     ZSTD_inBuffer     *in;
@@ -879,27 +914,11 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
         return NGX_DECLINED;
     }
 
-    if (buf->last_buf) {
-        *args->mode = ZSTD_e_end;
-    } else if (buf->flush) {
-        /* Counted by the caller rather than here: acquiring an output
-           buffer can still fail, and a fold recorded on a round that
-           never reached the encoder would spend part of the allowance
-           on nothing. */
-        *args->folded = ngx_http_pack_zstd_may_fold_flush(
-            &(may_fold_flush_args) {
-                .rest   = ctx->in->next,
-                .folded = ctx->folded_flushes,
-            });
-
-        if (*args->folded) {
-            *args->mode = ZSTD_e_continue;
-        } else {
-            *args->mode = ZSTD_e_flush;
-        }
-    } else {
-        *args->mode = ZSTD_e_continue;
-    }
+    *args->mode = ngx_http_pack_zstd_choose_mode(&(choose_mode_args) {
+        .ctx    = ctx,
+        .buf    = buf,
+        .folded = args->folded,
+    });
 
     args->in->src = buf->pos;
     /* "last > pos" as well as the in-memory test: the subtraction is
@@ -1249,6 +1268,76 @@ ngx_http_pack_zstd_pending_input(pending_input_args *const args)
 
 typedef struct {
     ctx_t     *ctx;
+    size_t     pending;
+    ngx_uint_t complete;
+    ngx_uint_t urgent;
+    ngx_int_t *rc;
+} commit_headers_args;
+
+/* Headers held back because the length was unknown. Decide as soon as
+   the body answers the only question zstd_min_length asks - is it at
+   least that big. A flush marker means something downstream is
+   waiting, so decide immediately and compress. */
+static prepare_e
+ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
+{
+    ctx_t       *ctx;
+    conf_t      *conf;
+    ngx_int_t    header_rc;
+    ngx_chain_t *link;
+
+    ctx  = args->ctx;
+    conf = ngx_http_get_module_loc_conf(
+        ctx->request, ngx_http_pack_zstd_module);
+
+    if (args->complete) {
+        ctx->state->accepted_for_compression =
+            (args->pending >= (size_t) conf->min_length);
+    } else if (
+        args->urgent || args->pending >= (size_t) conf->min_length) {
+        ctx->state->accepted_for_compression = 1;
+    } else {
+        *args->rc = NGX_OK;
+        return NGX_HTTP_PACK_ZSTD_DEFER;
+    }
+
+    header_rc = ngx_http_pack_zstd_send_headers(ctx);
+
+    /* An error, or a filter below replacing the response with a
+       status. Not "!= NGX_OK": that would catch NGX_AGAIN too, which
+       only means the header is queued and the body must still be
+       produced. nginx spells the test this way as well.
+
+       Return NGX_ERROR rather than the status, since a body filter's
+       callers only understand NGX_ERROR and treat a status as success
+       - which left the request hanging. Close, or a later call builds
+       an encoder for the replaced response and puts the held body on
+       the wire. Both covered by script/test-header-status.sh. */
+    if (header_rc == NGX_ERROR || header_rc > NGX_OK) {
+        ngx_http_pack_zstd_close(ctx);
+
+        *args->rc = NGX_ERROR;
+        return NGX_HTTP_PACK_ZSTD_ERROR;
+    }
+
+    if (ctx->state->accepted_for_compression) {
+        return NGX_HTTP_PACK_ZSTD_OK;
+    }
+
+    /* Pass the held input through untouched. */
+    link    = ctx->in;
+    ctx->in = NULL;
+
+    ctx->request->connection->buffered &=
+        ~NGX_HTTP_PACK_ZSTD_BUFFERED;
+
+    *args->rc = ngx_http_next_body_filter(ctx->request, link);
+
+    return NGX_HTTP_PACK_ZSTD_PASS;
+}
+
+typedef struct {
+    ctx_t     *ctx;
     ngx_int_t *rc;
 } prepare_args;
 
@@ -1259,99 +1348,70 @@ typedef struct {
 static prepare_e
 ngx_http_pack_zstd_prepare(prepare_args *const args)
 {
-    size_t       pending;
-    ngx_uint_t   complete;
-    ngx_uint_t   urgent;
-    conf_t      *conf;
-    ngx_int_t    header_rc;
-    ngx_chain_t *link;
+    ctx_t     *ctx;
+    size_t     pending;
+    ngx_uint_t complete;
+    ngx_uint_t urgent;
+    prepare_e  verdict;
+
+    ctx = args->ctx;
 
     /* The steady state: the headers are away and the encoder exists,
        so there is nothing to settle. */
-    if (args->ctx->state->headers_sent &&
-        args->ctx->state->initialized) {
+    if (ctx->state->headers_sent && ctx->state->initialized) {
         return NGX_HTTP_PACK_ZSTD_OK;
     }
 
     pending = ngx_http_pack_zstd_pending_input(&(pending_input_args) {
-        .in       = args->ctx->in,
+        .in       = ctx->in,
         .complete = &complete,
         .urgent   = &urgent,
     });
 
-    /* Headers held back because the length was unknown. Decide as
-       soon as the body answers the only question zstd_min_length
-       asks - is it at least that big. A flush marker means something
-       downstream is waiting, so decide immediately and compress. */
-    if (!args->ctx->state->headers_sent) {
-        conf = ngx_http_get_module_loc_conf(
-            args->ctx->request, ngx_http_pack_zstd_module);
+    if (!ctx->state->headers_sent) {
+        verdict = ngx_http_pack_zstd_commit_headers(
+            &(commit_headers_args) {
+                .ctx      = ctx,
+                .pending  = pending,
+                .complete = complete,
+                .urgent   = urgent,
+                .rc       = args->rc,
+            });
 
-        if (complete) {
-            args->ctx->state->accepted_for_compression =
-                (pending >= (size_t) conf->min_length);
-        } else if (urgent || pending >= (size_t) conf->min_length) {
-            args->ctx->state->accepted_for_compression = 1;
-        } else {
-            *args->rc = NGX_OK;
-            return NGX_HTTP_PACK_ZSTD_DEFER;
+        if (verdict != NGX_HTTP_PACK_ZSTD_OK) {
+            return verdict;
+        }
+    }
+
+    if (ctx->state->initialized) {
+        return NGX_HTTP_PACK_ZSTD_OK;
+    }
+
+    /* The whole body is in hand, so its size is no longer a
+       question. */
+    if (complete) {
+        if (ctx->content_length < 0) {
+            ctx->content_length = (off_t) pending;
         }
 
-        header_rc = ngx_http_pack_zstd_send_headers(args->ctx);
-        /* An error, or a filter below replacing the response with a
-           status. Not "!= NGX_OK": that would catch NGX_AGAIN too,
-           which only means the header is queued and the body must
-           still be produced. nginx spells the test this way as well.
-
-           Return NGX_ERROR rather than the status, since a body
-           filter's callers only understand NGX_ERROR and treat a
-           status as success - which left the request hanging. Close,
-           or a later call builds an encoder for the replaced response
-           and puts the held body on the wire. Both covered by
-           script/test-header-status.sh. */
-        if (header_rc == NGX_ERROR || header_rc > NGX_OK) {
-            ngx_http_pack_zstd_close(args->ctx);
-
-            *args->rc = NGX_ERROR;
-            return NGX_HTTP_PACK_ZSTD_ERROR;
-        }
-
-        if (!args->ctx->state->accepted_for_compression) {
-            /* Pass the held input through untouched. */
-            link          = args->ctx->in;
-            args->ctx->in = NULL;
-
-            args->ctx->request->connection->buffered &=
-                ~NGX_HTTP_PACK_ZSTD_BUFFERED;
-
-            *args->rc = ngx_http_next_body_filter(
-                args->ctx->request, link);
-            return NGX_HTTP_PACK_ZSTD_PASS;
-        }
+        return NGX_HTTP_PACK_ZSTD_OK;
     }
 
     /* Choosing the encoder window costs memory that scales with the
        window, so when the response size is unknown it is worth
        waiting a moment to see if the whole thing turns up. */
-    if (!args->ctx->state->initialized) {
-        if (complete) {
-            if (args->ctx->content_length < 0) {
-                args->ctx->content_length = (off_t) pending;
-            }
-        } else if (
-            !args->ctx->state->caller_wants_output && !urgent &&
-            (args->ctx->content_length < 0) &&
-            pending < NGX_HTTP_PACK_ZSTD_MAX_HELD_INPUT) {
-            ngx_log_debug1(
-                NGX_LOG_DEBUG_HTTP,
-                args->ctx->request->connection->log,
-                0,
-                "zstd deferring encoder: pending:%uz",
-                pending);
+    if (!ctx->state->caller_wants_output && !urgent &&
+        ctx->content_length < 0 &&
+        pending < NGX_HTTP_PACK_ZSTD_MAX_HELD_INPUT) {
+        ngx_log_debug1(
+            NGX_LOG_DEBUG_HTTP,
+            ctx->request->connection->log,
+            0,
+            "zstd deferring encoder: pending:%uz",
+            pending);
 
-            *args->rc = NGX_OK;
-            return NGX_HTTP_PACK_ZSTD_DEFER;
-        }
+        *args->rc = NGX_OK;
+        return NGX_HTTP_PACK_ZSTD_DEFER;
     }
 
     return NGX_HTTP_PACK_ZSTD_OK;
@@ -1693,13 +1753,78 @@ ngx_http_pack_zstd_finish(ctx_t *const ctx)
     return NGX_OK;
 }
 
+typedef struct {
+    ctx_t     *ctx;
+    ngx_int_t *rc;
+} pump_args;
+
+/* One turn of the body filter's loop, in two phases: fill every
+   output buffer the encoder can, then push the lot down in one chain.
+
+   Running the encoder to a standstill before sending is the point of
+   having more than one buffer. With a single buffer the two phases
+   had to alternate, so a response was compressed and written one
+   buffer at a time; here a stalled write only costs the encoder its
+   remaining buffers, not its next byte.
+
+   NGX_AGAIN means go round: the send handed a buffer back and the
+   encoder can use it. Anything else is what the body filter returns,
+   and "rc" carries it. */
+static ngx_int_t
+ngx_http_pack_zstd_pump(pump_args *const args)
+{
+    ctx_t *ctx;
+    step_e step;
+
+    ctx = args->ctx;
+
+    do {
+        step = ngx_http_pack_zstd_compress(ctx);
+    } while (step == NGX_HTTP_PACK_ZSTD_STEP_CONTINUE);
+
+    if (step == NGX_HTTP_PACK_ZSTD_STEP_FAILED) {
+        ngx_http_pack_zstd_close(ctx);
+
+        *args->rc = NGX_ERROR;
+        return NGX_OK;
+    }
+
+    /* Nothing new to send and nothing outstanding: the encoder is
+       waiting for input rather than for the filters below. */
+    if (ctx->out == NULL && ctx->busy == NULL) {
+        *args->rc = NGX_OK;
+        return NGX_OK;
+    }
+
+    if (ngx_http_pack_zstd_drain(ctx) != NGX_OK) {
+        ngx_http_pack_zstd_close(ctx);
+
+        *args->rc = NGX_ERROR;
+        return NGX_OK;
+    }
+
+    if (step == NGX_HTTP_PACK_ZSTD_STEP_DONE) {
+        *args->rc = ngx_http_pack_zstd_finish(ctx);
+        return NGX_OK;
+    }
+
+    /* Stopped for want of a buffer. If the send handed one back, go
+       round; if not, the filters below are full and there is nothing
+       more this call can do. */
+    if (ctx->free == NULL) {
+        *args->rc = NGX_AGAIN;
+        return NGX_OK;
+    }
+
+    return NGX_AGAIN;
+}
+
 static ngx_int_t
 ngx_http_pack_zstd_body_filter(
     ngx_http_request_t *const r, ngx_chain_t *const in)
 {
     ctx_t    *ctx;
     ngx_int_t rc;
-    step_e    step;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_pack_zstd_module);
 
@@ -1752,46 +1877,12 @@ ngx_http_pack_zstd_body_filter(
         return NGX_ERROR;
     }
 
-    /* Main loop, two phases per turn: fill every output buffer the
-       encoder can, then push the lot down in one chain.
-
-       Running the encoder to a standstill before sending is the point
-       of having more than one buffer. With a single buffer the two
-       phases had to alternate, so a response was compressed and
-       written one buffer at a time; here a stalled write only costs
-       the encoder its remaining buffers, not its next byte. */
     for (;;) {
-        do {
-            step = ngx_http_pack_zstd_compress(ctx);
-        } while (step == NGX_HTTP_PACK_ZSTD_STEP_CONTINUE);
-
-        if (step == NGX_HTTP_PACK_ZSTD_STEP_FAILED) {
-            ngx_http_pack_zstd_close(ctx);
-
-            return NGX_ERROR;
-        }
-
-        /* Nothing new to send and nothing outstanding: the encoder is
-           waiting for input rather than for the filters below. */
-        if (ctx->out == NULL && ctx->busy == NULL) {
-            return NGX_OK;
-        }
-
-        if (ngx_http_pack_zstd_drain(ctx) != NGX_OK) {
-            ngx_http_pack_zstd_close(ctx);
-
-            return NGX_ERROR;
-        }
-
-        if (step == NGX_HTTP_PACK_ZSTD_STEP_DONE) {
-            return ngx_http_pack_zstd_finish(ctx);
-        }
-
-        /* Stopped for want of a buffer. If the send handed one back,
-           go round; if not, the filters below are full and there is
-           nothing more this call can do. */
-        if (ctx->free == NULL) {
-            return NGX_AGAIN;
+        if (ngx_http_pack_zstd_pump(&(pump_args) {
+                .ctx = ctx,
+                .rc  = &rc,
+            }) != NGX_AGAIN) {
+            return rc;
         }
     }
 
