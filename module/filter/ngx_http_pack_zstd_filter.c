@@ -317,7 +317,7 @@ typedef struct {
 
    A struct of its own even so, because the pool cleanup that frees
    the encoder on an aborted request is handed exactly this much and
-   no more: &ctx->zstd, not the context, so nothing in the handler
+   no more: &ctx->encoder, not the context, so nothing in the handler
    can reach a request that may already be gone. */
 typedef struct {
     /* zstd compression context instance. */
@@ -1515,7 +1515,7 @@ ngx_http_pack_zstd_prepare(prepare_args *const args)
    a failure there must not be able to strand an allocated instance.
  */
 static ngx_int_t
-ngx_http_pack_zstd_create_cctx(ctx_t *const ctx)
+ngx_http_pack_zstd_init_encoder(ctx_t *const ctx)
 {
     ngx_pool_cleanup_t *cln;
     ZSTD_customMem      zmem;
@@ -1610,14 +1610,15 @@ ngx_http_pack_zstd_set_pledged_size(set_pledged_size_args *const args)
 typedef struct {
     ctx_t  *ctx;
     conf_t *conf;
-} configure_cctx_args;
+} configure_encoder_args;
 
 /* Tells the encoder what the directives asked for and what to expect
    of the body. Every rejection here is fatal rather than skipped:
    libzstd is vendored and pinned (see deps/zstd), so one means a
    broken build and not a host carrying an older library. */
 static ngx_int_t
-ngx_http_pack_zstd_configure_cctx(configure_cctx_args *const args)
+ngx_http_pack_zstd_configure_encoder(
+    configure_encoder_args *const args)
 {
     static ngx_str_t const level    = ngx_string("compressionLevel");
     static ngx_str_t const window   = ngx_string("windowLog");
@@ -1740,17 +1741,16 @@ ngx_http_pack_zstd_ensure_stream_init(ctx_t *const ctx)
     conf = ngx_http_get_module_loc_conf(
         ctx->request, ngx_http_pack_zstd_module);
 
-    rc = ngx_http_pack_zstd_create_cctx(ctx);
-
+    rc = ngx_http_pack_zstd_init_encoder(ctx);
     if (rc != NGX_OK) {
         return NGX_ERROR;
     }
 
-    rc = ngx_http_pack_zstd_configure_cctx(&(configure_cctx_args) {
-        .ctx  = ctx,
-        .conf = conf,
-    });
-
+    rc = ngx_http_pack_zstd_configure_encoder(
+        &(configure_encoder_args) {
+            .ctx  = ctx,
+            .conf = conf,
+        });
     if (rc != NGX_OK) {
         return NGX_ERROR;
     }
