@@ -158,6 +158,23 @@ typedef struct {
     ngx_int_t nbuffers;
 } conf_t;
 
+/* Whether the header filter carries on with a response or hands it
+   to the filters below untouched.
+
+   Its own type rather than NGX_OK and NGX_DECLINED: prepare_e and
+   pump_e already sit in this file with coinciding values, and a
+   third verdict spelled in nginx's codes would compare equal to
+   their constants without a word from the compiler. Typed, the wrong
+   one does not build. */
+typedef enum {
+    /* Nothing about the response itself rules it out. Whether it is
+       actually compressed still depends on the client, which
+       ngx_http_pack_zstd_header_filter asks next. */
+    NGX_HTTP_PACK_ZSTD_PREFLIGHT_OK = 0,
+    /* Not a response this module touches. */
+    NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE
+} preflight_e;
+
 /* What the body filter should do once ngx_http_pack_zstd_prepare
    has settled the decisions that come before the encoder.
 
@@ -569,24 +586,34 @@ ngx_http_pack_zstd_send_headers(ctx_t *const ctx)
     return rc;
 }
 
-/* Process headers and decide if request is eligible for zstd
-   compression. */
-static ngx_int_t
-ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
+/* Everything that disqualifies a response on its own terms: the
+   directive, the status, what the response already is, and what it
+   is made of.
+
+   All six end the same way, so the caller says so once rather than
+   six times. None of them allocates or records anything, which is
+   what lets a verdict alone answer for them: DECLINE leaves nothing
+   behind to undo.
+
+   The client's Accept-Encoding is deliberately not among them. It is
+   asked after ngx_http_pack_set_vary, since the response varies
+   whether or not this particular client is served Zstandard, and a
+   bypass from here has to leave that header alone. */
+static preflight_e
+ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
 {
     conf_t *conf;
-    ctx_t  *ctx;
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_zstd_module);
 
     /* Filter only if enabled. */
     if (!conf->enable) {
-        return ngx_http_next_header_filter(r);
+        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
     }
 
     /* Bypass "header only" responses. */
     if (r->header_only) {
-        return ngx_http_next_header_filter(r);
+        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
     }
 
     /* Bypass statuses that either carry no body, or carry one that
@@ -598,23 +625,38 @@ ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
         r->headers_out.status == NGX_HTTP_NO_CONTENT ||
         r->headers_out.status == NGX_HTTP_PARTIAL_CONTENT ||
         r->headers_out.status == NGX_HTTP_NOT_MODIFIED) {
-        return ngx_http_next_header_filter(r);
+        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
     }
 
     /* Bypass already compressed responses. */
     if (r->headers_out.content_encoding &&
         r->headers_out.content_encoding->value.len) {
-        return ngx_http_next_header_filter(r);
+        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
     }
 
     /* If response size is known, do not compress tiny responses. */
     if (r->headers_out.content_length_n != -1 &&
         r->headers_out.content_length_n < conf->min_length) {
-        return ngx_http_next_header_filter(r);
+        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
     }
 
     /* Compress only certain MIME-typed responses. */
     if (ngx_http_test_content_type(r, &conf->types) == NULL) {
+        return NGX_HTTP_PACK_ZSTD_PREFLIGHT_DECLINE;
+    }
+
+    return NGX_HTTP_PACK_ZSTD_PREFLIGHT_OK;
+}
+
+/* Process headers and decide if request is eligible for zstd
+   compression. */
+static ngx_int_t
+ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
+{
+    ctx_t *ctx;
+
+    if (ngx_http_pack_zstd_preflight(r) !=
+        NGX_HTTP_PACK_ZSTD_PREFLIGHT_OK) {
         return ngx_http_next_header_filter(r);
     }
 
