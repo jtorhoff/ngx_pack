@@ -1512,7 +1512,7 @@ ngx_http_pack_zstd_configure_cctx(configure_cctx_args *const args)
        core, so a per-request thread pool would only oversubscribe.
        0 is the library default, set explicitly so a vendored update
        cannot change it under us. */
-    ngx_http_pack_zstd_set_param(&(set_param_args) {
+    rc = ngx_http_pack_zstd_set_param(&(set_param_args) {
         .ctx   = args->ctx,
         .param = ZSTD_c_nbWorkers,
         .value = 0,
