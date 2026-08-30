@@ -1842,8 +1842,26 @@ ngx_http_pack_zstd_pump(pump_args *const args)
     }
 
     /* Nothing new to send and nothing outstanding: the encoder is
-       waiting for input rather than for the filters below. */
-    if (ctx->out == NULL && ctx->busy == NULL) {
+       waiting for input rather than for the filters below.
+
+       A closed frame is excluded rather than covered by "nothing
+       outstanding", because this return is the one path past
+       ngx_http_pack_zstd_finish - and finish is what closes the
+       encoder once the last buffer has been taken. Leaving here with
+       the frame closed would strand it until the request pool is
+       destroyed.
+
+       That cannot happen as the code stands: the round that closes
+       the frame commits a buffer, so "out" is not NULL on that pass,
+       and on any later call "busy" is what made finish answer
+       NGX_AGAIN rather than close. Both are consequences of how
+       commit_buf and finish happen to be written, neither is stated
+       anywhere, and the cost of one of them changing is an encoder
+       leak that no test would see. Cheaper to not depend on them:
+       with the frame closed this falls through to a drain of nothing
+       and then to finish, which is where it belongs. */
+    if (!ctx->state->frame_closed && ctx->out == NULL &&
+        ctx->busy == NULL) {
         *args->rc = NGX_OK;
         return NGX_HTTP_PACK_ZSTD_PUMP_STOP;
     }
