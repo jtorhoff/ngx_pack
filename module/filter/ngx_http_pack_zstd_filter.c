@@ -514,7 +514,7 @@ ngx_http_pack_zstd_close(ctx_t *const ctx)
        what is downstream survives this. The list exists only to know
        which buffers may be refilled, and after close none may. */
     ctx->out      = NULL;
-    ctx->last_out = &ctx->out;
+    ctx->last_out = NULL;
     ctx->busy     = NULL;
     ctx->free     = NULL;
     ctx->nbuffers = 0;
