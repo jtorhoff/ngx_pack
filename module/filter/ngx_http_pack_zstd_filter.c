@@ -893,26 +893,31 @@ ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
     ngx_uint_t   lookahead;
     ngx_chain_t *link;
 
+    /* Can't fold any more. */
     if (args->folded + 1 >= NGX_HTTP_PACK_ZSTD_FLUSH_FOLD) {
         return 0;
     }
 
-    lookahead = NGX_HTTP_PACK_ZSTD_FLUSH_FOLD - 1 - args->folded;
+    /* Look ahead for the flush or the end buffer. */
+    {
+        lookahead = NGX_HTTP_PACK_ZSTD_FLUSH_FOLD - 1 - args->folded;
 
-    link = args->rest;
-    for (;;) {
-        if (link == NULL || lookahead == 0) {
-            break;
+        link = args->rest;
+        for (;;) {
+            if (link == NULL || lookahead == 0) {
+                break;
+            }
+
+            if (link->buf->flush || link->buf->last_buf) {
+                return 1;
+            }
+
+            link = link->next;
+            lookahead--;
         }
-
-        if (link->buf->flush || link->buf->last_buf) {
-            return 1;
-        }
-
-        link = link->next;
-        lookahead--;
     }
 
+    /* Couldn't find any, so this flush cuts a block here. */
     return 0;
 }
 
