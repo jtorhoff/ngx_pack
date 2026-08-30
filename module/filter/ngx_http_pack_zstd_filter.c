@@ -9,8 +9,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-/* Needed for ZSTD_createCCtx_advanced (the custom allocator), the
-   ZSTD_WINDOWLOG_* / ZSTD_WINDOWLOG_LIMIT_DEFAULT bounds, and
+/* Needed for ZSTD_createCCtx_advanced (the custom allocator) and
    ZSTD_c_srcSizeHint. The symbols this unlocks are already exported
    with default visibility in a normal (dynamically linked) libzstd -
    "static linking only" is a promise about API stability across
@@ -51,16 +50,14 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    from the window, so move it if zstd_window's default moves. */
 #define NGX_HTTP_PACK_ZSTD_MAX_HELD_INPUT (64 * 1024)
 
-#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN ZSTD_WINDOWLOG_MIN
-/* The largest windowLog zstd_window accepts. ZSTD_WINDOWLOG_MAX is
-   the codec's own ceiling (31 bits on a 64-bit build); capped at
-   ZSTD_WINDOWLOG_LIMIT_DEFAULT (27, i.e. 128 MB) because that is the
-   size a decoder accepts without being asked to opt into more - most
-   notably browsers, which is what this module serves. A window
-   beyond it would produce a response some clients simply refuse to
-   decode. */
-#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MAX                           \
-    ZSTD_WINDOWLOG_LIMIT_DEFAULT
+/* windowLog bounds for zstd_window: 1 KB to 1 MB. The floor is
+   zstd's own (ZSTD_WINDOWLOG_MIN). The ceiling is memory, not
+   compatibility - zstd allows 27 bits and decoders accept it, but
+   encoder memory scales with the window and a server pays that per
+   request in flight. Nothing served over HTTP earns more than 1 MB.
+ */
+#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 10
+#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MAX 20
 
 /* Size of the buffer the module allocates and hands ZSTD_outBuffer.
 
@@ -2158,6 +2155,6 @@ ngx_http_pack_zstd_parse_window(
         }
     }
 
-    return "must be 1k, 2k, 4k, 8k, 16k, 32k, 64k, 128k, 256k, 512k, "
-           "1m, 2m, 4m, 8m, 16m, 32m, 64m or 128m";
+    return "must be 1k, 2k, 4k, 8k, 16k, 32k, "
+           "64k, 128k, 256k, 512k, or 1m";
 }
