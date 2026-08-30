@@ -1833,8 +1833,16 @@ static ngx_int_t
 ngx_http_pack_zstd_body_filter(
     ngx_http_request_t *const r, ngx_chain_t *const in)
 {
-    ctx_t    *ctx;
+    ctx_t *ctx;
+
+    /* What we return to the caller. */
     ngx_int_t rc;
+
+    /* These are used to decide what to do next. */
+    ngx_int_t chain_status;
+    prepare_e prepare_status;
+    ngx_int_t init_status;
+    pump_e    pump_status;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_pack_zstd_module);
 
@@ -1859,11 +1867,12 @@ ngx_http_pack_zstd_body_filter(
     ctx->state->caller_wants_output = (in == NULL);
 
     if (in) {
-        if (ngx_chain_add_copy(r->pool, &ctx->in, in) != NGX_OK) {
+        chain_status = ngx_chain_add_copy(r->pool, &ctx->in, in);
+        if (chain_status != NGX_OK) {
             ngx_http_pack_zstd_close(ctx);
-
             return NGX_ERROR;
         }
+
         r->connection->buffered |= NGX_HTTP_PACK_ZSTD_BUFFERED;
     }
 
@@ -1874,24 +1883,28 @@ ngx_http_pack_zstd_body_filter(
        -Wconditional-uninitialized can see. */
     rc = NGX_ERROR;
 
-    if (ngx_http_pack_zstd_prepare(&(prepare_args) {
-            .ctx = ctx,
-            .rc  = &rc,
-        }) != NGX_HTTP_PACK_ZSTD_OK) {
+    prepare_status = ngx_http_pack_zstd_prepare(&(prepare_args) {
+        .ctx = ctx,
+        .rc  = &rc,
+    });
+
+    if (prepare_status != NGX_HTTP_PACK_ZSTD_OK) {
         return rc;
     }
 
-    if (ngx_http_pack_zstd_ensure_stream_init(ctx) != NGX_OK) {
+    init_status = ngx_http_pack_zstd_ensure_stream_init(ctx);
+    if (init_status != NGX_OK) {
         ngx_http_pack_zstd_close(ctx);
-
         return NGX_ERROR;
     }
 
     for (;;) {
-        if (ngx_http_pack_zstd_pump(&(pump_args) {
-                .ctx = ctx,
-                .rc  = &rc,
-            }) == NGX_HTTP_PACK_ZSTD_PUMP_STOP) {
+        pump_status = ngx_http_pack_zstd_pump(&(pump_args) {
+            .ctx = ctx,
+            .rc  = &rc,
+        });
+
+        if (pump_status == NGX_HTTP_PACK_ZSTD_PUMP_STOP) {
             return rc;
         }
     }
