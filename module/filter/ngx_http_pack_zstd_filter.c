@@ -1615,58 +1615,58 @@ ngx_http_pack_zstd_configure_encoder(ctx_t *const ctx)
     static ngx_str_t const workers  = ngx_string("nbWorkers");
     static ngx_str_t const sizeHint = ngx_string("srcSizeHint");
 
-    ngx_int_t rc;
-    conf_t   *conf;
+    enum { nparams = 3 };
+
+    conf_t        *conf;
+    set_param_args params[nparams];
+    ngx_uint_t     idx;
+    ngx_int_t      rc;
 
     conf = ngx_http_get_module_loc_conf(
         ctx->request, ngx_http_pack_zstd_module);
 
-    rc = ngx_http_pack_zstd_set_param(&(set_param_args) {
+    /* Straight from zstd_comp_level, the one of these an operator is
+       meant to tune: it trades CPU for size. Held to 1..22 when the
+       directive is parsed, so nothing here rechecks it. */
+    params[0] = (set_param_args) {
         .ctx   = ctx,
         .param = ZSTD_c_compressionLevel,
         .value = conf->level,
         .name  = &level,
-    });
-
-    if (rc != NGX_OK) {
-        return NGX_ERROR;
-    }
+    };
 
     /* A ceiling, not a target. Sizing the window down to a known
        response was once done here by hand, which was work zstd
        already does: ZSTD_adjustCParams_internal runs after
        ZSTD_overrideCParams and lowers windowLog to
-       ceil(log2(pledged size)) - the same value the loop
-       computed, and it lowers hashLog and chainLog to match,
-       which the loop did not. Checked across 208 combinations of
-       window ceiling, level and body size: identical frame window
-       descriptor and identical peak encoder allocation either
-       way. So the ceiling is all this has to set, and the pledge
-       below does the rest. */
-    rc = ngx_http_pack_zstd_set_param(&(set_param_args) {
+       ceil(log2(pledged size)) - the same value the loop computed,
+       and it lowers hashLog and chainLog to match, which the loop
+       did not. Checked across 208 combinations of window ceiling,
+       level and body size: identical frame window descriptor and
+       identical peak encoder allocation either way. So the ceiling
+       is all this has to set, and the pledge below does the rest. */
+    params[1] = (set_param_args) {
         .ctx   = ctx,
         .param = ZSTD_c_windowLog,
         .value = conf->window_bits,
         .name  = &window,
-    });
-
-    if (rc != NGX_OK) {
-        return NGX_ERROR;
-    }
+    };
 
     /* nginx already parallelises across worker processes, one per
        core, so a per-request thread pool would only oversubscribe.
        0 is the library default, set explicitly so a vendored update
        cannot change it under us. */
-    rc = ngx_http_pack_zstd_set_param(&(set_param_args) {
+    params[2] = (set_param_args) {
         .ctx   = ctx,
         .param = ZSTD_c_nbWorkers,
         .value = 0,
         .name  = &workers,
-    });
+    };
 
-    if (rc != NGX_OK) {
-        return NGX_ERROR;
+    for (idx = 0; idx < nparams; idx++) {
+        if (ngx_http_pack_zstd_set_param(&params[idx]) != NGX_OK) {
+            return NGX_ERROR;
+        }
     }
 
     /* Writes the size into the frame header when it is known, which
