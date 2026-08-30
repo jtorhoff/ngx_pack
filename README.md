@@ -40,18 +40,18 @@ below HTTP/1.1 are never compressed, matching the `gzip_http_version` default;
 the two answers apart.
 
 
-### `zstd`
+### `pack_zstd`
 
-- **syntax**: `zstd on|off`
+- **syntax**: `pack_zstd on|off`
 - **default**: `off`
 - **context**: `http`, `server`, `location`, `if in location`
 
 Enables or disables on-the-fly compression of responses.
 
 
-### `zstd_types`
+### `pack_zstd_types`
 
-- **syntax**: `zstd_types <mime_type> [..]`
+- **syntax**: `pack_zstd_types <mime_type> [..]`
 - **default**: `text/html`
 - **context**: `http`, `server`, `location`
 
@@ -60,9 +60,9 @@ addition to `text/html`. The special value `*` matches any MIME type.
 Responses with the `text/html` MIME type are always compressed.
 
 
-### `zstd_comp_level`
+### `pack_zstd_level`
 
-- **syntax**: `zstd_comp_level <level>`
+- **syntax**: `pack_zstd_level <level>`
 - **default**: `3`
 - **context**: `http`, `server`, `location`
 
@@ -70,9 +70,9 @@ Sets the compression `level`. Acceptable values are in the range from `1` to
 `22`. Zstandard's negative levels are not exposed through this directive.
 
 
-### `zstd_window`
+### `pack_zstd_window`
 
-- **syntax**: `zstd_window <size>`
+- **syntax**: `pack_zstd_window <size>`
 - **default**: `64k`
 - **context**: `http`, `server`, `location`
 
@@ -83,9 +83,9 @@ being asked to opt into more - a larger window would produce responses some
 clients simply refuse to decode.
 
 
-### `zstd_buffers`
+### `pack_zstd_nbuffers`
 
-- **syntax**: `zstd_buffers <number>`
+- **syntax**: `pack_zstd_nbuffers <number>`
 - **default**: `4`
 - **context**: `http`, `server`, `location`
 
@@ -98,9 +98,9 @@ never reach it. Most deployments have no reason to change this.
 See notes below.
 
 
-### `zstd_min_length`
+### `pack_zstd_min_length`
 
-- **syntax**: `zstd_min_length <length>`
+- **syntax**: `pack_zstd_min_length <length>`
 - **default**: `256`
 - **context**: `http`, `server`, `location`
 
@@ -111,7 +111,7 @@ are compressed regardless of this setting. See notes below.
 
 ### Notes on above settings
 
-`zstd_comp_level`: A high level costs mostly CPU, and only mildly memory.
+`pack_zstd_level`: A high level costs mostly CPU, and only mildly memory.
 The module tells the encoder what to expect: the exact size where a
 `Content-Length` gives one, and a fixed guess where it does not
 (fixed at `256k`). Chunked body at the `64k` default costs 0.95 MB at level
@@ -120,27 +120,27 @@ holds across the whole directive range, and at or below what the same body
 costs with its length known.
 
 
-`zstd_window` is the main influence on what a request costs in memory.
+`pack_zstd_window` is the main influence on what a request costs in memory.
 Measured against `script/corpus` at level `3`, compressed bytes against peak
 per-request encoder memory: 265,093 / 0.32 MB at `16k`, 241,626 / 1.20 MB at
 the `64k` default, 234,205 / 1.62 MB at `128k`, 230,211 / 1.74 MB at `256k`
 and 230,210 / 2.49 MB at `1m`.
 
 
-`zstd_buffers` only matters when the socket will not take output as fast as
+`pack_zstd_nbuffers` only matters when the socket will not take output as fast as
 the encoder produces it - a slow client, a congested link, or `limit_rate`.
 Short of that the encoder keeps refilling the one buffer it already has, so a
 response that never outruns its client costs 16k whatever this is set to:
 measured on a 1.5 MB response, a fast client creates a single buffer at both
 the `4` default and at `32`. Under `limit_rate 8k` that same response creates
-4 buffers (64k) at the default, 1 (16k) at `zstd_buffers 1`, and 24 (384k)
+4 buffers (64k) at the default, 1 (16k) at `pack_zstd_nbuffers 1`, and 24 (384k)
 when allowed 32. Raising it therefore costs nothing on responses that keep up,
 and lets the ones that stall carry on compressing instead of stopping after
 every buffer; `1` makes the encoder wait for each buffer to be written before
 producing the next.
 
 
-`zstd_min_length`: A response of unknown length is held briefly so the
+`pack_zstd_min_length`: A response of unknown length is held briefly so the
 setting can still be applied to it, rather than being compressed
 regardless. Once the end of the response is in hand its real size is known,
 and the setting is applied normally.
@@ -149,7 +149,7 @@ The exception is a buffer marked for flushing that arrives *before* that
 point, which is what `proxy_pass` with `proxy_buffering off` produces:
 something downstream is waiting on bytes the filter is sitting on, so it
 decides at once rather than holding the headers any longer, and deciding
-without knowing the size means compressing. `zstd_min_length` therefore does
+without knowing the size means compressing. `pack_zstd_min_length` therefore does
 not hold on an unbuffered proxied response - a 202 byte body is compressed
 even at the `256` default, where the same body over a buffered `proxy_pass`,
 or as a static file, is left alone.

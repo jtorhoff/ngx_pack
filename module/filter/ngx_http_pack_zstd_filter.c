@@ -40,17 +40,17 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 
 /* The most input that may be held back while waiting to learn the
    response size. There is no point deferring longer than the window
-   the encoder would use anyway - zstd_window's compiled-in default,
-   below - since committing beyond it cannot change the window choice
-   any further.
+   the encoder would use anyway - pack_zstd_window's compiled-in
+   default, below - since committing beyond it cannot change the
+   window choice any further.
 
    That also happens to be one zstd block: a block is
    MIN(windowSize, ZSTD_BLOCKSIZE_MAX) and the window default is the
    smaller of the two, so at 64 KB the two coincide. It is derived
-   from the window, so move it if zstd_window's default moves. */
+   from the window, so move it if pack_zstd_window's default moves. */
 #define NGX_HTTP_PACK_ZSTD_MAX_HELD_INPUT (64 * 1024)
 
-/* windowLog bounds for zstd_window: 1 KB to 1 MB. The floor is
+/* windowLog bounds for pack_zstd_window: 1 KB to 1 MB. The floor is
    zstd's own (ZSTD_WINDOWLOG_MIN). The ceiling is memory, not
    compatibility - zstd allows 27 bits and decoders accept it, but
    encoder memory scales with the window and a server pays that per
@@ -70,8 +70,8 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    buffer cannot reduce the number of rounds the encoder needs.
 
    How many buffers of this size a response may hold at once is
-   zstd_buffers, and that one is configurable; this is the size of
-   each. Overridable at build time only so that the test suite can
+   pack_zstd_nbuffers, and that one is configurable; this is the size
+   of each. Overridable at build time only so that the test suite can
    shrink it far below anything sane - see
    script/test-small-buffer.sh, which uses 64 bytes to force the
    partial-drain paths that a 16 KB buffer reaches only rarely. Not a
@@ -184,10 +184,11 @@ typedef enum {
     /* Carry on into the encoder loop. */
     NGX_HTTP_PACK_ZSTD_OK = 0,
     /* Not yet: too little of the body has arrived to answer the
-       question zstd_min_length asks, or its size is still unknown
-       and worth waiting a moment to learn before the encoder window
-       is fixed. The input stays in ctx->in and a later call decides,
-       so this may still end in compression. "rc" is NGX_OK. */
+       question pack_zstd_min_length asks, or its size is still
+       unknown and worth waiting a moment to learn before the encoder
+       window is fixed. The input stays in ctx->in and a later call
+       decides, so this may still end in compression. "rc" is NGX_OK.
+     */
     NGX_HTTP_PACK_ZSTD_DEFER,
     /* Settled, and not compressed: the response is too small to be
        worth it, so the held input has already been handed to the
@@ -270,8 +271,8 @@ typedef struct {
     /* 1 once the response headers have been committed. Zero until
        then, which is what ngx_pcalloc leaves and what the header
        filter depends on: with no Content-Length there is nothing to
-       compare against zstd_min_length yet, so it holds the headers
-       back by leaving this zero and lets the body decide.
+       compare against pack_zstd_min_length yet, so it holds the
+       headers back by leaving this zero and lets the body decide.
 
        Set only where compressed headers are committed, so the
        uncompressed exit from ngx_http_pack_zstd_send_headers
@@ -368,8 +369,8 @@ typedef struct {
     ngx_chain_t *in;
 
     /* How many buffers have been created so far, against
-       zstd_buffers. Created on demand rather than up front, so a
-       response that never needs a second one never pays for it. */
+       pack_zstd_nbuffers. Created on demand rather than up front, so
+       a response that never needs a second one never pays for it. */
     ngx_uint_t nbuffers;
     size_t     out_size;
 
@@ -416,7 +417,7 @@ static char *ngx_http_pack_zstd_parse_window(
    constants, so they cannot fill an ngx_conf_num_bounds_t literal);
    negative levels are a real part of zstd's range but are not
    exposed through this directive. */
-static ngx_conf_num_bounds_t const ngx_http_pack_zstd_comp_levels = {
+static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
     ngx_conf_check_num_bounds,
     NGX_HTTP_PACK_ZSTD_LEVEL_MIN,
     NGX_HTTP_PACK_ZSTD_LEVEL_MAX,
@@ -427,7 +428,7 @@ static ngx_conf_num_bounds_t const ngx_http_pack_zstd_comp_levels = {
    anything larger. The ceiling is arbitrary but not unbounded: each
    buffer costs NGX_HTTP_PACK_ZSTD_OUT_SIZE for the lifetime of the
    response. */
-static ngx_conf_num_bounds_t const ngx_http_pack_zstd_buffers = {
+static ngx_conf_num_bounds_t const ngx_http_pack_zstd_nbuffers = {
     ngx_conf_check_num_bounds,
     NGX_HTTP_PACK_ZSTD_NBUFFERS_MIN,
     NGX_HTTP_PACK_ZSTD_NBUFFERS_MAX,
@@ -439,7 +440,7 @@ static ngx_conf_post_handler_pt const
 
 static ngx_command_t const ngx_http_pack_zstd_commands[] = {
     {
-        ngx_string("zstd"),
+        ngx_string("pack_zstd"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_HTTP_LIF_CONF | NGX_CONF_FLAG,
         ngx_conf_set_flag_slot,
@@ -448,7 +449,7 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
         NULL,
     },
     {
-        ngx_string("zstd_types"),
+        ngx_string("pack_zstd_types"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_CONF_1MORE,
         ngx_http_types_slot,
@@ -457,16 +458,16 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
         &ngx_http_html_default_types[0],
     },
     {
-        ngx_string("zstd_comp_level"),
+        ngx_string("pack_zstd_level"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_CONF_TAKE1,
         ngx_conf_set_num_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, level),
-        (void *) &ngx_http_pack_zstd_comp_levels,
+        (void *) &ngx_http_pack_zstd_levels,
     },
     {
-        ngx_string("zstd_window"),
+        ngx_string("pack_zstd_window"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_CONF_TAKE1,
         ngx_conf_set_size_slot,
@@ -475,16 +476,16 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
         (void *) &ngx_http_pack_zstd_parse_window_p,
     },
     {
-        ngx_string("zstd_buffers"),
+        ngx_string("pack_zstd_nbuffers"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_CONF_TAKE1,
         ngx_conf_set_num_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, nbuffers),
-        (void *) &ngx_http_pack_zstd_buffers,
+        (void *) &ngx_http_pack_zstd_nbuffers,
     },
     {
-        ngx_string("zstd_min_length"),
+        ngx_string("pack_zstd_min_length"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
             NGX_CONF_TAKE1,
         ngx_conf_set_size_slot,
@@ -710,8 +711,8 @@ ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
     r->main_filter_need_in_memory = 1;
 
     /* When the length is unknown there is nothing yet to compare
-       against zstd_min_length, and committing the headers here would
-       settle the question for good. Hold them instead. */
+       against pack_zstd_min_length, and committing the headers here
+       would settle the question for good. Hold them instead. */
     if (ctx->content_length < 0) {
         return NGX_OK;
     }
@@ -1301,7 +1302,7 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
        rather than returning - a flush or an end still being drained
        has to be retried, and the caller is otherwise not owed a
        return yet. The buffer goes back unused, or the round would
-       spend one out of zstd_buffers on nothing. */
+       spend one out of pack_zstd_nbuffers on nothing. */
     if (zout.pos == 0 && !ctx->state.frame_closed) {
         rc = ngx_http_pack_zstd_release_buf(&(release_buf_args) {
             .ctx = ctx,
@@ -1373,8 +1374,8 @@ typedef struct {
 } commit_headers_args;
 
 /* Headers held back because the length was unknown. Decide as soon as
-   the body answers the only question zstd_min_length asks - is it at
-   least that big. A flush marker means something downstream is
+   the body answers the only question pack_zstd_min_length asks - is
+   it at least that big. A flush marker means something downstream is
    waiting, so decide immediately and compress. */
 static prepare_e
 ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
@@ -1632,7 +1633,7 @@ ngx_http_pack_zstd_configure_encoder(ctx_t *const ctx)
     conf = ngx_http_get_module_loc_conf(
         ctx->request, ngx_http_pack_zstd_module);
 
-    /* Straight from zstd_comp_level, the one of these an operator is
+    /* Straight from pack_zstd_level, the one of these an operator is
        meant to tune: it trades CPU for size. Held to 1..22 when the
        directive is parsed, so nothing here rechecks it. */
     params[0] = (set_param_args) {
@@ -1683,7 +1684,7 @@ ngx_http_pack_zstd_configure_encoder(ctx_t *const ctx)
        the other reason: told the source size, zstd sizes its own
        match-finder tables to the body rather than to the window,
        which is what bounds per-request memory at a high
-       zstd_comp_level.
+       pack_zstd_level.
 
        Which is what the else branch covers, so the two are not
        redundant and neither replaces the other: this one is exact,
@@ -1727,7 +1728,8 @@ ngx_http_pack_zstd_configure_encoder(ctx_t *const ctx)
 
 /* Builds the encoder and the output chain's tail, once per response.
    No output buffer yet - get_buf creates those on demand, up to
-   zstd_buffers of them, and most responses never need a second. */
+   pack_zstd_nbuffers of them, and most responses never need a second.
+ */
 static ngx_int_t
 ngx_http_pack_zstd_ensure_stream(ctx_t *const ctx)
 {

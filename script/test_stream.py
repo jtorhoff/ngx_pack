@@ -44,7 +44,7 @@ CONF = os.path.join(ROOT, "script", "test_stream.conf")
 PORT = 8899
 UPSTREAM_PORT = 8901
 
-# The compiled-in zstd_window default, which test_stream.conf deliberately
+# The compiled-in pack_zstd_window default, which test_stream.conf deliberately
 # does not override.
 FULL_WINDOW = 64 * 1024
 
@@ -244,7 +244,7 @@ def port_is_free(port):
 # Fixtures
 # ---------------------------------------------------------------------------
 
-# Comfortably over the default zstd_min_length, so a status code is the
+# Comfortably over the default pack_zstd_min_length, so a status code is the
 # only thing that can stop these responses being compressed.
 STATUS_BODY = ("<html><body>" + "status guard body " * 40 + "</body></html>").encode()
 
@@ -321,18 +321,18 @@ def build_fixtures(work):
     files = {
         # Large enough to span many blocks, so the encoder performs the
         # short-lived per-block allocations the memory tests care about, and
-        # large enough that windowLog is not reduced below zstd_window.
+        # large enough that windowLog is not reduced below pack_zstd_window.
         "big.html": f"<html><body>{make_text(200000, 1)}</body></html>",
-        # Over zstd_min_length, but small enough that a known Content-Length
-        # drives windowLog well below zstd_window.
+        # Over pack_zstd_min_length, but small enough that a known Content-Length
+        # drives windowLog well below pack_zstd_window.
         "small.html": f"<html><body>{make_text(200, 2)}</body></html>",
-        # Under any sane zstd_min_length.
+        # Under any sane pack_zstd_min_length.
         "tiny.html": "<html>hi</html>",
-        # Bracket the compiled-in zstd_min_length default: the first must be
+        # Bracket the compiled-in pack_zstd_min_length default: the first must be
         # too small to be worth compressing, the second comfortably worth it.
         "under_min.html": ("<html><body>" + "x" * 176 + "</body></html>"),
         "over_min.html": ("<html><body>" + "y" * 376 + "</body></html>"),
-        # Not in zstd_types.
+        # Not in pack_zstd_types.
         "data.bin": make_text(500, 3),
     }
     for name, content in files.items():
@@ -762,7 +762,7 @@ def frame_window(data):
 
     RFC 8878 section 3.1.1. Deliberately taken from the frame rather than
     from anything the module reports: zstd picks the real window from the
-    zstd_window ceiling and the pledged length together when compression
+    pack_zstd_window ceiling and the pledged length together when compression
     starts, and offers no call that reports the result back, so the module
     could only ever log what it asked for. Reading the frame asserts what
     the encoder did instead of what this module intended, so it also holds
@@ -1650,7 +1650,7 @@ def test_small_roundtrip(ctx):
     )
 
 
-@test("response below zstd_min_length is left alone")
+@test("response below pack_zstd_min_length is left alone")
 def test_min_length(ctx):
     _, headers, body = fetch(ctx.port, "/tiny.html")
     check(
@@ -1661,7 +1661,7 @@ def test_min_length(ctx):
     check(body == ctx.fixtures["tiny.html"], "tiny.html body was altered")
 
 
-@test("default zstd_min_length leaves a 200 byte response alone")
+@test("default pack_zstd_min_length leaves a 200 byte response alone")
 def test_min_length_default_lower(ctx):
     """Guards the compiled-in default, which the test config deliberately does
     not override. A response this small costs more to compress than it saves."""
@@ -1669,21 +1669,21 @@ def test_min_length_default_lower(ctx):
     _, headers, body = fetch(ctx.port, "/under_min.html")
     check(
         "content-encoding" not in headers,
-        f"a {body_len} byte response was compressed; zstd_min_length has "
+        f"a {body_len} byte response was compressed; pack_zstd_min_length has "
         f"dropped below it",
     )
     check(body == ctx.fixtures["under_min.html"], "under_min.html was altered")
 
 
 @test(
-    "default zstd_min_length still compresses a 400 byte response", needs_decoder=True
+    "default pack_zstd_min_length still compresses a 400 byte response", needs_decoder=True
 )
 def test_min_length_default_upper(ctx):
     body_len = len(ctx.fixtures["over_min.html"])
     _, headers, body = fetch(ctx.port, "/over_min.html")
     check(
         headers.get("content-encoding") == "zstd",
-        f"a {body_len} byte response was not compressed; zstd_min_length has "
+        f"a {body_len} byte response was not compressed; pack_zstd_min_length has "
         f"risen above it",
     )
     check(
@@ -1740,7 +1740,7 @@ def test_ttfb_on_buffered_stream(ctx):
     )
 
 
-@test("zstd_min_length applies to a buffered stream of unknown length")
+@test("pack_zstd_min_length applies to a buffered stream of unknown length")
 def test_min_length_on_stream(ctx):
     """The header filter cannot compare against min_length when it has no
     Content-Length, so it holds the headers until the body has answered the
@@ -1762,14 +1762,14 @@ def test_min_length_on_stream(ctx):
     )
 
 
-@test("zstd_min_length is bypassed when a buffer asks to be flushed")
+@test("pack_zstd_min_length is bypassed when a buffer asks to be flushed")
 def test_min_length_not_applied_when_urgent(ctx):
     """The same body as the buffered case above, and the opposite outcome.
 
     With proxy_buffering off every buffer carries a flush marker, and the
     filter treats one as "something downstream is waiting": it decides
     immediately rather than holding the headers any longer, and deciding
-    immediately means compressing. So zstd_min_length does not hold for an
+    immediately means compressing. So pack_zstd_min_length does not hold for an
     unbuffered proxied response - a 200 byte body is compressed even though
     the setting is 256.
 
@@ -1782,13 +1782,13 @@ def test_min_length_not_applied_when_urgent(ctx):
     check(
         len(body) < 256,
         f"fixture is {len(body)} bytes, which no longer sits under the "
-        f"compiled-in zstd_min_length of 256 this test depends on",
+        f"compiled-in pack_zstd_min_length of 256 this test depends on",
     )
     _, headers, _ = fetch(ctx.port, "/stream/under_min.html")
     check(
         headers.get("content-encoding") == "zstd",
         f"a {len(body)} byte unbuffered response was not compressed; the "
-        f"flush marker should have short-circuited zstd_min_length",
+        f"flush marker should have short-circuited pack_zstd_min_length",
     )
 
 
@@ -1839,12 +1839,12 @@ def test_status_guard_not_too_broad(ctx):
         )
 
 
-@test("MIME type outside zstd_types is left alone")
+@test("MIME type outside pack_zstd_types is left alone")
 def test_mime_filtering(ctx):
     _, headers, body = fetch(ctx.port, "/data.bin")
     check(
         "content-encoding" not in headers,
-        "data.bin is not in zstd_types but was compressed",
+        "data.bin is not in pack_zstd_types but was compressed",
     )
     check(body == ctx.fixtures["data.bin"], "data.bin body was altered")
 
@@ -2028,27 +2028,27 @@ WINDOW_CASES = (
 )
 
 
-@test("zstd_window takes every power of two from 1k to 1m and no more")
+@test("pack_zstd_window takes every power of two from 1k to 1m and no more")
 def test_window_bounds(ctx):
     """The directive has a parser of its own rather than
     ngx_conf_num_bounds_t, so nothing checks it but this. Both ends
     matter: 128m was legal until the ceiling was cut to 1m for memory,
     and a window is per request in flight."""
     for size, want in WINDOW_CASES:
-        got, text = config_accepted(ctx, f"zstd_window {size};")
+        got, text = config_accepted(ctx, f"pack_zstd_window {size};")
         check(
             got == want,
-            f"zstd_window {size}: expected "
+            f"pack_zstd_window {size}: expected "
             f"{'accepted' if want else 'refused'}, got the opposite"
             f"{'' if want else chr(10) + text}",
         )
 
 
-@test("zstd_window names the sizes it takes when it refuses one")
+@test("pack_zstd_window names the sizes it takes when it refuses one")
 def test_window_message(ctx):
     """The refusal is all the operator gets, so it has to list the
     values rather than say the size was wrong."""
-    _, text = config_accepted(ctx, "zstd_window 2m;")
+    _, text = config_accepted(ctx, "pack_zstd_window 2m;")
     for size in ("1k", "64k", "1m"):
         check(size in text, f"the refusal does not mention {size}:\n{text}")
     check(
@@ -2067,13 +2067,13 @@ LEVEL_CASES = [
 ]
 
 
-@test("zstd_comp_level is held to 1..22")
+@test("pack_zstd_level is held to 1..22")
 def test_level_bounds(ctx):
     for level, want in LEVEL_CASES:
-        got, text = config_accepted(ctx, f"zstd_comp_level {level};")
+        got, text = config_accepted(ctx, f"pack_zstd_level {level};")
         check(
             got == want,
-            f"zstd_comp_level {level}: expected "
+            f"pack_zstd_level {level}: expected "
             f"{'accepted' if want else 'refused'}, got the opposite"
             f"{'' if want else chr(10) + text}",
         )
@@ -2083,17 +2083,17 @@ BUFFERS_CASES = [("1", True), ("4", True), ("64", True), ("0", False),
                  ("65", False), ("-1", False)]
 
 
-@test("zstd_buffers is held to 1..64")
+@test("pack_zstd_nbuffers is held to 1..64")
 def test_buffers_bounds(ctx):
     """One buffer is enough to be correct - the filter stalls until the
     filters below take it - so the floor is 1, and the ceiling is there
     because each buffer costs NGX_HTTP_PACK_ZSTD_OUT_SIZE for the life
     of the response."""
     for count, want in BUFFERS_CASES:
-        got, text = config_accepted(ctx, f"zstd_buffers {count};")
+        got, text = config_accepted(ctx, f"pack_zstd_nbuffers {count};")
         check(
             got == want,
-            f"zstd_buffers {count}: expected "
+            f"pack_zstd_nbuffers {count}: expected "
             f"{'accepted' if want else 'refused'}, got the opposite"
             f"{'' if want else chr(10) + text}",
         )
@@ -2103,7 +2103,7 @@ def test_buffers_bounds(ctx):
 # Output buffers
 # ---------------------------------------------------------------------------
 
-# module/filter/ngx_http_pack_zstd_filter.c, the zstd_buffers default.
+# module/filter/ngx_http_pack_zstd_filter.c, the pack_zstd_nbuffers default.
 DEFAULT_BUFFERS = 4
 
 
@@ -2130,7 +2130,7 @@ def stall_a_response(port, path, seconds=0.6):
 def test_multiple_output_buffers(ctx):
     """With one buffer the encoder had to stop until it came back, so a slow
     client throttled compression as well as delivery. Several buffers let it
-    run on, and zstd_buffers is the bound on how far."""
+    run on, and pack_zstd_nbuffers is the bound on how far."""
     ctx.nginx.mark_log()
     stall_a_response(ctx.port, "/throttled/wiki.html")
     created = buffers_created(ctx.nginx.read_log())
@@ -2138,17 +2138,17 @@ def test_multiple_output_buffers(ctx):
     check(
         created > 1,
         f"a stalled response created {created} output buffer(s), so the "
-        f"encoder still stops on the first one and zstd_buffers buys "
+        f"encoder still stops on the first one and pack_zstd_nbuffers buys "
         f"nothing",
     )
     check(
         created <= DEFAULT_BUFFERS,
         f"a stalled response created {created} output buffers, past the "
-        f"zstd_buffers default of {DEFAULT_BUFFERS}",
+        f"pack_zstd_nbuffers default of {DEFAULT_BUFFERS}",
     )
 
 
-@test("zstd_buffers 1 holds the encoder to a single buffer", needs_debug=True)
+@test("pack_zstd_nbuffers 1 holds the encoder to a single buffer", needs_debug=True)
 def test_buffers_directive_is_honoured(ctx):
     """The same stall against a location that allows only one buffer. This is
     what tells a failure of the test above apart: if this one also reports
@@ -2160,7 +2160,7 @@ def test_buffers_directive_is_honoured(ctx):
 
     check(
         created == 1,
-        f"zstd_buffers 1 still created {created} output buffers",
+        f"pack_zstd_nbuffers 1 still created {created} output buffers",
     )
 
 
@@ -2190,7 +2190,7 @@ def test_flush_folding(ctx):
         headers.get("content-encoding") == "zstd",
         f"burst was not compressed, got "
         f"{headers.get('content-encoding')!r} - a flush marker is supposed "
-        f"to short-circuit zstd_min_length",
+        f"to short-circuit pack_zstd_min_length",
     )
 
     blocks = frame_blocks(body)
@@ -2232,7 +2232,7 @@ def test_flush_folding_roundtrip(ctx):
 def test_deferred_window_for_buffered_stream(ctx):
     """A small response of unknown length still reaches the filter whole, just
     without last_buf on the first call. Holding it briefly lets the filter size
-    the window from the real total instead of falling back to zstd_window."""
+    the window from the real total instead of falling back to pack_zstd_window."""
     ctx.nginx.mark_log()
     _, _, body = fetch(ctx.port, "/buffered/small.html")
     count = encoder_count(ctx.nginx.read_log())
@@ -2310,7 +2310,7 @@ def test_window_tuning(ctx):
     )
     check(
         big == FULL_WINDOW,
-        f"a response larger than zstd_window should use the full "
+        f"a response larger than pack_zstd_window should use the full "
         f"{FULL_WINDOW} window, got {big}",
     )
 
@@ -2318,7 +2318,7 @@ def test_window_tuning(ctx):
 @test("stream of unknown length falls back to the full window", needs_debug=True)
 def test_stream_uses_full_window(ctx):
     """Same payload as test_window_tuning's small case, but delivered chunked.
-    With no Content-Length to tune from, the filter must use zstd_window -
+    With no Content-Length to tune from, the filter must use pack_zstd_window -
     which is also what proves this really is the unknown-length path."""
     ctx.nginx.mark_log()
     _, _, body = fetch(ctx.port, "/stream/small.html")
@@ -2389,7 +2389,7 @@ def test_stream_memory_ceiling(ctx):
     encoder three times larger than it needs to be passes all of them.
 
     Deliberately a ratio rather than a byte count. The absolute figures move
-    with the libzstd in deps/zstd and with zstd_comp_level, but "a stream
+    with the libzstd in deps/zstd and with pack_zstd_level, but "a stream
     should not cost materially more than the same bytes with a length on
     them" holds across both. 1.5x leaves room for the two paths genuinely
     differing - the hint is a guess where the pledge is exact, so they need

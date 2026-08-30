@@ -3,7 +3,7 @@
 
 Reports what the filter actually achieves on real HTML, CSS, JavaScript and
 prose - compressed size, ratio, and time per request - optionally across a
-range of zstd_comp_level and zstd_window settings.
+range of pack_zstd_level and pack_zstd_window settings.
 
 This is a measurement tool, not a test: a compression ratio has no pass or
 fail, and the numbers move with the linked zstd version. Run it by hand
@@ -52,11 +52,11 @@ def render_conf(work, port, levels, windows):
     locations = []
     for level in levels:
         for window in windows:
-            window_directive = f"zstd_window {window};" if window else ""
+            window_directive = f"pack_zstd_window {window};" if window else ""
             locations.append(
                 f"    location /q{level}w{window or 'default'}/ {{\n"
                 f"      root html;\n"
-                f"      zstd_comp_level {level};\n"
+                f"      pack_zstd_level {level};\n"
                 f"      {window_directive}\n"
                 f"    }}"
             )
@@ -83,8 +83,8 @@ http {{
   }}
   default_type application/octet-stream;
 
-  zstd on;
-  zstd_types text/html text/css application/javascript text/plain;
+  pack_zstd on;
+  pack_zstd_types text/html text/css application/javascript text/plain;
 
   server {{
     listen 127.0.0.1:{port};
@@ -123,12 +123,12 @@ def main():
     parser.add_argument(
         "--level",
         default="3",
-        help="comma-separated zstd_comp_level values (default: 3)",
+        help="comma-separated pack_zstd_level values (default: 3)",
     )
     parser.add_argument(
         "--window",
         default="",
-        help="comma-separated zstd_window values; empty means the compiled-in default",
+        help="comma-separated pack_zstd_window values; empty means the compiled-in default",
     )
     parser.add_argument(
         "--repeat",
@@ -181,9 +181,9 @@ def main():
     try:
         for level in levels:
             for window in windows:
-                label = f"zstd_comp_level {level}"
+                label = f"pack_zstd_level {level}"
                 if window:
-                    label += f", zstd_window {window}"
+                    label += f", pack_zstd_window {window}"
                 print(f"### {label}")
                 print(
                     f"{'file':>12} {'raw':>9} {'compressed':>11} {'ratio':>7} {'ms':>8}"
@@ -194,7 +194,7 @@ def main():
                     path = f"/q{level}w{window or 'default'}/{name}"
                     _, headers, body = T.fetch(args.port, path)
                     if headers.get("content-encoding") != "zstd":
-                        print(f"{name:>12}   not compressed - check zstd_types")
+                        print(f"{name:>12}   not compressed - check pack_zstd_types")
                         continue
                     raw = len(corpus[name])
                     total_raw += raw
