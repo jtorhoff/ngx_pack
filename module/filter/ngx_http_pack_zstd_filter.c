@@ -1173,11 +1173,12 @@ typedef struct {
     ZSTD_EndDirective mode;
     size_t            written;
     size_t            remaining;
-} made_no_progress_args;
+} made_progress_args;
 
-/* Whether the round moved nothing: draining with no input left, and a
-   call that neither wrote a byte nor finished. Repeating it would
-   leave every input unchanged and the worker spinning.
+/* Whether the round moved anything. The one case where it did not is
+   draining with no input left, and a call that neither wrote a byte
+   nor finished: repeating that would leave every input unchanged and
+   the worker spinning.
 
    NGX_OK when the round got somewhere, NGX_ERROR when it did not.
    An error rather than anything retryable, deliberately: retrying is
@@ -1191,7 +1192,7 @@ typedef struct {
 
    Answers only; the caller owns what to do about it. */
 static ngx_int_t
-ngx_http_pack_zstd_made_no_progress(made_no_progress_args *const args)
+ngx_http_pack_zstd_made_progress(made_progress_args *const args)
 {
     ngx_chain_t *in;
     size_t       written;
@@ -1370,13 +1371,12 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
         .remaining = zremaining,
     });
 
-    rc = ngx_http_pack_zstd_made_no_progress(
-        &(made_no_progress_args) {
-            .ctx       = ctx,
-            .mode      = zmode,
-            .written   = zout.pos,
-            .remaining = zremaining,
-        });
+    rc = ngx_http_pack_zstd_made_progress(&(made_progress_args) {
+        .ctx       = ctx,
+        .mode      = zmode,
+        .written   = zout.pos,
+        .remaining = zremaining,
+    });
 
     if (rc != NGX_OK) {
         return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
