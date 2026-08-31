@@ -229,12 +229,13 @@ typedef enum {
     NGX_HTTP_PACK_ZSTD_STEP_FAILED
 } step_e;
 
-/* The response's flags, in the order the response passes through
-   them: decided, committed, the encoder built, then what each call
-   brings and what the encoder is still holding, and last the two
-   ways it ends. Two take a test rather than a literal 1 -
-   accepted_for_compression may take a min_length comparison, and
-   caller_wants_output takes (in == NULL).
+/* What the filter has settled about this response, in the order it
+   settles them: accepted, headers away, and finished. What each call
+   brings sits among them, since that is where it is read. Anything
+   the encoder settles for itself lives in encoder_t instead. Two
+   take a test rather than a literal 1 - accepted_for_compression may
+   take a min_length comparison, and caller_wants_output takes
+   (in == NULL).
 
    Held inside the context by value, so the ngx_pcalloc that makes
    the context has zeroed every flag before any of them is read: "not
@@ -271,9 +272,6 @@ typedef struct {
        kept by a different party. */
     unsigned headers_sent: 1;
 
-    /* 1 if the encoder, output chain and buffer are allocated. */
-    unsigned initialized: 1;
-
     /* 1 if this call of the body filter arrived with no new data,
        i.e. nginx is asking for progress on what it has already handed
        over rather than adding to it. Set once on entry and read by
@@ -287,20 +285,9 @@ typedef struct {
        on pump and compress, both of which take a bare ctx today. */
     unsigned caller_wants_output: 1;
 
-    /* 1 if input has been handed to the encoder under ZSTD_e_continue
-       that it may still be holding, unflushed. zstd gives no query
-       for "is anything buffered", so this tracks it: set when a
-       continue call consumes bytes, cleared once a flush fully
-       drains. */
-    unsigned unflushed_input: 1;
-
-    /* 1 once ZSTD_compressStream2(..., ZSTD_e_end) has reported
-       "fully flushed" (a return of 0). */
-    unsigned frame_closed: 1;
-
     /* 1 if compression is finished / failed. */
     unsigned closed: 1;
-} state_t;
+} filter_state_t;
 
 /* What libzstd owns on this response's behalf: the encoder itself,
    and the directive still owed to it. Held inside the context by
@@ -309,8 +296,8 @@ typedef struct {
 
    A struct of its own even so, because the pool cleanup that frees
    the encoder on an aborted request is handed exactly this much and
-   no more: &ctx->encoder, not the context, so nothing in the handler
-   can reach a request that may already be gone. */
+   no more: &ctx->encoder.zctx, not the context, so nothing in the
+   handler can reach a request that may already be gone. */
 typedef struct {
     /* zstd compression context instance. */
     ZSTD_CCtx *cctx;
@@ -334,43 +321,41 @@ typedef struct {
     ZSTD_EndDirective repeat_mode;
 } zctx_t;
 
-/* Instance context. Members follow the path a request takes through
-   the module: the request itself and the two sub-structs that track
-   what becomes of it, then what the header filter learns, the chain
-   the body filter takes in, the buffers drawn and filled, and the
-   filled ones handed on.
-
-   The sub-structs are members rather than pointers: they are made
-   with the context, live exactly as long as it, and are never shared
-   or reseated.
-
-   Two groups sit at the position of their earliest member rather
-   than being split across it, since one comment covers each. */
+/* What the encoder has settled for itself, as filter_state_t is for
+   the filter: built, holding, done. Apart from that struct because
+   nothing outside encoder_t sets any of them, and a run of its own
+   keeps the bitfields packed the same way. */
 typedef struct {
-    /* The request, and the pool and log reached through it. */
-    ngx_http_request_t *request;
+    /* 1 if the encoder, output chain and buffer are allocated. */
+    unsigned initialized: 1;
 
-    /* The state of the filter: what is decided, done, and pending. */
-    state_t state;
+    /* 1 if input has been handed to the encoder under ZSTD_e_continue
+       that it may still be holding, unflushed. zstd gives no query
+       for "is anything buffered", so this tracks it: set when a
+       continue call consumes bytes, cleared once a flush fully
+       drains. */
+    unsigned unflushed_input: 1;
 
-    /* The encoder and what is owed to it; see zctx_t. */
-    zctx_t encoder;
+    /* 1 once ZSTD_compressStream2(..., ZSTD_e_end) has reported
+       "fully flushed" (a return of 0). */
+    unsigned frame_closed: 1;
+} encoder_state_t;
 
-    /* Payload length; -1, if unknown. */
-    off_t content_length;
+/* Everything the encoder owns on this response's behalf: libzstd's
+   own state, the buffers its output goes into, and what each round
+   leaves for the next. Held by value like filter_state_t, so
+   ngx_pcalloc has zeroed all of it before any field is read.
 
-    /* Input buffer chain. */
-    ngx_chain_t *in;
-
-    /* How many buffers have been created so far, against
-       pack_zstd_nbuffers. Created on demand rather than up front, so
-       a response that never needs a second one never pays for it. */
-    ngx_uint_t nbuffers;
-    size_t     out_size;
+   Nothing copies this struct, and nothing may: "last_out" points at
+   this struct's own "out", so a copy would keep appending to the
+   original's chain while reporting the copy's. */
+typedef struct {
+    /* libzstd's own, and the only part the pool cleanup is handed. */
+    zctx_t zctx;
 
     /* Output buffers, in the three states nginx's chain helpers keep
        them in. These point at memory *we* allocated, not at anything
-       the encoder owns.
+       libzstd owns.
 
        "out" holds what has been filled this call and not yet handed
        on, "busy" what has been handed on and not yet fully consumed,
@@ -384,11 +369,47 @@ typedef struct {
     ngx_chain_t  *busy;
     ngx_chain_t  *free;
 
+    /* How many buffers have been created so far, against
+       pack_zstd_nbuffers. Created on demand rather than up front, so
+       a response that never needs a second one never pays for it. */
+    ngx_uint_t nbuffers;
+    size_t     out_size;
+
     /* How many flush-marked buffers have been folded into the block
        still being built - see NGX_HTTP_PACK_ZSTD_FLUSH_FOLD.
        Reset whenever a flush or the end of the frame completes, since
        that is what starts the next block. */
     ngx_uint_t folded_flushes;
+
+    /* Built, holding, done; see encoder_state_t. */
+    encoder_state_t state;
+} encoder_t;
+
+/* Instance context. Members follow the path a request takes through
+   the module: the request itself, what the filter has settled about
+   it, what the encoder owns on its behalf, then what the header
+   filter learned and the chain the body filter takes in.
+
+   The sub-structs are members rather than pointers: they are made
+   with the context, live exactly as long as it, and are never shared
+   or reseated. */
+typedef struct {
+    /* The request, and the pool and log reached through it. */
+    ngx_http_request_t *request;
+
+    /* The state of the filter: what is decided, done, and pending. */
+    filter_state_t state;
+
+    /* The encoder, its buffers and its round state; see encoder_t. */
+    encoder_t encoder;
+
+    /* Payload length; -1, if unknown. */
+    off_t content_length;
+
+    /* Input buffer chain. What nginx handed us and the encoder has
+       not taken yet - the only chain here the encoder does not own.
+     */
+    ngx_chain_t *in;
 } ctx_t;
 
 
@@ -533,7 +554,7 @@ ngx_http_pack_zstd_close(ctx_t *const ctx)
     ctx->request->connection->buffered &=
         ~NGX_HTTP_PACK_ZSTD_BUFFERED;
 
-    ngx_http_pack_zstd_cleanup(&ctx->encoder);
+    ngx_http_pack_zstd_cleanup(&ctx->encoder.zctx);
 
     /* The buffers and their links point into the request pool:
        nothing to hand back, dropping them is the cleanup. Dropped
@@ -547,13 +568,13 @@ ngx_http_pack_zstd_close(ctx_t *const ctx)
        ngx_http_write_filter copies the chain links it is given, so
        what is downstream survives this. The list exists only to know
        which buffers may be refilled, and after close none may. */
-    ctx->out      = NULL;
-    ctx->last_out = NULL;
-    ctx->busy     = NULL;
-    ctx->free     = NULL;
+    ctx->encoder.out      = NULL;
+    ctx->encoder.last_out = NULL;
+    ctx->encoder.busy     = NULL;
+    ctx->encoder.free     = NULL;
 
-    ctx->nbuffers = 0;
-    ctx->out_size = 0;
+    ctx->encoder.nbuffers = 0;
+    ctx->encoder.out_size = 0;
 }
 
 /* Commits headers that ngx_http_pack_zstd_header_filter held back. If
@@ -730,9 +751,9 @@ typedef struct {
    not a failure: it means the encoder has to wait for the filters
    below to give one back, which is what the loop turns into a send.
 
-   Buffers are created on demand and then recycled through ctx->free
-   for the rest of the response, so a response that only ever needs
-   one never allocates a second. */
+   Buffers are created on demand and then recycled through
+   ctx->encoder.free for the rest of the response, so a response that
+   only ever needs one never allocates a second. */
 static ngx_int_t
 ngx_http_pack_zstd_get_buf(get_buf_args *const args)
 {
@@ -745,10 +766,10 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
     ctx = args->ctx;
     r   = ctx->request;
 
-    if (ctx->free != NULL) {
-        link      = ctx->free;
-        buf       = link->buf;
-        ctx->free = link->next;
+    if (ctx->encoder.free != NULL) {
+        link              = ctx->encoder.free;
+        buf               = link->buf;
+        ctx->encoder.free = link->next;
 
         ngx_free_chain(r->pool, link);
 
@@ -759,11 +780,11 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
     }
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_zstd_module);
-    if ((ngx_int_t) ctx->nbuffers >= conf->nbuffers) {
+    if ((ngx_int_t) ctx->encoder.nbuffers >= conf->nbuffers) {
         return NGX_DECLINED;
     }
 
-    buf = ngx_create_temp_buf(r->pool, ctx->out_size);
+    buf = ngx_create_temp_buf(r->pool, ctx->encoder.out_size);
     if (buf == NULL) {
         return NGX_ERROR;
     }
@@ -776,7 +797,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
     buf->tag      = (ngx_buf_tag_t) &ngx_http_pack_zstd_module;
     buf->recycled = 1;
 
-    ctx->nbuffers++;
+    ctx->encoder.nbuffers++;
 
     ngx_log_debug2(
         NGX_LOG_DEBUG_HTTP,
@@ -784,7 +805,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         0,
         "zstd buffer created: %p, total:%ui",
         buf,
-        ctx->nbuffers);
+        ctx->encoder.nbuffers);
 
     *args->out = buf;
     return NGX_OK;
@@ -797,7 +818,7 @@ typedef struct {
     ZSTD_EndDirective mode;
 } commit_buf_args;
 
-/* Hands the round's output buffer to ctx->out.
+/* Hands the round's output buffer to ctx->encoder.out.
 
    Reached even when nothing was written: should the call that finally
    drives "remaining" to 0 ever not write new bytes, the last_buf
@@ -829,17 +850,17 @@ ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
     buf->temporary = (args->written > 0);
     buf->sync      = (args->written == 0);
     buf->flush     = (args->mode == ZSTD_e_flush);
-    buf->last_buf  = (args->ctx->state.frame_closed);
+    buf->last_buf  = (args->ctx->encoder.state.frame_closed);
 
     link = ngx_alloc_chain_link(args->ctx->request->pool);
     if (link == NULL) {
         return NGX_ERROR;
     }
 
-    link->buf            = buf;
-    link->next           = NULL;
-    *args->ctx->last_out = link;
-    args->ctx->last_out  = &link->next;
+    link->buf                    = buf;
+    link->next                   = NULL;
+    *args->ctx->encoder.last_out = link;
+    args->ctx->encoder.last_out  = &link->next;
 
     ngx_log_debug2(
         NGX_LOG_DEBUG_HTTP,
@@ -870,9 +891,9 @@ ngx_http_pack_zstd_release_buf(release_buf_args *const args)
         return NGX_ERROR;
     }
 
-    link->buf  = args->buf;
-    link->next = ctx->free;
-    ctx->free  = link;
+    link->buf         = args->buf;
+    link->next        = ctx->encoder.free;
+    ctx->encoder.free = link;
 
     return NGX_OK;
 }
@@ -993,7 +1014,7 @@ ngx_http_pack_zstd_select_mode(ctx_t *const ctx)
     folded = ngx_http_pack_zstd_may_fold_flush(
         &(may_fold_flush_args) {
             .rest   = ctx->in->next,
-            .folded = ctx->folded_flushes,
+            .folded = ctx->encoder.folded_flushes,
         });
 
     if (folded) {
@@ -1040,13 +1061,13 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     *args->folded = 0;
 
     if (ctx->in == NULL) {
-        if (ctx->encoder.repeat_mode != ZSTD_e_continue) {
+        if (ctx->encoder.zctx.repeat_mode != ZSTD_e_continue) {
             /* Finishing what was started takes priority over asking
                whether the caller wants output - see repeat_mode. */
-            *args->mode = ctx->encoder.repeat_mode;
+            *args->mode = ctx->encoder.zctx.repeat_mode;
         } else if (
             ctx->state.caller_wants_output &&
-            ctx->state.unflushed_input) {
+            ctx->encoder.state.unflushed_input) {
             *args->mode = ZSTD_e_flush;
         } else {
             /* Nothing to do; wait for more input. */
@@ -1166,7 +1187,7 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
 {
     if (args->mode == ZSTD_e_continue) {
         if (args->consumed > 0) {
-            args->ctx->state.unflushed_input = 1;
+            args->ctx->encoder.state.unflushed_input = 1;
         }
 
         return;
@@ -1175,21 +1196,21 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
     if (args->remaining != 0) {
         /* Not finished, whichever of the two it was: repeat it once
            the input in hand has been consumed. */
-        args->ctx->encoder.repeat_mode = args->mode;
+        args->ctx->encoder.zctx.repeat_mode = args->mode;
 
         return;
     }
 
-    args->ctx->encoder.repeat_mode = ZSTD_e_continue;
+    args->ctx->encoder.zctx.repeat_mode = ZSTD_e_continue;
 
     /* Either directive ends the block, so the next one starts with
        nothing folded into it. */
-    args->ctx->folded_flushes = 0;
+    args->ctx->encoder.folded_flushes = 0;
 
     if (args->mode == ZSTD_e_flush) {
-        args->ctx->state.unflushed_input = 0;
+        args->ctx->encoder.state.unflushed_input = 0;
     } else { /* ZSTD_e_end */
-        args->ctx->state.frame_closed = 1;
+        args->ctx->encoder.state.frame_closed = 1;
     }
 }
 
@@ -1277,11 +1298,11 @@ ngx_http_pack_zstd_compress_buf(compress_buf_args *const args)
     ctx = args->ctx;
 
     out.dst  = args->buf->start;
-    out.size = ctx->out_size;
+    out.size = ctx->encoder.out_size;
     out.pos  = 0;
 
     remaining = ZSTD_compressStream2(
-        ctx->encoder.cctx, &out, args->in, args->mode);
+        ctx->encoder.zctx.cctx, &out, args->in, args->mode);
     if (ZSTD_isError(remaining)) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -1307,7 +1328,8 @@ typedef struct {
 } dispose_buf_args;
 
 /* What becomes of the round's output buffer, which is one of only two
-   things: handed back to be filled again, or committed to ctx->out.
+   things: handed back to be filled again, or committed to
+   ctx->encoder.out.
 
    Nothing produced and the frame still open is the first. It means go
    round again rather than return - a flush or an end still being
@@ -1326,7 +1348,7 @@ ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
 
     ctx = args->ctx;
 
-    if (args->written == 0 && !ctx->state.frame_closed) {
+    if (args->written == 0 && !ctx->encoder.state.frame_closed) {
         rc = ngx_http_pack_zstd_release_buf(&(release_buf_args) {
             .ctx = ctx,
             .buf = args->buf,
@@ -1354,9 +1376,9 @@ ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
 }
 
 /* Runs the encoder once and, if it produced anything, appends a
-   buffer to ctx->out. ZSTD_compressStream2 moves input and output in
-   a single call, so there is no separate "does the encoder have
-   output ready" phase to ask about first. */
+   buffer to ctx->encoder.out. ZSTD_compressStream2 moves input and
+   output in a single call, so there is no separate "does the encoder
+   have output ready" phase to ask about first. */
 static step_e
 ngx_http_pack_zstd_compress(ctx_t *const ctx)
 {
@@ -1377,10 +1399,11 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
        guards an assumption rather than an observed case.
 
        Closing the encoder is the loop's job rather than this one's:
-       the buffer carrying last_buf may still be sitting in ctx->out
-       or ctx->busy, and the encoder is not done with the response
-       until the filters below have taken it. */
-    if (ctx->state.frame_closed) {
+       the buffer carrying last_buf may still be sitting in
+       ctx->encoder.out or ctx->encoder.busy, and the encoder is not
+       done with the response until the filters below have taken it.
+     */
+    if (ctx->encoder.state.frame_closed) {
         return NGX_HTTP_PACK_ZSTD_STEP_DONE;
     }
 
@@ -1425,7 +1448,7 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
     }
 
     if (folded) {
-        ctx->folded_flushes++;
+        ctx->encoder.folded_flushes++;
     }
 
     ngx_http_pack_zstd_advance_input(&(advance_input_args) {
@@ -1586,7 +1609,7 @@ ngx_http_pack_zstd_prepare(prepare_args *const args)
 
     /* The steady state: the headers are away and the encoder exists,
        so there is nothing to settle. */
-    if (ctx->state.headers_sent && ctx->state.initialized) {
+    if (ctx->state.headers_sent && ctx->encoder.state.initialized) {
         return NGX_HTTP_PACK_ZSTD_OK;
     }
 
@@ -1611,7 +1634,7 @@ ngx_http_pack_zstd_prepare(prepare_args *const args)
         }
     }
 
-    if (ctx->state.initialized) {
+    if (ctx->encoder.state.initialized) {
         return NGX_HTTP_PACK_ZSTD_OK;
     }
 
@@ -1663,14 +1686,14 @@ ngx_http_pack_zstd_init_encoder(ctx_t *const ctx)
     }
 
     cln->handler = ngx_http_pack_zstd_cleanup;
-    cln->data    = &ctx->encoder;
+    cln->data    = &ctx->encoder.zctx;
 
     zmem.customAlloc = ngx_http_pack_zstd_alloc;
     zmem.customFree  = ngx_http_pack_zstd_free;
     zmem.opaque      = ctx->request->pool;
 
-    ctx->encoder.cctx = ZSTD_createCCtx_advanced(zmem);
-    if (ctx->encoder.cctx == NULL) {
+    ctx->encoder.zctx.cctx = ZSTD_createCCtx_advanced(zmem);
+    if (ctx->encoder.zctx.cctx == NULL) {
         ngx_log_error(
             NGX_LOG_ALERT,
             ctx->request->connection->log,
@@ -1701,7 +1724,7 @@ ngx_http_pack_zstd_set_param(set_param_args *const args)
     size_t zrc;
 
     zrc = ZSTD_CCtx_setParameter(
-        args->ctx->encoder.cctx, args->param, args->value);
+        args->ctx->encoder.zctx.cctx, args->param, args->value);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -1724,7 +1747,7 @@ ngx_http_pack_zstd_set_pledged_size(ctx_t *const ctx)
     size_t zrc;
 
     zrc = ZSTD_CCtx_setPledgedSrcSize(
-        ctx->encoder.cctx, ctx->content_length);
+        ctx->encoder.zctx.cctx, ctx->content_length);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -1864,7 +1887,7 @@ ngx_http_pack_zstd_ensure_stream(ctx_t *const ctx)
 {
     ngx_int_t rc;
 
-    if (ctx->state.initialized) {
+    if (ctx->encoder.state.initialized) {
         return NGX_OK;
     }
 
@@ -1880,11 +1903,11 @@ ngx_http_pack_zstd_ensure_stream(ctx_t *const ctx)
 
     /* Only the tail pointer has to exist before the first buffer is
        committed, and ngx_pcalloc cannot set it. */
-    ctx->out_size = NGX_HTTP_PACK_ZSTD_OUT_SIZE;
-    ctx->last_out = &ctx->out;
+    ctx->encoder.out_size = NGX_HTTP_PACK_ZSTD_OUT_SIZE;
+    ctx->encoder.last_out = &ctx->encoder.out;
 
     /* Last, so that the flag means what it says. */
-    ctx->state.initialized = 1;
+    ctx->encoder.state.initialized = 1;
 
     /* Both halves are done, which is what the line says and why it is
        here rather than at the end of either one. script/
@@ -1902,27 +1925,27 @@ ngx_http_pack_zstd_ensure_stream(ctx_t *const ctx)
 /* Hands what the encoder produced to the filters below, then takes
    account of what came back.
 
-   A NULL ctx->out is not a no-op: it is what asks those filters to
-   make progress on buffers they are already holding, which is the
-   only way a busy buffer is ever returned. */
+   A NULL ctx->encoder.out is not a no-op: it is what asks those
+   filters to make progress on buffers they are already holding, which
+   is the only way a busy buffer is ever returned. */
 static ngx_int_t
 ngx_http_pack_zstd_drain(ctx_t *const ctx)
 {
     ngx_int_t rc;
 
-    rc = ngx_http_next_body_filter(ctx->request, ctx->out);
+    rc = ngx_http_next_body_filter(ctx->request, ctx->encoder.out);
     if (rc == NGX_ERROR) {
         return NGX_ERROR;
     }
 
     ngx_chain_update_chains(
         ctx->request->pool,
-        &ctx->free,
-        &ctx->busy,
-        &ctx->out,
+        &ctx->encoder.free,
+        &ctx->encoder.busy,
+        &ctx->encoder.out,
         (ngx_buf_tag_t) &ngx_http_pack_zstd_module);
 
-    ctx->last_out = &ctx->out;
+    ctx->encoder.last_out = &ctx->encoder.out;
 
     /* What nginx has to be told to come back for. Buffers the filters
        below still hold count, and so does input not yet compressed:
@@ -1930,7 +1953,7 @@ ngx_http_pack_zstd_drain(ctx_t *const ctx)
        write can be finalized as complete, truncating the tail - on a
        socket too full to take it, which loopback tests will not
        reproduce. */
-    if (ctx->busy != NULL || ctx->in != NULL) {
+    if (ctx->encoder.busy != NULL || ctx->in != NULL) {
         ctx->request->connection->buffered |=
             NGX_HTTP_PACK_ZSTD_BUFFERED;
     } else {
@@ -1949,11 +1972,12 @@ ngx_http_pack_zstd_drain(ctx_t *const ctx)
 static ngx_int_t
 ngx_http_pack_zstd_finish(ctx_t *const ctx)
 {
-    if (ctx->state.frame_closed && ctx->busy == NULL) {
+    if (ctx->encoder.state.frame_closed &&
+        ctx->encoder.busy == NULL) {
         ngx_http_pack_zstd_close(ctx);
     }
 
-    if (ctx->busy != NULL) {
+    if (ctx->encoder.busy != NULL) {
         return NGX_AGAIN;
     }
 
@@ -2010,8 +2034,8 @@ ngx_http_pack_zstd_pump(ctx_t *const ctx)
            depend on them: with the frame closed this falls through to
            a drain of nothing and then to finish, which is where it
            belongs. */
-        if (!ctx->state.frame_closed && ctx->out == NULL &&
-            ctx->busy == NULL) {
+        if (!ctx->encoder.state.frame_closed &&
+            ctx->encoder.out == NULL && ctx->encoder.busy == NULL) {
             return NGX_OK;
         }
 
@@ -2028,7 +2052,7 @@ ngx_http_pack_zstd_pump(ctx_t *const ctx)
         /* Stopped for want of a buffer. If the send handed one back,
            go round; if not, the filters below are full and there is
            nothing more this call can do. */
-        if (ctx->free == NULL) {
+        if (ctx->encoder.free == NULL) {
             return NGX_AGAIN;
         }
     }
