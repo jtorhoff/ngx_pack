@@ -1168,6 +1168,55 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
     }
 }
 
+typedef struct {
+    ctx_t            *ctx;
+    ZSTD_EndDirective mode;
+    size_t            written;
+    size_t            remaining;
+} made_no_progress_args;
+
+/* Whether the round moved nothing: draining with no input left, and a
+   call that neither wrote a byte nor finished. Repeating it would
+   leave every input unchanged and the worker spinning.
+
+   NGX_OK when the round got somewhere, NGX_ERROR when it did not.
+   An error rather than anything retryable, deliberately: retrying is
+   the very thing that spins, and a spin is a far worse way to fail
+   than an error.
+
+   zstd should never do this - a flush or an end against a whole free
+   output buffer either writes or reports nothing remaining - so this
+   guards an assumption rather than an observed case, and says so in
+   the log if it is ever wrong.
+
+   Answers only; the caller owns what to do about it. */
+static ngx_int_t
+ngx_http_pack_zstd_made_no_progress(made_no_progress_args *const args)
+{
+    ngx_chain_t *in;
+    size_t       written;
+    size_t       remaining;
+
+    in        = args->ctx->in;
+    written   = args->written;
+    remaining = args->remaining;
+
+    if (in == NULL && written == 0 && remaining != 0) {
+        ngx_log_error(
+            NGX_LOG_ALERT,
+            args->ctx->request->connection->log,
+            0,
+            "zstd compress made no progress: mode:%d "
+            "remaining:%uz",
+            (int) args->mode,
+            remaining);
+
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
 /* Runs the encoder once and, if it produced anything, appends a
    buffer to ctx->out. ZSTD_compressStream2 moves input and output in
    a single call, so there is no separate "does the encoder have
@@ -1267,22 +1316,15 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
         .remaining = zremaining,
     });
 
-    /* Draining with no input left, and the call neither wrote a byte
-       nor finished: the next round repeats it with the same state and
-       the worker spins. zstd should never do this - a flush or an end
-       against a whole free output buffer either writes or reports
-       nothing remaining - so this is a guard against a spin, which is
-       a far worse way to fail than an error. */
-    if (ctx->in == NULL && zout.pos == 0 && zremaining != 0) {
-        ngx_log_error(
-            NGX_LOG_ALERT,
-            ctx->request->connection->log,
-            0,
-            "zstd compress made no progress: mode:%d "
-            "remaining:%uz",
-            (int) zmode,
-            zremaining);
+    rc = ngx_http_pack_zstd_made_no_progress(
+        &(made_no_progress_args) {
+            .ctx       = ctx,
+            .mode      = zmode,
+            .written   = zout.pos,
+            .remaining = zremaining,
+        });
 
+    if (rc != NGX_OK) {
         return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
     }
 
