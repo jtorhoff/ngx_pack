@@ -277,8 +277,14 @@ typedef struct {
     /* 1 if this call of the body filter arrived with no new data,
        i.e. nginx is asking for progress on what it has already handed
        over rather than adding to it. Set once on entry and read by
-       both ngx_http_pack_zstd_prepare and
-       ngx_http_pack_zstd_compress. */
+       ngx_http_pack_zstd_prepare and ngx_http_pack_zstd_next_input.
+
+       The one flag here that belongs to the call rather than to the
+       response, which is why it sits where the struct comment says
+       "what each call brings". It stays in the struct because the
+       second reader is three frames down - body_filter, pump,
+       compress, next_input - and passing it would put an args struct
+       on pump and compress, both of which take a bare ctx today. */
     unsigned caller_wants_output: 1;
 
     /* 1 if input has been handed to the encoder under ZSTD_e_continue
