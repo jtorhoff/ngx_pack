@@ -237,16 +237,23 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
 
         /* ngx_chain_update_chains has already rewound pos and last to
            start; the flags are this filter's to set per round. */
-        return (get_buf_result) {.buf = buf, .status = NGX_OK};
+        return (get_buf_result) {
+            .buf    = buf,
+            .status = NGX_OK,
+        };
     }
 
     if ((ngx_int_t) enc->nbuffers >= enc->conf.nbuffers) {
-        return (get_buf_result) {.status = NGX_DECLINED};
+        return (get_buf_result) {
+            .status = NGX_DECLINED,
+        };
     }
 
     buf = ngx_create_temp_buf(r->pool, enc->out_size);
     if (buf == NULL) {
-        return (get_buf_result) {.status = NGX_ERROR};
+        return (get_buf_result) {
+            .status = NGX_ERROR,
+        };
     }
 
     /* The tag is what lets ngx_chain_update_chains tell our buffers
@@ -267,7 +274,10 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         buf,
         enc->nbuffers);
 
-    return (get_buf_result) {.buf = buf, .status = NGX_OK};
+    return (get_buf_result) {
+        .buf    = buf,
+        .status = NGX_OK,
+    };
 }
 
 typedef struct {
@@ -359,8 +369,13 @@ ngx_http_pack_zstd_release_buf(release_buf_args *const args)
 
 typedef struct {
     ngx_http_pack_zstd_encoder_t *enc;
-    ngx_chain_t                 **chain;
+    ngx_chain_t                  *chain;
 } discard_head_buf_args;
+
+typedef struct {
+    /* The chain with its head taken off. */
+    ngx_chain_t *chain;
+} discard_head_buf_result;
 
 /* Takes the head buffer off the *input* chain - the one nginx handed
    us, not the output buffers the three above deal with - there being
@@ -373,15 +388,20 @@ typedef struct {
 
    The caller has already established that *in is not NULL - both
    reach the head buffer before they can decide to drop it. */
-static void
+static discard_head_buf_result
 ngx_http_pack_zstd_discard_head_buf(discard_head_buf_args *const args)
 {
     ngx_chain_t *link;
+    ngx_chain_t *rest;
 
-    link         = *args->chain;
-    *args->chain = link->next;
+    link = args->chain;
+    rest = link->next;
 
     ngx_free_chain(args->enc->request->pool, link);
+
+    return (discard_head_buf_result) {
+        .chain = rest,
+    };
 }
 
 typedef struct {
@@ -501,8 +521,9 @@ ngx_http_pack_zstd_select_mode(select_mode_args *const args)
 
 typedef struct {
     ngx_http_pack_zstd_encoder_t *enc;
-    /* The caller's input chain, advanced as buffers are taken. */
-    ngx_chain_t **chain;
+    /* The caller's input chain. What is left of it comes back in
+       next_input_result. */
+    ngx_chain_t *chain;
     /* Whether this call brought no new data; see the header. */
     ngx_uint_t wants_output;
 } next_input_args;
@@ -517,6 +538,10 @@ typedef struct {
     ZSTD_EndDirective mode;
     ZSTD_inBuffer     in;
     ngx_uint_t        folded;
+    /* What is left of the caller's chain. Always set, including on
+       the paths that settle the round without running the encoder -
+       one of those drops a buffer. */
+    ngx_chain_t *chain;
 } next_input_result;
 
 /* Settles what the encoder is asked to do this round and what it is
@@ -534,11 +559,12 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     ngx_buf_t                    *buf;
     select_mode_result            selected;
     ZSTD_inBuffer                 window;
+    discard_head_buf_result       dropped;
 
     enc = args->enc;
     r   = enc->request;
 
-    if (*args->chain == NULL) {
+    if (args->chain == NULL) {
         ZSTD_EndDirective mode;
 
         if (enc->zctx.repeat_mode != ZSTD_e_continue) {
@@ -550,18 +576,20 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
         } else {
             /* Nothing to do; wait for more input. */
             return (next_input_result) {
-                .step = NGX_HTTP_PACK_ZSTD_STEP_DONE,
+                .step  = NGX_HTTP_PACK_ZSTD_STEP_DONE,
+                .chain = args->chain,
             };
         }
 
         /* No input of its own: the round is the directive alone. */
         return (next_input_result) {
-            .step = NGX_HTTP_PACK_ZSTD_STEP_READY,
-            .mode = mode,
+            .step  = NGX_HTTP_PACK_ZSTD_STEP_READY,
+            .mode  = mode,
+            .chain = args->chain,
         };
     }
 
-    buf = (*args->chain)->buf;
+    buf = args->chain->buf;
 
     /* Only what is in memory can be compressed, and zin.src can only
        be the memory pointer - so the length has to come from the same
@@ -584,7 +612,8 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
             "zstd got a buffer with file bytes and none in memory");
 
         return (next_input_result) {
-            .step = NGX_HTTP_PACK_ZSTD_STEP_FAILED,
+            .step  = NGX_HTTP_PACK_ZSTD_STEP_FAILED,
+            .chain = args->chain,
         };
     }
 
@@ -592,19 +621,21 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
        last or flush still has to reach the encoder to close the
        stream or the block. Anything else is dropped. */
     if (ngx_buf_size(buf) == 0 && !buf->last_buf && !buf->flush) {
-        ngx_http_pack_zstd_discard_head_buf(&(discard_head_buf_args) {
-            .enc   = enc,
-            .chain = args->chain,
-        });
+        dropped = ngx_http_pack_zstd_discard_head_buf(
+            &(discard_head_buf_args) {
+                .enc   = enc,
+                .chain = args->chain,
+            });
 
         return (next_input_result) {
-            .step = NGX_HTTP_PACK_ZSTD_STEP_CONTINUE,
+            .step  = NGX_HTTP_PACK_ZSTD_STEP_CONTINUE,
+            .chain = dropped.chain,
         };
     }
 
     selected = ngx_http_pack_zstd_select_mode(&(select_mode_args) {
         .enc = enc,
-        .in  = *args->chain,
+        .in  = args->chain,
     });
 
     window.src = buf->pos;
@@ -623,14 +654,21 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
         .mode   = selected.mode,
         .in     = window,
         .folded = selected.folded,
+        .chain  = args->chain,
     };
 }
 
 typedef struct {
     ngx_http_pack_zstd_encoder_t *enc;
     size_t                        consumed;
-    ngx_chain_t                 **chain;
+    /* The caller's input chain. What is left of it comes back in
+       advance_input_result. */
+    ngx_chain_t *chain;
 } advance_input_args;
+
+typedef struct {
+    ngx_chain_t *chain;
+} advance_input_result;
 
 /* Records progress in the chain itself. It cannot be kept in the
    ZSTD_inBuffer's "pos" alone, which does not survive returning to
@@ -638,7 +676,7 @@ typedef struct {
    mode: a flush or an end call may also leave input partially
    unconsumed if the output buffer filled first - see the doc comment
    on ZSTD_compressStream2. */
-static void
+static advance_input_result
 ngx_http_pack_zstd_advance_input(advance_input_args *const args)
 {
     ngx_http_pack_zstd_encoder_t *enc;
@@ -646,11 +684,13 @@ ngx_http_pack_zstd_advance_input(advance_input_args *const args)
 
     enc = args->enc;
 
-    if (*args->chain == NULL) {
-        return;
+    if (args->chain == NULL) {
+        return (advance_input_result) {
+            .chain = args->chain,
+        };
     }
 
-    buf = (*args->chain)->buf;
+    buf = args->chain->buf;
 
     /* Guarded, not just for tidiness: a special buffer carries no
        memory, so pos is NULL, and advancing a null pointer by zero is
@@ -662,11 +702,19 @@ ngx_http_pack_zstd_advance_input(advance_input_args *const args)
     }
 
     if (ngx_buf_size(buf) == 0) {
-        ngx_http_pack_zstd_discard_head_buf(&(discard_head_buf_args) {
-            .enc   = enc,
-            .chain = args->chain,
-        });
+        return (advance_input_result) {
+            .chain = ngx_http_pack_zstd_discard_head_buf(
+                         &(discard_head_buf_args) {
+                             .enc   = enc,
+                             .chain = args->chain,
+                         })
+                         .chain,
+        };
     }
+
+    return (advance_input_result) {
+        .chain = args->chain,
+    };
 }
 
 typedef struct {
@@ -716,7 +764,8 @@ typedef struct {
     ZSTD_EndDirective             mode;
     size_t                        written;
     size_t                        remaining;
-    ngx_chain_t                 **chain;
+    /* Read, never advanced. */
+    ngx_chain_t *chain;
 } made_progress_args;
 
 /* Whether the round moved anything. The one case where it did not is
@@ -742,7 +791,7 @@ ngx_http_pack_zstd_made_progress(made_progress_args *const args)
     size_t       written;
     size_t       remaining;
 
-    in        = *args->chain;
+    in        = args->chain;
     written   = args->written;
     remaining = args->remaining;
 
@@ -814,7 +863,9 @@ ngx_http_pack_zstd_compress_buf(compress_buf_args *const args)
             "zstd compress failed: %s",
             ZSTD_getErrorName(remaining));
 
-        return (compress_buf_result) {.status = NGX_ERROR};
+        return (compress_buf_result) {
+            .status = NGX_ERROR,
+        };
     }
 
     return (compress_buf_result) {
@@ -882,21 +933,29 @@ ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
 
 typedef struct {
     ngx_http_pack_zstd_encoder_t *enc;
-    /* The caller's input chain, advanced as buffers are taken. */
-    ngx_chain_t **chain;
+    /* The caller's input chain. What is left of it comes back in
+       compress_result. */
+    ngx_chain_t *chain;
     /* Whether this call brought no new data; see the header. */
     ngx_uint_t wants_output;
 } compress_args;
+
+typedef struct {
+    step_e step;
+    /* What is left of the caller's chain, whatever the step. */
+    ngx_chain_t *chain;
+} compress_result;
 
 /* Runs the encoder once and, if it produced anything, appends a
    buffer to enc->out. ZSTD_compressStream2 moves input and
    output in a single call, so there is no separate "does the encoder
    have output ready" phase to ask about first. */
-static step_e
+static compress_result
 ngx_http_pack_zstd_compress(compress_args *const args)
 {
     ngx_http_pack_zstd_encoder_t *enc;
     next_input_result             input;
+    advance_input_result          advanced;
     get_buf_result                drawn;
     compress_buf_result           zresult;
     ngx_int_t                     rc;
@@ -917,7 +976,10 @@ ngx_http_pack_zstd_compress(compress_args *const args)
        done with the response until the filters below have taken it.
      */
     if (enc->state.frame_closed) {
-        return NGX_HTTP_PACK_ZSTD_STEP_DONE;
+        return (compress_result) {
+            .step  = NGX_HTTP_PACK_ZSTD_STEP_DONE,
+            .chain = args->chain,
+        };
     }
 
     input = ngx_http_pack_zstd_next_input(&(next_input_args) {
@@ -928,21 +990,32 @@ ngx_http_pack_zstd_compress(compress_args *const args)
 
     /* "step" and not "mode": see next_input_result. */
     if (input.step != NGX_HTTP_PACK_ZSTD_STEP_READY) {
-        return input.step;
+        return (compress_result) {
+            .step  = input.step,
+            .chain = input.chain,
+        };
     }
 
     /* Last thing before the encoder runs, and nothing above it has
        touched the input or the fold count yet, so giving up here
        costs nothing and can simply be repeated once a buffer comes
        back. */
-    drawn = ngx_http_pack_zstd_get_buf(&(get_buf_args) {.enc = enc});
+    drawn = ngx_http_pack_zstd_get_buf(&(get_buf_args) {
+        .enc = enc,
+    });
 
     if (drawn.status == NGX_ERROR) {
-        return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
+        return (compress_result) {
+            .step  = NGX_HTTP_PACK_ZSTD_STEP_FAILED,
+            .chain = input.chain,
+        };
     }
 
     if (drawn.status == NGX_DECLINED) {
-        return NGX_HTTP_PACK_ZSTD_STEP_AGAIN;
+        return (compress_result) {
+            .step  = NGX_HTTP_PACK_ZSTD_STEP_AGAIN,
+            .chain = input.chain,
+        };
     }
 
     zresult = ngx_http_pack_zstd_compress_buf(&(compress_buf_args) {
@@ -953,18 +1026,22 @@ ngx_http_pack_zstd_compress(compress_args *const args)
     });
 
     if (zresult.status != NGX_OK) {
-        return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
+        return (compress_result) {
+            .step  = NGX_HTTP_PACK_ZSTD_STEP_FAILED,
+            .chain = input.chain,
+        };
     }
 
     if (input.folded) {
         enc->folded_flushes++;
     }
 
-    ngx_http_pack_zstd_advance_input(&(advance_input_args) {
-        .chain    = args->chain,
-        .enc      = enc,
-        .consumed = zresult.consumed,
-    });
+    advanced = ngx_http_pack_zstd_advance_input(
+        &(advance_input_args) {
+            .enc      = enc,
+            .chain    = input.chain,
+            .consumed = zresult.consumed,
+        });
 
     ngx_http_pack_zstd_record_round(&(record_round_args) {
         .enc       = enc,
@@ -974,7 +1051,7 @@ ngx_http_pack_zstd_compress(compress_args *const args)
     });
 
     rc = ngx_http_pack_zstd_made_progress(&(made_progress_args) {
-        .chain     = args->chain,
+        .chain     = advanced.chain,
         .enc       = enc,
         .mode      = input.mode,
         .written   = zresult.written,
@@ -982,15 +1059,21 @@ ngx_http_pack_zstd_compress(compress_args *const args)
     });
 
     if (rc != NGX_OK) {
-        return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
+        return (compress_result) {
+            .step  = NGX_HTTP_PACK_ZSTD_STEP_FAILED,
+            .chain = advanced.chain,
+        };
     }
 
-    return ngx_http_pack_zstd_dispose_buf(&(dispose_buf_args) {
-        .enc     = enc,
-        .buf     = drawn.buf,
-        .written = zresult.written,
-        .mode    = input.mode,
-    });
+    return (compress_result) {
+        .chain = advanced.chain,
+        .step  = ngx_http_pack_zstd_dispose_buf(&(dispose_buf_args) {
+             .enc     = enc,
+             .buf     = drawn.buf,
+             .written = zresult.written,
+             .mode    = input.mode,
+        }),
+    };
 }
 
 /* Brings the encoder into existence with the request pool behind its
@@ -1333,11 +1416,17 @@ ngx_http_pack_zstd_encoder_step(
     ngx_chain_t **const                 in,
     ngx_uint_t const                    wants_output)
 {
-    return ngx_http_pack_zstd_compress(&(compress_args) {
+    compress_result round;
+
+    round = ngx_http_pack_zstd_compress(&(compress_args) {
         .enc          = enc,
-        .chain        = in,
+        .chain        = *in,
         .wants_output = wants_output,
     });
+
+    *in = round.chain;
+
+    return round.step;
 }
 
 
