@@ -1219,6 +1219,62 @@ ngx_http_pack_zstd_made_progress(made_progress_args *const args)
 }
 
 typedef struct {
+    size_t written;
+    size_t remaining;
+} compress_buf_result;
+
+typedef struct {
+    ctx_t               *ctx;
+    ngx_buf_t           *buf;
+    ZSTD_EndDirective    mode;
+    ZSTD_inBuffer       *in;
+    compress_buf_result *result;
+} compress_buf_args;
+
+/* Runs the encoder once, into the buffer this round drew.
+
+   The ZSTD_outBuffer lives and dies here. Nothing above needs it once
+   the call returns, only how many bytes landed in it, so the window
+   is built and dropped in one place rather than kept alive across the
+   rest of the round.
+
+   "in" is advanced rather than copied: ZSTD_compressStream2 moves its
+   "pos", and the caller reads that to learn what was consumed.
+
+   NGX_OK with *result filled, or NGX_ERROR with the reason logged. */
+static ngx_int_t
+ngx_http_pack_zstd_compress_buf(compress_buf_args *const args)
+{
+    ctx_t         *ctx;
+    ZSTD_outBuffer out;
+    size_t         remaining;
+
+    ctx = args->ctx;
+
+    out.dst  = args->buf->start;
+    out.size = ctx->out_size;
+    out.pos  = 0;
+
+    remaining = ZSTD_compressStream2(
+        ctx->encoder.cctx, &out, args->in, args->mode);
+    if (ZSTD_isError(remaining)) {
+        ngx_log_error(
+            NGX_LOG_ALERT,
+            ctx->request->connection->log,
+            0,
+            "zstd compress failed: %s",
+            ZSTD_getErrorName(remaining));
+
+        return NGX_ERROR;
+    }
+
+    args->result->written   = out.pos;
+    args->result->remaining = remaining;
+
+    return NGX_OK;
+}
+
+typedef struct {
     ctx_t            *ctx;
     ngx_buf_t        *buf;
     size_t            written;
@@ -1279,14 +1335,13 @@ ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
 static step_e
 ngx_http_pack_zstd_compress(ctx_t *const ctx)
 {
-    step_e            step;
-    ZSTD_EndDirective zmode;
-    ZSTD_inBuffer     zin;
-    ngx_uint_t        folded;
-    ngx_int_t         rc;
-    ngx_buf_t        *out_buf;
-    ZSTD_outBuffer    zout;
-    size_t            zremaining;
+    step_e              step;
+    ZSTD_EndDirective   zmode;
+    ZSTD_inBuffer       zin;
+    ngx_uint_t          folded;
+    ngx_int_t           rc;
+    ngx_buf_t          *out_buf;
+    compress_buf_result zresult;
 
     /* Tested ahead of the input, not inside the branch that finds
        none left. A closed frame means the response is over whatever
@@ -1338,20 +1393,15 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
         return NGX_HTTP_PACK_ZSTD_STEP_AGAIN;
     }
 
-    zout.dst  = out_buf->start;
-    zout.size = ctx->out_size;
-    zout.pos  = 0;
+    rc = ngx_http_pack_zstd_compress_buf(&(compress_buf_args) {
+        .ctx    = ctx,
+        .buf    = out_buf,
+        .mode   = zmode,
+        .in     = &zin,
+        .result = &zresult,
+    });
 
-    zremaining = ZSTD_compressStream2(
-        ctx->encoder.cctx, &zout, &zin, zmode);
-    if (ZSTD_isError(zremaining)) {
-        ngx_log_error(
-            NGX_LOG_ALERT,
-            ctx->request->connection->log,
-            0,
-            "zstd compress failed: %s",
-            ZSTD_getErrorName(zremaining));
-
+    if (rc != NGX_OK) {
         return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
     }
 
@@ -1368,14 +1418,14 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
         .ctx       = ctx,
         .mode      = zmode,
         .consumed  = zin.pos,
-        .remaining = zremaining,
+        .remaining = zresult.remaining,
     });
 
     rc = ngx_http_pack_zstd_made_progress(&(made_progress_args) {
         .ctx       = ctx,
         .mode      = zmode,
-        .written   = zout.pos,
-        .remaining = zremaining,
+        .written   = zresult.written,
+        .remaining = zresult.remaining,
     });
 
     if (rc != NGX_OK) {
@@ -1385,7 +1435,7 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
     return ngx_http_pack_zstd_dispose_buf(&(dispose_buf_args) {
         .ctx     = ctx,
         .buf     = out_buf,
-        .written = zout.pos,
+        .written = zresult.written,
         .mode    = zmode,
     });
 }
