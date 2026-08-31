@@ -262,7 +262,13 @@ typedef struct {
        is safe only because the same branch closes the context, and
        a closed context never reaches ngx_http_pack_zstd_prepare
        again - were it to stop closing, the headers would be
-       committed a second time. */
+       committed a second time.
+
+       The failing exit leaves it zero as well, and there the closing
+       is the caller's: commit_headers closes on an error or on a
+       status a filter below substituted, and header_filter hands the
+       error to nginx, which abandons the request. The same guarantee,
+       kept by a different party. */
     unsigned headers_sent: 1;
 
     /* 1 if the encoder, output chain and buffer are allocated. */
@@ -586,10 +592,12 @@ ngx_http_pack_zstd_send_headers(ctx_t *const ctx)
     ngx_http_weak_etag(r);
 
     rc = ngx_http_next_header_filter(r);
+    if (rc == NGX_ERROR || rc > NGX_OK) {
+        return rc;
+    }
 
     ctx->state.headers_sent = 1;
-
-    return rc;
+    return rc; /* NGX_OK or NGX_AGAIN */
 }
 
 /* Everything that disqualifies a response on its own terms: the
