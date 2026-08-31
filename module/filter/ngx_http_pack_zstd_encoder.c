@@ -30,28 +30,6 @@ static void ngx_http_pack_zstd_free(void *opaque, void *address);
 static void ngx_http_pack_zstd_cleanup(void *data);
 
 
-/* Size of the buffer the module allocates and hands ZSTD_outBuffer.
-
-   Deliberately far below ZSTD_CStreamOutSize(): that value is sized
-   from ZSTD_BLOCKSIZE_MAX rather than from the window actually set,
-   and a block is MIN(windowSize, ZSTD_BLOCKSIZE_MAX), so at the 64 KB
-   window default one block never needs more than
-   ZSTD_compressBound(64 KB). zstd emits at most one block per
-   ZSTD_compressStream2 call, so past the size of a block a larger
-   buffer cannot reduce the number of rounds the encoder needs.
-
-   How many buffers of this size a response may hold at once is
-   pack_zstd_nbuffers, and that one is configurable; this is the size
-   of each. Overridable at build time only so that the test suite can
-   shrink it far below anything sane - see
-   script/test-small-buffer.sh, which uses 64 bytes to force the
-   partial-drain paths that a 16 KB buffer reaches only rarely. Not a
-   configuration knob: there is no directive behind this, and nothing
-   but the stress build should set it. */
-#ifndef NGX_HTTP_PACK_ZSTD_OUT_SIZE
-#define NGX_HTTP_PACK_ZSTD_OUT_SIZE (16 * 1024)
-#endif
-
 /* How many buffers carrying "flush" may share one zstd block.
 
    A flush cuts the block short, which costs both encoder time and
@@ -182,10 +160,9 @@ struct ngx_http_pack_zstd_encoder_s {
     ngx_chain_t  *free;
 
     /* How many buffers have been created so far, against
-       pack_zstd_nbuffers. Created on demand rather than up front, so
-       a response that never needs a second one never pays for it. */
+       conf.nbuffers. Created on demand rather than up front, so a
+       response that never needs a second one never pays for it. */
     ngx_uint_t nbuffers;
-    size_t     out_size;
 
     /* How many flush-marked buffers have been folded into the block
        still being built - see NGX_HTTP_PACK_ZSTD_FLUSH_FOLD.
@@ -249,7 +226,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         };
     }
 
-    buf = ngx_create_temp_buf(r->pool, enc->out_size);
+    buf = ngx_create_temp_buf(r->pool, enc->conf.buffer_size);
     if (buf == NULL) {
         return (get_buf_result) {
             .status = NGX_ERROR,
@@ -885,7 +862,7 @@ ngx_http_pack_zstd_compress_buf(compress_buf_args *const args)
     in  = args->in;
 
     out.dst  = args->buf->start;
-    out.size = enc->out_size;
+    out.size = enc->conf.buffer_size;
     out.pos  = 0;
 
     remaining = ZSTD_compressStream2(
@@ -930,7 +907,7 @@ typedef struct {
    round again rather than return - a flush or an end still being
    drained has to be retried, and the caller is otherwise not owed a
    return yet. The buffer goes back unused, or the round would spend
-   one out of pack_zstd_nbuffers on nothing.
+   one of the response's few buffers on nothing.
 
    Anything else is the second, an empty buffer included: see
    ngx_http_pack_zstd_commit_buf for why the last_buf marker has to
@@ -1385,8 +1362,7 @@ typedef struct {
 
 /* Builds the encoder and the output chain's tail, once per response.
    No output buffer yet - get_buf creates those on demand, up to
-   pack_zstd_nbuffers of them, and most responses never need a second.
- */
+   conf.nbuffers of them, and most responses never need a second. */
 static ensure_stream_result
 ngx_http_pack_zstd_ensure_stream(
     ngx_http_pack_zstd_encoder_t *const enc)
@@ -1409,7 +1385,6 @@ ngx_http_pack_zstd_ensure_stream(
 
     /* Only the tail pointer has to exist before the first buffer is
        committed, and ngx_pcalloc cannot set it. */
-    enc->out_size = NGX_HTTP_PACK_ZSTD_OUT_SIZE;
     enc->last_out = &enc->out;
 
     /* Both halves are done, which is what the line says and why it is
@@ -1595,5 +1570,4 @@ ngx_http_pack_zstd_encoder_close(
     enc->busy     = NULL;
     enc->free     = NULL;
     enc->nbuffers = 0;
-    enc->out_size = 0;
 }

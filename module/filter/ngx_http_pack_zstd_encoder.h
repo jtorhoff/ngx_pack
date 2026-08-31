@@ -57,6 +57,12 @@ typedef enum {
  * "window_bits" is a windowLog, not a size: the directive's parser
  * has already turned 1k..1m into 10..20.
  *
+ * "nbuffers" and "buffer_size" are the two halves of one directive:
+ * how many output buffers a response may hold at once, and how big
+ * each of them is. The count is a ceiling, not an allocation - see
+ * ngx_http_pack_zstd_get_buf, which creates them one at a time as the
+ * encoder actually runs out.
+ *
  * "content_length" is -1 when the response size is not known, which
  * is what decides between a pledged size and a hint.
  */
@@ -64,6 +70,7 @@ typedef struct {
     ngx_int_t level;
     size_t    window_bits;
     ngx_int_t nbuffers;
+    size_t    buffer_size;
     off_t     content_length;
 } ngx_http_pack_zstd_encoder_conf_t;
 

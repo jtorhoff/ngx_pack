@@ -83,19 +83,25 @@ being asked to opt into more - a larger window would produce responses some
 clients simply refuse to decode.
 
 
-### `pack_zstd_nbuffers`
+### `pack_zstd_buffers`
 
-- **syntax**: `pack_zstd_nbuffers <number>`
-- **default**: `4`
+- **syntax**: `pack_zstd_buffers <number> <size>`
+- **default**: `8 16k`
 - **context**: `http`, `server`, `location`
 
-Sets the maximum `number` of output buffers (between `1` and `64`)
-one response may fill before it has to wait for the client to take
-them. Their size is fixed at 16k and is not configurable. This is a
-ceiling rather than an allocation: buffers are created
-only as the encoder actually runs out of free ones, so most responses
-never reach it. Most deployments have no reason to change this.
-See notes below.
+Sets the maximum `number` of output buffers (between `1` and `64`) one
+response may fill before it has to wait for the client to take them,
+and the `size` of each (between `4k` and `128k`). Both parameters are
+required, as with `gzip_buffers`, and both are checked when the
+configuration is read.
+
+The `number` is a ceiling rather than an allocation: buffers are
+created only as the encoder actually runs out of free ones, so most
+responses never reach it. Above `128k` a larger `size` can do nothing,
+since zstd emits at most one block per call and a block is
+`MIN(pack_zstd_window, 128k)`; below a page the fixed cost of a round
+starts to outweigh what the round carries. Most deployments have no
+reason to change either. See notes below.
 
 
 ### `pack_zstd_min_length`
@@ -127,17 +133,17 @@ the `64k` default, 234,205 / 1.62 MB at `128k`, 230,211 / 1.74 MB at `256k`
 and 230,210 / 2.49 MB at `1m`.
 
 
-`pack_zstd_nbuffers` only matters when the socket will not take output as fast as
-the encoder produces it - a slow client, a congested link, or `limit_rate`.
+`pack_zstd_buffers` only matters when the socket will not take output as fast
+as the encoder produces it - a slow client, a congested link, or `limit_rate`.
 Short of that the encoder keeps refilling the one buffer it already has, so a
-response that never outruns its client costs 16k whatever this is set to:
-measured on a 1.5 MB response, a fast client creates a single buffer at both
-the `4` default and at `32`. Under `limit_rate 8k` that same response creates
-4 buffers (64k) at the default, 1 (16k) at `pack_zstd_nbuffers 1`, and 24 (384k)
-when allowed 32. Raising it therefore costs nothing on responses that keep up,
-and lets the ones that stall carry on compressing instead of stopping after
-every buffer; `1` makes the encoder wait for each buffer to be written before
-producing the next.
+response that never outruns its client costs one buffer whatever the count is
+set to: measured on a 1.5 MB response, a fast client creates a single buffer at
+every count tried. Under `limit_rate 8k` that same response creates as many as
+it is allowed - 1 (16k) at `pack_zstd_buffers 1 16k`, 4 (64k) when allowed 4,
+and 24 (384k) when allowed 32. Raising the count therefore costs nothing on
+responses that keep up, and lets the ones that stall carry on compressing
+instead of stopping after every buffer; `1` makes the encoder wait for each
+buffer to be written before producing the next.
 
 
 `pack_zstd_min_length`: A response of unknown length is held briefly so the

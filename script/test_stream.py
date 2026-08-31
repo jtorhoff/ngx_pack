@@ -2127,21 +2127,35 @@ def test_level_bounds(ctx):
         )
 
 
-BUFFERS_CASES = [("1", True), ("4", True), ("64", True), ("0", False),
-                 ("65", False), ("-1", False)]
+BUFFERS_CASES = [("1 16k", True), ("8 16k", True), ("64 16k", True),
+                 ("4 4k", True), ("4 128k", True),
+                 ("0 16k", False), ("65 16k", False), ("-1 16k", False),
+                 ("4 0", False), ("4 nonsense", False),
+                 ("4 4095", False), ("4 129k", False), ("4 1m", False),
+                 ("4", False), ("4 16k 4", False)]
 
 
-@test("pack_zstd_nbuffers is held to 1..64")
+@test("pack_zstd_buffers takes a count of 1..64 and a size of 4k..128k")
 def test_buffers_bounds(ctx):
     """One buffer is enough to be correct - the filter stalls until the
-    filters below take it - so the floor is 1, and the ceiling is there
-    because each buffer costs NGX_HTTP_PACK_ZSTD_OUT_SIZE for the life
-    of the response."""
-    for count, want in BUFFERS_CASES:
-        got, text = config_accepted(ctx, f"pack_zstd_nbuffers {count};")
+    filters below take it - so the count floor is 1, and its ceiling is
+    there because each buffer costs a size for the life of the response.
+
+    The size ceiling is where a larger buffer stops being able to do
+    anything: a zstd block is at most 128k, and the encoder emits at most
+    one per call. The floor is a page, below which the fixed cost of a
+    round outweighs what the round carries - correctness does not need
+    it, which is why script/test-small-buffer.sh can move the compiled-in
+    default under the floor without the directive allowing it.
+
+    Both parameters are required, as with gzip_buffers, so a lone count
+    is a configuration error rather than a count with the default size.
+    """
+    for parameters, want in BUFFERS_CASES:
+        got, text = config_accepted(ctx, f"pack_zstd_buffers {parameters};")
         check(
             got == want,
-            f"pack_zstd_nbuffers {count}: expected "
+            f"pack_zstd_buffers {parameters}: expected "
             f"{'accepted' if want else 'refused'}, got the opposite"
             f"{'' if want else chr(10) + text}",
         )
@@ -2151,8 +2165,8 @@ def test_buffers_bounds(ctx):
 # Output buffers
 # ---------------------------------------------------------------------------
 
-# module/filter/ngx_http_pack_zstd_filter.c, the pack_zstd_nbuffers default.
-DEFAULT_BUFFERS = 4
+# module/filter/ngx_http_pack_zstd_filter.c, the pack_zstd_buffers default.
+DEFAULT_BUFFERS = 8
 
 
 def stall_a_response(port, path, seconds=0.6):
@@ -2178,7 +2192,8 @@ def stall_a_response(port, path, seconds=0.6):
 def test_multiple_output_buffers(ctx):
     """With one buffer the encoder had to stop until it came back, so a slow
     client throttled compression as well as delivery. Several buffers let it
-    run on, and pack_zstd_nbuffers is the bound on how far."""
+    run on, and the first parameter of pack_zstd_buffers is the bound on
+    how far."""
     ctx.nginx.mark_log()
     stall_a_response(ctx.port, "/throttled/wiki.html")
     created = buffers_created(ctx.nginx.read_log())
@@ -2186,17 +2201,17 @@ def test_multiple_output_buffers(ctx):
     check(
         created > 1,
         f"a stalled response created {created} output buffer(s), so the "
-        f"encoder still stops on the first one and pack_zstd_nbuffers buys "
+        f"encoder still stops on the first one and pack_zstd_buffers buys "
         f"nothing",
     )
     check(
         created <= DEFAULT_BUFFERS,
         f"a stalled response created {created} output buffers, past the "
-        f"pack_zstd_nbuffers default of {DEFAULT_BUFFERS}",
+        f"pack_zstd_buffers default of {DEFAULT_BUFFERS}",
     )
 
 
-@test("pack_zstd_nbuffers 1 holds the encoder to a single buffer", needs_debug=True)
+@test("pack_zstd_buffers 1 holds the encoder to a single buffer", needs_debug=True)
 def test_buffers_directive_is_honoured(ctx):
     """The same stall against a location that allows only one buffer. This is
     what tells a failure of the test above apart: if this one also reports
@@ -2208,7 +2223,46 @@ def test_buffers_directive_is_honoured(ctx):
 
     check(
         created == 1,
-        f"pack_zstd_nbuffers 1 still created {created} output buffers",
+        f"pack_zstd_buffers 1 still created {created} output buffers",
+    )
+
+
+# script/test_stream.conf, the size /small-buffers/ asks for: the floor the
+# directive allows, which is also the smallest a test can ask for by config.
+SMALL_BUFFER_SIZE = 4096
+
+
+@test("the pack_zstd_buffers size bounds what one round commits", needs_debug=True)
+def test_buffer_size_is_honoured(ctx):
+    """The second parameter, checked by what the encoder does with it.
+
+    A round can commit at most one buffer's worth, so a location asking for
+    4k buffers cannot log a round above 4096 - and the same body through the
+    default 16k location does, which is what tells a working directive apart
+    from a body too small to fill anything.
+    """
+    ctx.nginx.mark_log()
+    status, headers, body = fetch(ctx.port, "/small-buffers/big.html")
+    check(status == 200, f"expected 200, got {status}")
+    check(headers.get("content-encoding") == "zstd", "response was not compressed")
+
+    sizes = [int(size) for _, size in OUT_RE.findall(ctx.nginx.read_log())]
+    check(sizes != [], "no committed rounds were traced")
+    check(
+        max(sizes) <= SMALL_BUFFER_SIZE,
+        f"a round committed {max(sizes)} bytes against a "
+        f"{SMALL_BUFFER_SIZE}-byte buffer, so the size did not reach the "
+        f"encoder",
+    )
+    check(
+        sum(sizes) == len(body),
+        f"the filter committed {sum(sizes)} bytes over {len(sizes)} rounds "
+        f"but the client received {len(body)}",
+    )
+    check(
+        len(sizes) > 1,
+        "the whole body fitted in one round, so this says nothing about the "
+        "size that was asked for",
     )
 
 
@@ -2636,15 +2690,15 @@ def test_output_rounds_account_for_the_body(ctx):
     )
 
     # Only meaningful when the caller has said what the build should have.
-    # It is what stops the small-buffer run from passing as a plain re-run of
-    # the suite if -DNGX_HTTP_PACK_ZSTD_OUT_SIZE ever stops reaching the compiler.
+    # It is what stops the small-buffer run from passing as a plain re-run of the
+    # suite if -DNGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE stops reaching the compiler.
     cap = max(sizes)
     if ctx.max_out_size is not None:
         check(
             cap <= ctx.max_out_size,
             f"largest committed round was {cap} bytes, above the "
             f"{ctx.max_out_size} this build was meant to be limited to: "
-            f"NGX_HTTP_PACK_ZSTD_OUT_SIZE did not reach the compiler",
+            f"NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE did not reach the compiler",
         )
 
 
@@ -2662,8 +2716,9 @@ class Context:
         self.decode = decode
         self.fixtures = fixtures
         self.nginx = nginx
-        # What NGX_HTTP_PACK_ZSTD_OUT_SIZE was built with, when the caller knows;
-        # None means "whatever the default is", and the check is skipped.
+        # What NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE was built with, when the
+        # caller knows; None means "whatever the default is", and the check is
+        # skipped.
         self.max_out_size = max_out_size
 
 
@@ -2678,7 +2733,7 @@ def main():
         "--max-out-size",
         type=int,
         help="assert the module's output buffer is at most this many bytes, "
-        "i.e. that -DNGX_HTTP_PACK_ZSTD_OUT_SIZE reached the build "
+        "i.e. that -DNGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE reached the build "
         "(see script/test-small-buffer.sh)",
     )
     parser.add_argument(

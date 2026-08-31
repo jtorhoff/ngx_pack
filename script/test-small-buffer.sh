@@ -26,7 +26,8 @@
 #   NGINX_REF   git ref of nginx to build against, as script/build.sh
 #
 # Overridable:
-#   OUT_SIZE    bytes for NGX_HTTP_PACK_ZSTD_OUT_SIZE (default: 64)
+#   OUT_SIZE    bytes for NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE
+#               (default: 64)
 #   SANITIZE    1 to build with AddressSanitizer (default: 0)
 #   JOBS        parallelism (default: number of processors)
 #
@@ -57,10 +58,15 @@ if [ ! -d "$BUILD" ]; then
 		https://github.com/nginx/nginx.git "$BUILD"
 fi
 
-# NGX_HTTP_PACK_ZSTD_OUT_SIZE is #ifndef-guarded purely so this can
-# reach it. It is not a configuration knob and there is no directive
-# behind it - see the comment on the constant.
-CC_OPT="-DNGX_HTTP_PACK_ZSTD_OUT_SIZE=$OUT_SIZE"
+# NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE is #ifndef-guarded purely so
+# this can reach it. It moves what pack_zstd_buffers falls back to,
+# rather than what the directive can say: 64 bytes is far below the 4k
+# floor the directive enforces, and deliberately so - the bounds are on
+# what a configuration may ask for, and this replaces the value no
+# configuration named. A location that does name a size still gets the
+# size it named, which is why the suite's own config leaves the default
+# alone almost everywhere.
+CC_OPT="-DNGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE=$OUT_SIZE"
 LD_OPT=""
 if [ "$SANITIZE" = "1" ]; then
 	CC_OPT="$CC_OPT -fsanitize=address -fno-omit-frame-pointer -g -O1"

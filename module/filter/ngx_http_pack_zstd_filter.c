@@ -62,8 +62,53 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MIN 1
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MAX 22
 
-#define NGX_HTTP_PACK_ZSTD_NBUFFERS_MIN 1
-#define NGX_HTTP_PACK_ZSTD_NBUFFERS_MAX 64
+/* Bounds on the first parameter of pack_zstd_buffers, the count. One
+   buffer is enough to be correct - the filter simply stalls until the
+   filters below have taken it - so the floor is 1 rather than
+   anything larger. The ceiling is arbitrary but not unbounded: each
+   buffer costs its size for the lifetime of the response. */
+#define NGX_HTTP_PACK_ZSTD_BUFFERS_NUM_MIN 1
+#define NGX_HTTP_PACK_ZSTD_BUFFERS_NUM_MAX 64
+
+/* Bounds on the second parameter, the size of one buffer.
+
+   The ceiling is where a larger buffer stops being able to do
+   anything: zstd emits at most one block per ZSTD_compressStream2
+   call and a block is MIN(windowSize, ZSTD_BLOCKSIZE_MAX), so 128 KB
+   covers the largest block zstd will ever hand back, whatever
+   pack_zstd_window is set to. Past it the extra bytes are held for
+   the life of the response and never written into.
+
+   The floor is a page. Below that the fixed cost of a round - the
+   chain link, the buffer accounting, the trip back through the
+   filters below - starts to outweigh the bytes the round carries.
+   Correctness does not need it: the encoder runs happily on buffers
+   of a few bytes, which is exactly what script/test-small-buffer.sh
+   exists to exercise. That is a build-time default, though, not
+   something a configuration may ask for - see below. */
+#define NGX_HTTP_PACK_ZSTD_BUFFERS_SIZE_MIN (4 * 1024)
+#define NGX_HTTP_PACK_ZSTD_BUFFERS_SIZE_MAX (128 * 1024)
+
+/* The size of one output buffer when pack_zstd_buffers says nothing.
+
+   16 KB rather than anything nearer the ceiling above: at the 64 KB
+   window default a block never needs more than
+   ZSTD_compressBound(64 KB), and a response that keeps up with its
+   client refills one buffer round after round rather than filling
+   several, so the larger size would be paid for and not used.
+
+   Overridable at build time so that the test suite can move the
+   default far below anything sane without a directive in every
+   location - see script/test-small-buffer.sh, which uses 64 bytes to
+   force the partial-drain paths that a 16 KB buffer reaches only
+   rarely. Deliberately outside what the directive permits: the bounds
+   above are on what a configuration may ask for, and this replaces
+   the value no configuration named. Nothing but the stress build
+   should set it; a deployment that wants another size says so in the
+   configuration, within the bounds. */
+#ifndef NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE
+#define NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE (16 * 1024)
+#endif
 
 
 typedef struct {
@@ -82,9 +127,10 @@ typedef struct {
     /* zstd encoder parameter: (max) ZSTD_c_windowLog, in bits */
     size_t window_bits;
 
-    /* How many output buffers one response may have in flight. Their
-       size is not configurable - see NGX_HTTP_PACK_ZSTD_OUT_SIZE. */
-    ngx_int_t nbuffers;
+    /* How many output buffers one response may have in flight, and
+       how big each of them is: the two parameters of
+       pack_zstd_buffers, kept in the pair nginx parses them into. */
+    ngx_bufs_t bufs;
 } conf_t;
 
 /* What the body filter should do once ngx_http_pack_zstd_prepare
@@ -221,6 +267,8 @@ static ngx_int_t ngx_http_pack_zstd_init(ngx_conf_t *cf);
 
 static char *ngx_http_pack_zstd_parse_window(
     ngx_conf_t *cf, void *post, void *data);
+static char *ngx_http_pack_zstd_set_buffers(
+    ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
 /* 1 and 22 are zstd's own documented stable range (ZSTD_minCLevel()
@@ -232,17 +280,6 @@ static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
     ngx_conf_check_num_bounds,
     NGX_HTTP_PACK_ZSTD_LEVEL_MIN,
     NGX_HTTP_PACK_ZSTD_LEVEL_MAX,
-};
-
-/* One buffer is enough to be correct - the filter simply stalls until
-   the filters below have taken it - so the floor is 1 rather than
-   anything larger. The ceiling is arbitrary but not unbounded: each
-   buffer costs NGX_HTTP_PACK_ZSTD_OUT_SIZE for the lifetime of the
-   response. */
-static ngx_conf_num_bounds_t const ngx_http_pack_zstd_nbuffers = {
-    ngx_conf_check_num_bounds,
-    NGX_HTTP_PACK_ZSTD_NBUFFERS_MIN,
-    NGX_HTTP_PACK_ZSTD_NBUFFERS_MAX,
 };
 
 static ngx_conf_post_handler_pt const
@@ -287,13 +324,13 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
         (void *) &ngx_http_pack_zstd_parse_window_p,
     },
     {
-        ngx_string("pack_zstd_nbuffers"),
+        ngx_string("pack_zstd_buffers"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_CONF_TAKE1,
-        ngx_conf_set_num_slot,
+            NGX_CONF_TAKE2,
+        ngx_http_pack_zstd_set_buffers,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(conf_t, nbuffers),
-        (void *) &ngx_http_pack_zstd_nbuffers,
+        offsetof(conf_t, bufs),
+        NULL,
     },
     {
         ngx_string("pack_zstd_min_length"),
@@ -884,7 +921,8 @@ ngx_http_pack_zstd_ensure_encoder(ctx_t *const ctx)
         &(ngx_http_pack_zstd_encoder_conf_t) {
             .level          = conf->level,
             .window_bits    = conf->window_bits,
-            .nbuffers       = conf->nbuffers,
+            .nbuffers       = conf->bufs.num,
+            .buffer_size    = conf->bufs.size,
             .content_length = ctx->content_length,
         });
 
@@ -1066,12 +1104,17 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *const cf)
 
     /* ngx_pcalloc fills result with zeros ->
          conf->types = { NULL };
-         conf->types_keys = NULL; */
+         conf->types_keys = NULL;
+         conf->bufs = { 0, 0 };
+
+       "bufs" has no NGX_CONF_UNSET of its own: a zero count is what
+       both ngx_conf_set_bufs_slot and ngx_conf_merge_bufs_value read
+       as "not set here", and the slot rejects a configured 0 before
+       it can be confused with one. */
 
     conf->enable      = NGX_CONF_UNSET;
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
-    conf->nbuffers    = NGX_CONF_UNSET;
     conf->min_length  = NGX_CONF_UNSET;
 
     return conf;
@@ -1107,15 +1150,27 @@ ngx_http_pack_zstd_merge_conf(
     ngx_conf_merge_size_value(
         conf->window_bits, prev->window_bits, 16);
 
-    /* Four rather than nginx's gzip default of 32. The buffers exist
+    /* Eight rather than nginx's gzip default of 32. The buffers exist
        so that a stalled write does not stop the encoder, and past a
        handful they stop buying that: zstd emits at most one block per
-       ZSTD_compressStream2 call, so at the 64 KB window default four
-       16 KB buffers already cover a whole block with room to spare.
-       They also cost - 4 x NGX_HTTP_PACK_ZSTD_OUT_SIZE, held for the
-       life of the response - and gzip's 32 x 4K would be 128 KB per
-       response for a case this module does not have. */
-    ngx_conf_merge_value(conf->nbuffers, prev->nbuffers, 4);
+       ZSTD_compressStream2 call, so eight 16 KB buffers cover the
+       largest block zstd can hand back at any window. They also cost
+       - eight times the size below, held for the life of a response
+       that stalls - and gzip's 32 x 4K would be 128 KB per response
+       for a case this module does not have.
+
+       Both halves move together, as ngx_conf_merge_bufs_value has it:
+       a location that names one names the other, so a count inherited
+       from a size it was not chosen against cannot arise.
+
+       Nothing to check afterwards: whatever arrives has either been
+       through ngx_http_pack_zstd_set_buffers, in this location or in
+       the one it inherits from, or is the pair named right here. */
+    ngx_conf_merge_bufs_value(
+        conf->bufs,
+        prev->bufs,
+        8,
+        NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE);
 
     /* Below this a response is not worth encoding: the frame's own
        overhead and the "Content-Encoding" header can together cost
@@ -1174,4 +1229,47 @@ ngx_http_pack_zstd_parse_window(
 
     return "must be 1k, 2k, 4k, 8k, 16k, 32k, "
            "64k, 128k, 256k, 512k, or 1m";
+}
+
+/* Parses pack_zstd_buffers and checks both parameters.
+
+   ngx_conf_set_bufs_slot does the parsing and rejects a repeat, an
+   unparsable parameter and a zero; the bounds are ours, and there is
+   nowhere else to hang them - the slot takes no post handler, unlike
+   the num and size slots the other directives use.
+
+   Deliberately here rather than in the merge, though both run while
+   the configuration is read. This sees only what a configuration
+   actually said, so the message can name the file and line the value
+   came from, and the compiled-in default - which
+   script/test-small-buffer.sh moves far below the floor on purpose -
+   is not held to bounds meant for what an admin may ask for. */
+static char *
+ngx_http_pack_zstd_set_buffers(
+    ngx_conf_t *const cf, ngx_command_t *const cmd, void *const conf)
+{
+    char       *rv;
+    ngx_bufs_t *bufs;
+
+    rv = ngx_conf_set_bufs_slot(cf, cmd, conf);
+    if (rv != NGX_CONF_OK) {
+        return rv;
+    }
+
+    /* Where the slot just wrote, reached the same way it reached it:
+       the offset is a byte count into the configuration struct, so
+       the arithmetic has to happen on a char *. */
+    bufs = (ngx_bufs_t *) ((char *) conf + cmd->offset);
+
+    if (bufs->num < NGX_HTTP_PACK_ZSTD_BUFFERS_NUM_MIN ||
+        bufs->num > NGX_HTTP_PACK_ZSTD_BUFFERS_NUM_MAX) {
+        return "number of buffers must be between 1 and 64";
+    }
+
+    if (bufs->size < NGX_HTTP_PACK_ZSTD_BUFFERS_SIZE_MIN ||
+        bufs->size > NGX_HTTP_PACK_ZSTD_BUFFERS_SIZE_MAX) {
+        return "buffer size must be between 4k and 128k";
+    }
+
+    return NGX_CONF_OK;
 }
