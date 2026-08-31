@@ -1217,6 +1217,60 @@ ngx_http_pack_zstd_made_no_progress(made_no_progress_args *const args)
     return NGX_OK;
 }
 
+typedef struct {
+    ctx_t            *ctx;
+    ngx_buf_t        *buf;
+    size_t            written;
+    ZSTD_EndDirective mode;
+} dispose_buf_args;
+
+/* What becomes of the round's output buffer, which is one of only two
+   things: handed back to be filled again, or committed to ctx->out.
+
+   Nothing produced and the frame still open is the first. It means go
+   round again rather than return - a flush or an end still being
+   drained has to be retried, and the caller is otherwise not owed a
+   return yet. The buffer goes back unused, or the round would spend
+   one out of pack_zstd_nbuffers on nothing.
+
+   Anything else is the second, an empty buffer included: see
+   ngx_http_pack_zstd_commit_buf for why the last_buf marker has to
+   land on one even when no bytes were written. */
+static step_e
+ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
+{
+    ctx_t    *ctx;
+    ngx_int_t rc;
+
+    ctx = args->ctx;
+
+    if (args->written == 0 && !ctx->state.frame_closed) {
+        rc = ngx_http_pack_zstd_release_buf(&(release_buf_args) {
+            .ctx = ctx,
+            .buf = args->buf,
+        });
+
+        if (rc != NGX_OK) {
+            return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
+        }
+
+        return NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
+    }
+
+    rc = ngx_http_pack_zstd_commit_buf(&(commit_buf_args) {
+        .ctx     = ctx,
+        .buf     = args->buf,
+        .written = args->written,
+        .mode    = args->mode,
+    });
+
+    if (rc != NGX_OK) {
+        return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
+    }
+
+    return NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
+}
+
 /* Runs the encoder once and, if it produced anything, appends a
    buffer to ctx->out. ZSTD_compressStream2 moves input and output in
    a single call, so there is no separate "does the encoder have
@@ -1328,36 +1382,12 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
         return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
     }
 
-    /* Nothing produced this round, and not finished: go round again
-       rather than returning - a flush or an end still being drained
-       has to be retried, and the caller is otherwise not owed a
-       return yet. The buffer goes back unused, or the round would
-       spend one out of pack_zstd_nbuffers on nothing. */
-    if (zout.pos == 0 && !ctx->state.frame_closed) {
-        rc = ngx_http_pack_zstd_release_buf(&(release_buf_args) {
-            .ctx = ctx,
-            .buf = out_buf,
-        });
-
-        if (rc != NGX_OK) {
-            return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
-        }
-
-        return NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
-    }
-
-    rc = ngx_http_pack_zstd_commit_buf(&(commit_buf_args) {
+    return ngx_http_pack_zstd_dispose_buf(&(dispose_buf_args) {
         .ctx     = ctx,
         .buf     = out_buf,
         .written = zout.pos,
         .mode    = zmode,
     });
-
-    if (rc != NGX_OK) {
-        return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
-    }
-
-    return NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
 }
 
 typedef struct {
