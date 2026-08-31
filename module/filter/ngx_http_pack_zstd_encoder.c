@@ -287,6 +287,10 @@ typedef struct {
     ZSTD_EndDirective             mode;
 } commit_buf_args;
 
+typedef struct {
+    ngx_int_t status;
+} commit_buf_result;
+
 /* Hands the round's output buffer to enc->out.
 
    Reached even when nothing was written: should the call that finally
@@ -306,7 +310,7 @@ typedef struct {
    That case is defence against a contract change rather than one seen
    in practice: zstd is not known to report a fully flushed frame from
    ZSTD_e_end while writing no bytes. */
-static ngx_int_t
+static commit_buf_result
 ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
 {
     ngx_buf_t   *buf;
@@ -323,7 +327,9 @@ ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
 
     link = ngx_alloc_chain_link(args->enc->request->pool);
     if (link == NULL) {
-        return NGX_ERROR;
+        return (commit_buf_result) {
+            .status = NGX_ERROR,
+        };
     }
 
     link->buf            = buf;
@@ -339,7 +345,9 @@ ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
         buf,
         ngx_buf_size(buf));
 
-    return NGX_OK;
+    return (commit_buf_result) {
+        .status = NGX_OK,
+    };
 }
 
 typedef struct {
@@ -347,8 +355,12 @@ typedef struct {
     ngx_buf_t                    *buf;
 } release_buf_args;
 
+typedef struct {
+    ngx_int_t status;
+} release_buf_result;
+
 /* Puts an unused buffer back where get_buf will find it again. */
-static ngx_int_t
+static release_buf_result
 ngx_http_pack_zstd_release_buf(release_buf_args *const args)
 {
     ngx_http_pack_zstd_encoder_t *enc;
@@ -357,14 +369,18 @@ ngx_http_pack_zstd_release_buf(release_buf_args *const args)
     enc  = args->enc;
     link = ngx_alloc_chain_link(enc->request->pool);
     if (link == NULL) {
-        return NGX_ERROR;
+        return (release_buf_result) {
+            .status = NGX_ERROR,
+        };
     }
 
     link->buf  = args->buf;
     link->next = enc->free;
     enc->free  = link;
 
-    return NGX_OK;
+    return (release_buf_result) {
+        .status = NGX_OK,
+    };
 }
 
 typedef struct {
@@ -409,6 +425,10 @@ typedef struct {
     ngx_uint_t   folded;
 } may_fold_flush_args;
 
+typedef struct {
+    ngx_uint_t folded;
+} may_fold_flush_result;
+
 /* Whether the flush on the buffer at the head of the chain may be
    folded into the block being built rather than cutting one here.
    "rest" is what follows that buffer, "folded" how many flushes have
@@ -421,7 +441,7 @@ typedef struct {
    the input in hand would leave bytes sitting in the encoder with
    nothing scheduled to push them out. The second is the cap, which
    bounds the fold and, with it, this scan. */
-static ngx_uint_t
+static may_fold_flush_result
 ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
 {
     ngx_uint_t   lookahead;
@@ -429,7 +449,9 @@ ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
 
     /* Can't fold any more. */
     if (args->folded + 1 >= NGX_HTTP_PACK_ZSTD_FLUSH_FOLD) {
-        return 0;
+        return (may_fold_flush_result) {
+            .folded = 0,
+        };
     }
 
     /* Look ahead for the flush or the end buffer. */
@@ -443,7 +465,9 @@ ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
             }
 
             if (link->buf->flush || link->buf->last_buf) {
-                return 1;
+                return (may_fold_flush_result) {
+                    .folded = 1,
+                };
             }
 
             link = link->next;
@@ -452,7 +476,9 @@ ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
     }
 
     /* Couldn't find any, so this flush cuts a block here. */
-    return 0;
+    return (may_fold_flush_result) {
+        .folded = 0,
+    };
 }
 
 typedef struct {
@@ -501,10 +527,11 @@ ngx_http_pack_zstd_select_mode(select_mode_args *const args)
     }
 
     folded = ngx_http_pack_zstd_may_fold_flush(
-        &(may_fold_flush_args) {
-            .rest   = args->in->next,
-            .folded = args->enc->folded_flushes,
-        });
+                 &(may_fold_flush_args) {
+                     .rest   = args->in->next,
+                     .folded = args->enc->folded_flushes,
+                 })
+                 .folded;
 
     if (folded) {
         return (select_mode_result) {
@@ -768,6 +795,10 @@ typedef struct {
     ngx_chain_t *chain;
 } made_progress_args;
 
+typedef struct {
+    ngx_int_t status;
+} made_progress_result;
+
 /* Whether the round moved anything. The one case where it did not is
    draining with no input left, and a call that neither wrote a byte
    nor finished: repeating that would leave every input unchanged and
@@ -784,7 +815,7 @@ typedef struct {
    the log if it is ever wrong.
 
    Answers only; the caller owns what to do about it. */
-static ngx_int_t
+static made_progress_result
 ngx_http_pack_zstd_made_progress(made_progress_args *const args)
 {
     ngx_chain_t *in;
@@ -805,10 +836,14 @@ ngx_http_pack_zstd_made_progress(made_progress_args *const args)
             (int) args->mode,
             remaining);
 
-        return NGX_ERROR;
+        return (made_progress_result) {
+            .status = NGX_ERROR,
+        };
     }
 
-    return NGX_OK;
+    return (made_progress_result) {
+        .status = NGX_OK,
+    };
 }
 
 typedef struct {
@@ -883,6 +918,10 @@ typedef struct {
     ZSTD_EndDirective             mode;
 } dispose_buf_args;
 
+typedef struct {
+    step_e step;
+} dispose_buf_result;
+
 /* What becomes of the round's output buffer, which is one of only two
    things: handed back to be filled again, or committed to
    enc->out.
@@ -896,7 +935,7 @@ typedef struct {
    Anything else is the second, an empty buffer included: see
    ngx_http_pack_zstd_commit_buf for why the last_buf marker has to
    land on one even when no bytes were written. */
-static step_e
+static dispose_buf_result
 ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
 {
     ngx_http_pack_zstd_encoder_t *enc;
@@ -906,29 +945,39 @@ ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
 
     if (args->written == 0 && !enc->state.frame_closed) {
         rc = ngx_http_pack_zstd_release_buf(&(release_buf_args) {
-            .enc = enc,
-            .buf = args->buf,
-        });
+                                                .enc = enc,
+                                                .buf = args->buf,
+                                            })
+                 .status;
 
         if (rc != NGX_OK) {
-            return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
+            return (dispose_buf_result) {
+                .step = NGX_HTTP_PACK_ZSTD_STEP_FAILED,
+            };
         }
 
-        return NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
+        return (dispose_buf_result) {
+            .step = NGX_HTTP_PACK_ZSTD_STEP_CONTINUE,
+        };
     }
 
     rc = ngx_http_pack_zstd_commit_buf(&(commit_buf_args) {
-        .enc     = enc,
-        .buf     = args->buf,
-        .written = args->written,
-        .mode    = args->mode,
-    });
+                                           .enc     = enc,
+                                           .buf     = args->buf,
+                                           .written = args->written,
+                                           .mode    = args->mode,
+                                       })
+             .status;
 
     if (rc != NGX_OK) {
-        return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
+        return (dispose_buf_result) {
+            .step = NGX_HTTP_PACK_ZSTD_STEP_FAILED,
+        };
     }
 
-    return NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
+    return (dispose_buf_result) {
+        .step = NGX_HTTP_PACK_ZSTD_STEP_CONTINUE,
+    };
 }
 
 typedef struct {
@@ -1050,13 +1099,15 @@ ngx_http_pack_zstd_compress(compress_args *const args)
         .remaining = zresult.remaining,
     });
 
-    rc = ngx_http_pack_zstd_made_progress(&(made_progress_args) {
-        .chain     = advanced.chain,
-        .enc       = enc,
-        .mode      = input.mode,
-        .written   = zresult.written,
-        .remaining = zresult.remaining,
-    });
+    rc = ngx_http_pack_zstd_made_progress(
+             &(made_progress_args) {
+                 .chain     = advanced.chain,
+                 .enc       = enc,
+                 .mode      = input.mode,
+                 .written   = zresult.written,
+                 .remaining = zresult.remaining,
+             })
+             .status;
 
     if (rc != NGX_OK) {
         return (compress_result) {
@@ -1067,14 +1118,20 @@ ngx_http_pack_zstd_compress(compress_args *const args)
 
     return (compress_result) {
         .chain = advanced.chain,
-        .step  = ngx_http_pack_zstd_dispose_buf(&(dispose_buf_args) {
-             .enc     = enc,
-             .buf     = drawn.buf,
-             .written = zresult.written,
-             .mode    = input.mode,
-        }),
+        .step  = ngx_http_pack_zstd_dispose_buf(
+                    &(dispose_buf_args) {
+                         .enc     = enc,
+                         .buf     = drawn.buf,
+                         .written = zresult.written,
+                         .mode    = input.mode,
+                    })
+                    .step,
     };
 }
+
+typedef struct {
+    ngx_int_t status;
+} init_encoder_result;
 
 /* Brings the encoder into existence with the request pool behind its
    allocator, and arranges for it to be released even if the request
@@ -1082,7 +1139,7 @@ ngx_http_pack_zstd_compress(compress_args *const args)
    nothing else would. The cleanup is registered first, deliberately:
    a failure there must not be able to strand an allocated instance.
  */
-static ngx_int_t
+static init_encoder_result
 ngx_http_pack_zstd_init_encoder(
     ngx_http_pack_zstd_encoder_t *const enc)
 {
@@ -1091,7 +1148,9 @@ ngx_http_pack_zstd_init_encoder(
 
     cln = ngx_pool_cleanup_add(enc->request->pool, 0);
     if (cln == NULL) {
-        return NGX_ERROR;
+        return (init_encoder_result) {
+            .status = NGX_ERROR,
+        };
     }
 
     cln->handler = ngx_http_pack_zstd_cleanup;
@@ -1110,10 +1169,14 @@ ngx_http_pack_zstd_init_encoder(
             "zstd encoder instance creation failed: "
             "out of memory?");
 
-        return NGX_ERROR;
+        return (init_encoder_result) {
+            .status = NGX_ERROR,
+        };
     }
 
-    return NGX_OK;
+    return (init_encoder_result) {
+        .status = NGX_OK,
+    };
 }
 
 typedef struct {
@@ -1123,11 +1186,15 @@ typedef struct {
     ngx_str_t const              *name;
 } set_param_args;
 
+typedef struct {
+    ngx_int_t status;
+} set_param_result;
+
 /* One ZSTD_CCtx_setParameter call with its failure handled the same
    way as every other. "name" is the parameter as zstd.h spells it:
    the enum carries no name at runtime, and the number alone would
    make the log line useless to whoever reads it. */
-static ngx_int_t
+static set_param_result
 ngx_http_pack_zstd_set_param(set_param_args *const args)
 {
     size_t zrc;
@@ -1144,13 +1211,21 @@ ngx_http_pack_zstd_set_param(set_param_args *const args)
             args->value,
             ZSTD_getErrorName(zrc));
 
-        return NGX_ERROR;
+        return (set_param_result) {
+            .status = NGX_ERROR,
+        };
     }
 
-    return NGX_OK;
+    return (set_param_result) {
+        .status = NGX_OK,
+    };
 }
 
-static ngx_int_t
+typedef struct {
+    ngx_int_t status;
+} set_pledged_size_result;
+
+static set_pledged_size_result
 ngx_http_pack_zstd_set_pledged_size(
     ngx_http_pack_zstd_encoder_t *const enc)
 {
@@ -1167,17 +1242,25 @@ ngx_http_pack_zstd_set_pledged_size(
             enc->conf.content_length,
             ZSTD_getErrorName(zrc));
 
-        return NGX_ERROR;
+        return (set_pledged_size_result) {
+            .status = NGX_ERROR,
+        };
     }
 
-    return NGX_OK;
+    return (set_pledged_size_result) {
+        .status = NGX_OK,
+    };
 }
+
+typedef struct {
+    ngx_int_t status;
+} configure_encoder_result;
 
 /* Tells the encoder what the directives asked for and what to expect
    of the body. Every rejection here is fatal rather than skipped:
    libzstd is vendored and pinned (see deps/zstd), so one means a
    broken build and not a host carrying an older library. */
-static ngx_int_t
+static configure_encoder_result
 ngx_http_pack_zstd_configure_encoder(
     ngx_http_pack_zstd_encoder_t *const enc)
 {
@@ -1231,8 +1314,11 @@ ngx_http_pack_zstd_configure_encoder(
     };
 
     for (idx = 0; idx < nparams; idx++) {
-        if (ngx_http_pack_zstd_set_param(&params[idx]) != NGX_OK) {
-            return NGX_ERROR;
+        if (ngx_http_pack_zstd_set_param(&params[idx]).status !=
+            NGX_OK) {
+            return (configure_encoder_result) {
+                .status = NGX_ERROR,
+            };
         }
     }
 
@@ -1260,9 +1346,11 @@ ngx_http_pack_zstd_configure_encoder(
        becomes a pledge zstd then rejects at the end of the frame,
        having compressed the whole response first. */
     if (enc->conf.content_length >= 0) {
-        rc = ngx_http_pack_zstd_set_pledged_size(enc);
+        rc = ngx_http_pack_zstd_set_pledged_size(enc).status;
         if (rc != NGX_OK) {
-            return NGX_ERROR;
+            return (configure_encoder_result) {
+                .status = NGX_ERROR,
+            };
         }
     } else {
         /* No length to pledge, so give the guess instead - which is
@@ -1270,39 +1358,53 @@ ngx_http_pack_zstd_configure_encoder(
            sized to the worst case the window allows. See
            NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT for what it costs and why
            it is that number. */
-        rc = ngx_http_pack_zstd_set_param(&(set_param_args) {
-            .enc   = enc,
-            .param = ZSTD_c_srcSizeHint,
-            .value = NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT,
-            .name  = &sizeHint,
-        });
+        rc = ngx_http_pack_zstd_set_param(
+                 &(set_param_args) {
+                     .enc   = enc,
+                     .param = ZSTD_c_srcSizeHint,
+                     .value = NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT,
+                     .name  = &sizeHint,
+                 })
+                 .status;
 
         if (rc != NGX_OK) {
-            return NGX_ERROR;
+            return (configure_encoder_result) {
+                .status = NGX_ERROR,
+            };
         }
     }
 
-    return NGX_OK;
+    return (configure_encoder_result) {
+        .status = NGX_OK,
+    };
 }
+
+typedef struct {
+    ngx_int_t status;
+} ensure_stream_result;
 
 /* Builds the encoder and the output chain's tail, once per response.
    No output buffer yet - get_buf creates those on demand, up to
    pack_zstd_nbuffers of them, and most responses never need a second.
  */
-static ngx_int_t
+static ensure_stream_result
 ngx_http_pack_zstd_ensure_stream(
     ngx_http_pack_zstd_encoder_t *const enc)
 {
     ngx_int_t rc;
 
-    rc = ngx_http_pack_zstd_init_encoder(enc);
+    rc = ngx_http_pack_zstd_init_encoder(enc).status;
     if (rc != NGX_OK) {
-        return NGX_ERROR;
+        return (ensure_stream_result) {
+            .status = NGX_ERROR,
+        };
     }
 
-    rc = ngx_http_pack_zstd_configure_encoder(enc);
+    rc = ngx_http_pack_zstd_configure_encoder(enc).status;
     if (rc != NGX_OK) {
-        return NGX_ERROR;
+        return (ensure_stream_result) {
+            .status = NGX_ERROR,
+        };
     }
 
     /* Only the tail pointer has to exist before the first buffer is
@@ -1320,7 +1422,9 @@ ngx_http_pack_zstd_ensure_stream(
         0,
         "zstd encoder instance created and configured");
 
-    return NGX_OK;
+    return (ensure_stream_result) {
+        .status = NGX_OK,
+    };
 }
 
 /* The encoder allocates from the heap, not from the request pool. Its
@@ -1402,7 +1506,7 @@ ngx_http_pack_zstd_encoder_create(
     enc->request = r;
     enc->conf    = *conf;
 
-    if (ngx_http_pack_zstd_ensure_stream(enc) != NGX_OK) {
+    if (ngx_http_pack_zstd_ensure_stream(enc).status != NGX_OK) {
         return NULL;
     }
 
