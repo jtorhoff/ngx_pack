@@ -54,9 +54,15 @@ ZSTD_H="$PACK_ZSTD_DIR/lib/zstd.h"
 PACK_COMMON_DIR="$PACK_MODULE_SRC_DIR/../common"
 PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
 
+# The encoder is a translation unit of its own so that the filter
+# cannot see inside it: the header declares an incomplete type, and
+# only ngx_http_pack_zstd_encoder.c knows what it holds.
+PACK_ENCODER_H="$PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_encoder.h"
+
 ngx_module_incs="$PACK_ZSTD_DIR/lib"
-ngx_module_deps="$ZSTD_H $PACK_COMMON_H"
-ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_filter.c"
+ngx_module_deps="$ZSTD_H $PACK_COMMON_H $PACK_ENCODER_H"
+ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_filter.c \
+                 $PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_encoder.c"
 ngx_module_libs="-L$ZSTD_OUTPUT_DIRECTORY/lib -lzstd"
 ngx_module_order="$ngx_module_name \
                   ngx_pagespeed \
