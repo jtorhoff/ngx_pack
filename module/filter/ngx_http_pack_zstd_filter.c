@@ -580,8 +580,8 @@ typedef struct {
 static pending_input_result
 ngx_http_pack_zstd_pending_input(pending_input_args *const args)
 {
-    ngx_chain_t         *in;
     pending_input_result result;
+    ngx_chain_t         *in;
 
     result = (pending_input_result) {
         .total    = 0,

@@ -584,9 +584,9 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     ngx_http_pack_zstd_encoder_t *enc;
     ngx_http_request_t           *r;
     ngx_buf_t                    *buf;
+    discard_head_buf_result       dropped;
     select_mode_result            selected;
     ZSTD_inBuffer                 window;
-    discard_head_buf_result       dropped;
 
     enc = args->enc;
     r   = enc->request;
@@ -877,8 +877,8 @@ static compress_buf_result
 ngx_http_pack_zstd_compress_buf(compress_buf_args *const args)
 {
     ngx_http_pack_zstd_encoder_t *enc;
-    ZSTD_outBuffer                out;
     ZSTD_inBuffer                 in;
+    ZSTD_outBuffer                out;
     size_t                        remaining;
 
     enc = args->enc;
@@ -1004,9 +1004,9 @@ ngx_http_pack_zstd_compress(compress_args *const args)
 {
     ngx_http_pack_zstd_encoder_t *enc;
     next_input_result             input;
-    advance_input_result          advanced;
     get_buf_result                drawn;
     compress_buf_result           zresult;
+    advance_input_result          advanced;
     ngx_int_t                     rc;
 
     enc = args->enc;
