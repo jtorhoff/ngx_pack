@@ -194,21 +194,36 @@ typedef enum {
 
    Its own type, as prepare_e is, because both outlive the call that
    made them - this one is written by next_input, returned by compress
-   and then held across pump's loop and the three tests after it. The
-   carry-on case of every verdict in this file is 0, so one spelled in
-   nginx's codes and tested against another's constant would compile
-   and behave; typed, -Wenum-compare rejects it. A verdict consumed
-   where it is produced is owed none of that, which is why preflight
-   and next_input answer in nginx's codes instead. */
+   and then held across pump's loop and the three tests after it. Zero
+   means "carry on" in either type, so one spelled in nginx's codes
+   and tested against the other's constant would compile and behave;
+   typed, -Wenum-compare rejects it. A verdict consumed where it is
+   produced is owed none of that, which is why preflight and
+   made_progress answer in nginx's codes instead.
+
+   Two callers read this type and they do not carry on at the same
+   value: next_input's is STEP_READY, the loop's is STEP_CONTINUE. */
 typedef enum {
+    /* Not a step at all: what ngx_http_pack_zstd_next_input says when
+       it has settled nothing and the encoder should run. It goes no
+       further than ngx_http_pack_zstd_compress, which turns it into
+       an actual step by running the round - so the loop never sees
+       this one. Here rather than in a type of its own so that
+       next_input answers on one channel instead of a code beside an
+       out-parameter. */
+    NGX_HTTP_PACK_ZSTD_STEP_READY = 0,
+
     /* Made progress; go round again. */
-    NGX_HTTP_PACK_ZSTD_STEP_CONTINUE = 0,
-    /* The encoder has nothing more to give until it is fed again. */
-    NGX_HTTP_PACK_ZSTD_STEP_DONE,
+    NGX_HTTP_PACK_ZSTD_STEP_CONTINUE,
+
     /* Stopped for want of a free output buffer, with work still to
        do. Whether that can be resolved depends on what the filters
        below hand back, so the loop decides. */
     NGX_HTTP_PACK_ZSTD_STEP_AGAIN,
+
+    /* The encoder has nothing more to give until it is fed again. */
+    NGX_HTTP_PACK_ZSTD_STEP_DONE,
+
     /* Unrecoverable; the loop closes the stream and returns
        NGX_ERROR. */
     NGX_HTTP_PACK_ZSTD_STEP_FAILED
@@ -985,17 +1000,16 @@ typedef struct {
     ZSTD_EndDirective *mode;
     ZSTD_inBuffer     *in;
     ngx_uint_t        *folded;
-    step_e            *step;
 } next_input_args;
 
 /* Settles what the encoder is asked to do this round and what it is
    handed to do it with: the directive, the input window, and whether
    this round's flush is being folded into the block being built.
 
-   NGX_OK means carry on into the encoder. NGX_DONE means the round is
-   over before it starts and "step" says how - the code itself carries
-   nothing the caller keeps. */
-static ngx_int_t
+   NGX_HTTP_PACK_ZSTD_STEP_READY means carry on into the encoder.
+   Anything else is a round that is over before it starts, and is the
+   step the caller returns. */
+static step_e
 ngx_http_pack_zstd_next_input(next_input_args *const args)
 {
     ctx_t              *ctx;
@@ -1022,15 +1036,14 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
             *args->mode = ZSTD_e_flush;
         } else {
             /* Nothing to do; wait for more input. */
-            *args->step = NGX_HTTP_PACK_ZSTD_STEP_DONE;
-            return NGX_DONE;
+            return NGX_HTTP_PACK_ZSTD_STEP_DONE;
         }
 
         args->in->src  = NULL;
         args->in->size = 0;
         args->in->pos  = 0;
 
-        return NGX_OK;
+        return NGX_HTTP_PACK_ZSTD_STEP_READY;
     }
 
     buf = ctx->in->buf;
@@ -1055,8 +1068,7 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
             0,
             "zstd got a buffer with file bytes and none in memory");
 
-        *args->step = NGX_HTTP_PACK_ZSTD_STEP_FAILED;
-        return NGX_DONE;
+        return NGX_HTTP_PACK_ZSTD_STEP_FAILED;
     }
 
     /* An empty buffer carries nothing to compress, but one marked
@@ -1065,8 +1077,7 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     if (ngx_buf_size(buf) == 0 && !buf->last_buf && !buf->flush) {
         ngx_http_pack_zstd_discard_head_buf(ctx);
 
-        *args->step = NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
-        return NGX_DONE;
+        return NGX_HTTP_PACK_ZSTD_STEP_CONTINUE;
     }
 
     selected      = ngx_http_pack_zstd_select_mode(ctx);
@@ -1084,7 +1095,7 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     }
     args->in->pos = 0;
 
-    return NGX_OK;
+    return NGX_HTTP_PACK_ZSTD_STEP_READY;
 }
 
 typedef struct {
@@ -1359,20 +1370,14 @@ ngx_http_pack_zstd_compress(ctx_t *const ctx)
         return NGX_HTTP_PACK_ZSTD_STEP_DONE;
     }
 
-    /* next_input sets step on every path that does not carry on, and
-       this is what those paths return. Seeded anyway, for the reason
-       ngx_http_pack_zstd_body_filter seeds its own out-parameter. */
-    step = NGX_HTTP_PACK_ZSTD_STEP_FAILED;
-
-    rc = ngx_http_pack_zstd_next_input(&(next_input_args) {
+    step = ngx_http_pack_zstd_next_input(&(next_input_args) {
         .ctx    = ctx,
         .mode   = &zmode,
         .in     = &zin,
         .folded = &folded,
-        .step   = &step,
     });
 
-    if (rc != NGX_OK) {
+    if (step != NGX_HTTP_PACK_ZSTD_STEP_READY) {
         return step;
     }
 
