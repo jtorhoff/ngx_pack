@@ -19,11 +19,13 @@
    matters - ngx_chain_update_chains does nothing but compare it - so
    a file-local object serves, and the encoder needs to know nothing
    about the module it is compiled into. */
-static ngx_int_t ngx_http_pack_zstd_encoder_tag;
+static ngx_int_t encoder_tag;
 
 /* The header spells this out in full; inside the encoder the short
    name is the one the code was written against. */
-typedef ngx_http_pack_zstd_step_e step_e;
+typedef ngx_http_pack_zstd_step_e         step_e;
+typedef ngx_http_pack_zstd_encoder_t      encoder_t;
+typedef ngx_http_pack_zstd_encoder_conf_t conf_t;
 
 static void *ngx_http_pack_zstd_alloc(void *opaque, size_t size);
 static void ngx_http_pack_zstd_free(void *opaque, void *address);
@@ -138,10 +140,10 @@ struct ngx_http_pack_zstd_encoder_s {
     ngx_http_request_t *request;
 
     /* What the directives settled; see the header. */
-    ngx_http_pack_zstd_encoder_conf_t conf;
+    conf_t conf;
 
     /* libzstd's own, and the only part the pool cleanup is handed. */
-    zctx_t zctx;
+    zctx_t zstd;
 
     /* Output buffers, in the three states nginx's chain helpers keep
        them in. These point at memory *we* allocated, not at anything
@@ -175,7 +177,7 @@ struct ngx_http_pack_zstd_encoder_s {
 };
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
+    encoder_t *enc;
 } get_buf_args;
 
 typedef struct {
@@ -197,10 +199,10 @@ typedef struct {
 static get_buf_result
 ngx_http_pack_zstd_get_buf(get_buf_args *const args)
 {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_http_request_t           *r;
-    ngx_chain_t                  *link;
-    ngx_buf_t                    *buf;
+    encoder_t          *enc;
+    ngx_http_request_t *r;
+    ngx_chain_t        *link;
+    ngx_buf_t          *buf;
 
     enc = args->enc;
     r   = enc->request;
@@ -220,7 +222,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         };
     }
 
-    if ((ngx_int_t) enc->nbuffers >= enc->conf.nbuffers) {
+    if (enc->nbuffers >= (ngx_uint_t) enc->conf.nbuffers) {
         return (get_buf_result) {
             .status = NGX_DECLINED,
         };
@@ -238,7 +240,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
        rather than dropping the link. "recycled" tells the filters
        below that this memory is going to be reused, so they must not
        sit on it. */
-    buf->tag      = (ngx_buf_tag_t) &ngx_http_pack_zstd_encoder_tag;
+    buf->tag      = (ngx_buf_tag_t) &encoder_tag;
     buf->recycled = 1;
 
     enc->nbuffers++;
@@ -258,10 +260,10 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_buf_t                    *buf;
-    size_t                        written;
-    ZSTD_EndDirective             mode;
+    encoder_t        *enc;
+    ngx_buf_t        *buf;
+    size_t            written;
+    ZSTD_EndDirective mode;
 } commit_buf_args;
 
 typedef struct {
@@ -328,8 +330,8 @@ ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_buf_t                    *buf;
+    encoder_t *enc;
+    ngx_buf_t *buf;
 } release_buf_args;
 
 typedef struct {
@@ -340,8 +342,8 @@ typedef struct {
 static release_buf_result
 ngx_http_pack_zstd_release_buf(release_buf_args *const args)
 {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_chain_t                  *link;
+    encoder_t   *enc;
+    ngx_chain_t *link;
 
     enc  = args->enc;
     link = ngx_alloc_chain_link(enc->request->pool);
@@ -361,8 +363,8 @@ ngx_http_pack_zstd_release_buf(release_buf_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_chain_t                  *chain;
+    encoder_t   *enc;
+    ngx_chain_t *chain;
 } discard_head_buf_args;
 
 typedef struct {
@@ -459,8 +461,8 @@ ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_chain_t                  *in;
+    encoder_t   *enc;
+    ngx_chain_t *in;
 } select_mode_args;
 
 typedef struct {
@@ -524,7 +526,7 @@ ngx_http_pack_zstd_select_mode(select_mode_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
+    encoder_t *enc;
     /* The caller's input chain. What is left of it comes back in
        next_input_result. */
     ngx_chain_t *chain;
@@ -558,12 +560,12 @@ typedef struct {
 static next_input_result
 ngx_http_pack_zstd_next_input(next_input_args *const args)
 {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_http_request_t           *r;
-    ngx_buf_t                    *buf;
-    discard_head_buf_result       dropped;
-    select_mode_result            selected;
-    ZSTD_inBuffer                 window;
+    encoder_t              *enc;
+    ngx_http_request_t     *r;
+    ngx_buf_t              *buf;
+    discard_head_buf_result dropped;
+    select_mode_result      selected;
+    ZSTD_inBuffer           window;
 
     enc = args->enc;
     r   = enc->request;
@@ -571,10 +573,10 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
     if (args->chain == NULL) {
         ZSTD_EndDirective mode;
 
-        if (enc->zctx.repeat_mode != ZSTD_e_continue) {
+        if (enc->zstd.repeat_mode != ZSTD_e_continue) {
             /* Finishing what was started takes priority over asking
                whether the caller wants output - see repeat_mode. */
-            mode = enc->zctx.repeat_mode;
+            mode = enc->zstd.repeat_mode;
         } else if (args->wants_output && enc->state.unflushed_input) {
             mode = ZSTD_e_flush;
         } else {
@@ -663,8 +665,8 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    size_t                        consumed;
+    encoder_t *enc;
+    size_t     consumed;
     /* The caller's input chain. What is left of it comes back in
        advance_input_result. */
     ngx_chain_t *chain;
@@ -683,8 +685,8 @@ typedef struct {
 static advance_input_result
 ngx_http_pack_zstd_advance_input(advance_input_args *const args)
 {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_buf_t                    *buf;
+    encoder_t *enc;
+    ngx_buf_t *buf;
 
     enc = args->enc;
 
@@ -722,10 +724,10 @@ ngx_http_pack_zstd_advance_input(advance_input_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ZSTD_EndDirective             mode;
-    size_t                        consumed;
-    size_t                        remaining;
+    encoder_t        *enc;
+    ZSTD_EndDirective mode;
+    size_t            consumed;
+    size_t            remaining;
 } record_round_args;
 
 /* What this round leaves behind for the next one: whether the encoder
@@ -745,12 +747,12 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
     if (args->remaining != 0) {
         /* Not finished, whichever of the two it was: repeat it once
            the input in hand has been consumed. */
-        args->enc->zctx.repeat_mode = args->mode;
+        args->enc->zstd.repeat_mode = args->mode;
 
         return;
     }
 
-    args->enc->zctx.repeat_mode = ZSTD_e_continue;
+    args->enc->zstd.repeat_mode = ZSTD_e_continue;
 
     /* Either directive ends the block, so the next one starts with
        nothing folded into it. */
@@ -764,10 +766,10 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ZSTD_EndDirective             mode;
-    size_t                        written;
-    size_t                        remaining;
+    encoder_t        *enc;
+    ZSTD_EndDirective mode;
+    size_t            written;
+    size_t            remaining;
     /* Read, never advanced. */
     ngx_chain_t *chain;
 } made_progress_args;
@@ -824,9 +826,9 @@ ngx_http_pack_zstd_made_progress(made_progress_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_buf_t                    *buf;
-    ZSTD_EndDirective             mode;
+    encoder_t        *enc;
+    ngx_buf_t        *buf;
+    ZSTD_EndDirective mode;
     /* By value: the encoder advances its own copy, and "consumed"
        below is the only part of that the caller wants back. */
     ZSTD_inBuffer in;
@@ -853,10 +855,10 @@ typedef struct {
 static compress_buf_result
 ngx_http_pack_zstd_compress_buf(compress_buf_args *const args)
 {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ZSTD_inBuffer                 in;
-    ZSTD_outBuffer                out;
-    size_t                        remaining;
+    encoder_t     *enc;
+    ZSTD_inBuffer  in;
+    ZSTD_outBuffer out;
+    size_t         remaining;
 
     enc = args->enc;
     in  = args->in;
@@ -866,7 +868,7 @@ ngx_http_pack_zstd_compress_buf(compress_buf_args *const args)
     out.pos  = 0;
 
     remaining = ZSTD_compressStream2(
-        enc->zctx.cctx, &out, &in, args->mode);
+        enc->zstd.cctx, &out, &in, args->mode);
     if (ZSTD_isError(remaining)) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -889,10 +891,10 @@ ngx_http_pack_zstd_compress_buf(compress_buf_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_buf_t                    *buf;
-    size_t                        written;
-    ZSTD_EndDirective             mode;
+    encoder_t        *enc;
+    ngx_buf_t        *buf;
+    size_t            written;
+    ZSTD_EndDirective mode;
 } dispose_buf_args;
 
 typedef struct {
@@ -915,8 +917,8 @@ typedef struct {
 static dispose_buf_result
 ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
 {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ngx_int_t                     rc;
+    encoder_t *enc;
+    ngx_int_t  rc;
 
     enc = args->enc;
 
@@ -958,7 +960,7 @@ ngx_http_pack_zstd_dispose_buf(dispose_buf_args *const args)
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
+    encoder_t *enc;
     /* The caller's input chain. What is left of it comes back in
        compress_result. */
     ngx_chain_t *chain;
@@ -979,12 +981,12 @@ typedef struct {
 static compress_result
 ngx_http_pack_zstd_compress(compress_args *const args)
 {
-    ngx_http_pack_zstd_encoder_t *enc;
-    next_input_result             input;
-    get_buf_result                drawn;
-    compress_buf_result           zresult;
-    advance_input_result          advanced;
-    ngx_int_t                     rc;
+    encoder_t           *enc;
+    next_input_result    input;
+    get_buf_result       drawn;
+    compress_buf_result  zresult;
+    advance_input_result advanced;
+    ngx_int_t            rc;
 
     enc = args->enc;
 
@@ -1117,8 +1119,7 @@ typedef struct {
    a failure there must not be able to strand an allocated instance.
  */
 static init_encoder_result
-ngx_http_pack_zstd_init_encoder(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_init_encoder(encoder_t *const enc)
 {
     ngx_pool_cleanup_t *cln;
     ZSTD_customMem      zmem;
@@ -1131,14 +1132,14 @@ ngx_http_pack_zstd_init_encoder(
     }
 
     cln->handler = ngx_http_pack_zstd_cleanup;
-    cln->data    = &enc->zctx;
+    cln->data    = &enc->zstd;
 
     zmem.customAlloc = ngx_http_pack_zstd_alloc;
     zmem.customFree  = ngx_http_pack_zstd_free;
     zmem.opaque      = enc->request->pool;
 
-    enc->zctx.cctx = ZSTD_createCCtx_advanced(zmem);
-    if (enc->zctx.cctx == NULL) {
+    enc->zstd.cctx = ZSTD_createCCtx_advanced(zmem);
+    if (enc->zstd.cctx == NULL) {
         ngx_log_error(
             NGX_LOG_ALERT,
             enc->request->connection->log,
@@ -1157,10 +1158,10 @@ ngx_http_pack_zstd_init_encoder(
 }
 
 typedef struct {
-    ngx_http_pack_zstd_encoder_t *enc;
-    ZSTD_cParameter               param;
-    int32_t                       value;
-    ngx_str_t const              *name;
+    encoder_t       *enc;
+    ZSTD_cParameter  param;
+    int32_t          value;
+    ngx_str_t const *name;
 } set_param_args;
 
 typedef struct {
@@ -1177,7 +1178,7 @@ ngx_http_pack_zstd_set_param(set_param_args *const args)
     size_t zrc;
 
     zrc = ZSTD_CCtx_setParameter(
-        args->enc->zctx.cctx, args->param, args->value);
+        args->enc->zstd.cctx, args->param, args->value);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -1203,13 +1204,12 @@ typedef struct {
 } set_pledged_size_result;
 
 static set_pledged_size_result
-ngx_http_pack_zstd_set_pledged_size(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_set_pledged_size(encoder_t *const enc)
 {
     size_t zrc;
 
     zrc = ZSTD_CCtx_setPledgedSrcSize(
-        enc->zctx.cctx, enc->conf.content_length);
+        enc->zstd.cctx, enc->conf.content_length);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -1238,8 +1238,7 @@ typedef struct {
    libzstd is vendored and pinned (see deps/zstd), so one means a
    broken build and not a host carrying an older library. */
 static configure_encoder_result
-ngx_http_pack_zstd_configure_encoder(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
 {
     static ngx_str_t const level    = ngx_string("compressionLevel");
     static ngx_str_t const window   = ngx_string("windowLog");
@@ -1364,8 +1363,7 @@ typedef struct {
    No output buffer yet - get_buf creates those on demand, up to
    conf.nbuffers of them, and most responses never need a second. */
 static ensure_stream_result
-ngx_http_pack_zstd_ensure_stream(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_ensure_stream(encoder_t *const enc)
 {
     ngx_int_t rc;
 
@@ -1466,12 +1464,11 @@ ngx_http_pack_zstd_cleanup(void *const data)
 /* --- Everything above is private; this is what the filter sees. ---
  */
 
-ngx_http_pack_zstd_encoder_t *
+encoder_t *
 ngx_http_pack_zstd_encoder_create(
-    ngx_http_request_t *const                r,
-    ngx_http_pack_zstd_encoder_conf_t *const conf)
+    ngx_http_request_t *const r, conf_t *const conf)
 {
-    ngx_http_pack_zstd_encoder_t *enc;
+    encoder_t *enc;
 
     enc = ngx_pcalloc(r->pool, sizeof(*enc));
     if (enc == NULL) {
@@ -1489,11 +1486,11 @@ ngx_http_pack_zstd_encoder_create(
 }
 
 
-ngx_http_pack_zstd_step_e
+step_e
 ngx_http_pack_zstd_encoder_step(
-    ngx_http_pack_zstd_encoder_t *const enc,
-    ngx_chain_t **const                 in,
-    ngx_uint_t const                    wants_output)
+    encoder_t *const    enc,
+    ngx_chain_t **const in,
+    ngx_uint_t const    wants_output)
 {
     compress_result round;
 
@@ -1510,47 +1507,42 @@ ngx_http_pack_zstd_encoder_step(
 
 
 ngx_chain_t *
-ngx_http_pack_zstd_encoder_pending(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_encoder_pending(encoder_t *const enc)
 {
     return enc->out;
 }
 
 
 void
-ngx_http_pack_zstd_encoder_drained(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_encoder_drained(encoder_t *const enc)
 {
     ngx_chain_update_chains(
         enc->request->pool,
         &enc->free,
         &enc->busy,
         &enc->out,
-        (ngx_buf_tag_t) &ngx_http_pack_zstd_encoder_tag);
+        (ngx_buf_tag_t) &encoder_tag);
 
     enc->last_out = &enc->out;
 }
 
 
 ngx_uint_t
-ngx_http_pack_zstd_encoder_busy(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_encoder_busy(encoder_t *const enc)
 {
     return enc->busy != NULL;
 }
 
 
 ngx_uint_t
-ngx_http_pack_zstd_encoder_has_free(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_encoder_has_free(encoder_t *const enc)
 {
     return enc->free != NULL;
 }
 
 
 ngx_uint_t
-ngx_http_pack_zstd_encoder_frame_closed(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_encoder_frame_closed(encoder_t *const enc)
 {
     return enc->state.frame_closed;
 }
@@ -1560,10 +1552,9 @@ ngx_http_pack_zstd_encoder_frame_closed(
    request pool, and ngx_http_write_filter copied whatever links it
    was given, so what is downstream survives this. */
 void
-ngx_http_pack_zstd_encoder_close(
-    ngx_http_pack_zstd_encoder_t *const enc)
+ngx_http_pack_zstd_encoder_close(encoder_t *const enc)
 {
-    ngx_http_pack_zstd_cleanup(&enc->zctx);
+    ngx_http_pack_zstd_cleanup(&enc->zstd);
 
     enc->out      = NULL;
     enc->last_out = NULL;
