@@ -365,6 +365,10 @@ ngx_http_pack_zstd_close(ctx_t *const ctx)
     }
 }
 
+typedef struct {
+    ngx_int_t status;
+} send_headers_result;
+
 /* Commits headers that ngx_http_pack_zstd_header_filter held back. If
    the response was accepted it is labelled and the encoder will run;
    if not it passes through untouched, leaving no "Content-Encoding"
@@ -372,7 +376,7 @@ ngx_http_pack_zstd_close(ctx_t *const ctx)
 
    Which of the two it is comes from ctx->accepted_for_compression,
    set by whichever caller made the decision. */
-static ngx_int_t
+static send_headers_result
 ngx_http_pack_zstd_send_headers(ctx_t *const ctx)
 {
     ngx_http_request_t *r;
@@ -394,12 +398,16 @@ ngx_http_pack_zstd_send_headers(ctx_t *const ctx)
            reports unsent headers and commits them a second time. */
         ngx_http_pack_zstd_close(ctx);
 
-        return ngx_http_next_header_filter(r);
+        return (send_headers_result) {
+            .status = ngx_http_next_header_filter(r),
+        };
     }
 
     /* Tell the filters below that the body is compressed. */
     if (ngx_http_pack_set_encoding(r, &ENCODING) != NGX_OK) {
-        return NGX_ERROR;
+        return (send_headers_result) {
+            .status = NGX_ERROR,
+        };
     }
 
     ngx_http_clear_content_length(r);
@@ -408,12 +416,22 @@ ngx_http_pack_zstd_send_headers(ctx_t *const ctx)
 
     rc = ngx_http_next_header_filter(r);
     if (rc == NGX_ERROR || rc > NGX_OK) {
-        return rc;
+        return (send_headers_result) {
+            .status = rc,
+        };
     }
 
     ctx->state.headers_sent = 1;
-    return rc; /* NGX_OK or NGX_AGAIN */
+
+    /* NGX_OK or NGX_AGAIN. */
+    return (send_headers_result) {
+        .status = rc,
+    };
 }
+
+typedef struct {
+    ngx_int_t status;
+} preflight_result;
 
 /* Everything that disqualifies a response on its own terms: the
    directive, the status, what the response already is, and what it
@@ -428,7 +446,7 @@ ngx_http_pack_zstd_send_headers(ctx_t *const ctx)
    asked after ngx_http_pack_set_vary, since the response varies
    whether or not this particular client is served Zstandard, and a
    bypass from here has to leave that header alone. */
-static ngx_int_t
+static preflight_result
 ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
 {
     conf_t *conf;
@@ -437,12 +455,16 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
 
     /* Filter only if enabled. */
     if (!conf->enable) {
-        return NGX_DECLINED;
+        return (preflight_result) {
+            .status = NGX_DECLINED,
+        };
     }
 
     /* Bypass "header only" responses. */
     if (r->header_only) {
-        return NGX_DECLINED;
+        return (preflight_result) {
+            .status = NGX_DECLINED,
+        };
     }
 
     /* Bypass statuses that either carry no body, or carry one that
@@ -454,27 +476,37 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
         r->headers_out.status == NGX_HTTP_NO_CONTENT ||
         r->headers_out.status == NGX_HTTP_PARTIAL_CONTENT ||
         r->headers_out.status == NGX_HTTP_NOT_MODIFIED) {
-        return NGX_DECLINED;
+        return (preflight_result) {
+            .status = NGX_DECLINED,
+        };
     }
 
     /* Bypass already compressed responses. */
     if (r->headers_out.content_encoding &&
         r->headers_out.content_encoding->value.len) {
-        return NGX_DECLINED;
+        return (preflight_result) {
+            .status = NGX_DECLINED,
+        };
     }
 
     /* If response size is known, do not compress tiny responses. */
     if (r->headers_out.content_length_n != -1 &&
         r->headers_out.content_length_n < conf->min_length) {
-        return NGX_DECLINED;
+        return (preflight_result) {
+            .status = NGX_DECLINED,
+        };
     }
 
     /* Compress only certain MIME-typed responses. */
     if (ngx_http_test_content_type(r, &conf->types) == NULL) {
-        return NGX_DECLINED;
+        return (preflight_result) {
+            .status = NGX_DECLINED,
+        };
     }
 
-    return NGX_OK;
+    return (preflight_result) {
+        .status = NGX_OK,
+    };
 }
 
 /* Process headers and decide if request is eligible for zstd
@@ -484,7 +516,7 @@ ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
 {
     ctx_t *ctx;
 
-    if (ngx_http_pack_zstd_preflight(r) != NGX_OK) {
+    if (ngx_http_pack_zstd_preflight(r).status != NGX_OK) {
         return ngx_http_next_header_filter(r);
     }
 
@@ -525,43 +557,51 @@ ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
 
     ctx->state.accepted_for_compression = 1;
 
-    return ngx_http_pack_zstd_send_headers(ctx);
+    return ngx_http_pack_zstd_send_headers(ctx).status;
 }
 
 
 typedef struct {
     ngx_chain_t *in;
-    ngx_uint_t  *complete;
-    ngx_uint_t  *urgent;
 } pending_input_args;
+
+typedef struct {
+    /* Bytes of input not yet handed to the encoder. */
+    size_t total;
+    /* Whether the chain closes the response. */
+    ngx_uint_t complete;
+    /* Whether anything in it demands to be pushed out now. */
+    ngx_uint_t urgent;
+} pending_input_result;
 
 /* Totals the unconsumed input, reporting whether the chain closes the
    response ("complete") and whether anything in it demands to be
    pushed out now ("urgent"). */
-static size_t
+static pending_input_result
 ngx_http_pack_zstd_pending_input(pending_input_args *const args)
 {
-    ngx_chain_t *in;
-    size_t       total;
+    ngx_chain_t         *in;
+    pending_input_result result;
 
-    in = args->in;
+    result = (pending_input_result) {
+        .total    = 0,
+        .complete = 0,
+        .urgent   = 0,
+    };
 
-    *args->complete = 0;
-    *args->urgent   = 0;
+    for (in = args->in; in; in = in->next) {
+        result.total += ngx_buf_size(in->buf);
 
-    total = 0;
-    for (; in; in = in->next) {
-        total += ngx_buf_size(in->buf);
         if (in->buf->last_buf) {
-            *args->complete = 1;
+            result.complete = 1;
         }
 
         if (in->buf->flush) {
-            *args->urgent = 1;
+            result.urgent = 1;
         }
     }
 
-    return total;
+    return result;
 }
 
 typedef struct {
@@ -569,14 +609,20 @@ typedef struct {
     size_t     pending;
     ngx_uint_t complete;
     ngx_uint_t urgent;
-    ngx_int_t *rc;
 } commit_headers_args;
+
+/* "verdict" is what the caller branches on; "rc" is what the body
+   filter returns, and is set on every verdict but OK. */
+typedef struct {
+    prepare_e verdict;
+    ngx_int_t rc;
+} commit_headers_result;
 
 /* Headers held back because the length was unknown. Decide as soon as
    the body answers the only question pack_zstd_min_length asks - is
    it at least that big. A flush marker means something downstream is
    waiting, so decide immediately and compress. */
-static prepare_e
+static commit_headers_result
 ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
 {
     ctx_t       *ctx;
@@ -595,11 +641,13 @@ ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
         args->urgent || args->pending >= (size_t) conf->min_length) {
         ctx->state.accepted_for_compression = 1;
     } else {
-        *args->rc = NGX_OK;
-        return NGX_HTTP_PACK_ZSTD_DEFER;
+        return (commit_headers_result) {
+            .verdict = NGX_HTTP_PACK_ZSTD_DEFER,
+            .rc      = NGX_OK,
+        };
     }
 
-    header_rc = ngx_http_pack_zstd_send_headers(ctx);
+    header_rc = ngx_http_pack_zstd_send_headers(ctx).status;
 
     /* An error, or a filter below replacing the response with a
        status. Not "!= NGX_OK": that would catch NGX_AGAIN too, which
@@ -614,12 +662,16 @@ ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
     if (header_rc == NGX_ERROR || header_rc > NGX_OK) {
         ngx_http_pack_zstd_close(ctx);
 
-        *args->rc = NGX_ERROR;
-        return NGX_HTTP_PACK_ZSTD_ERROR;
+        return (commit_headers_result) {
+            .verdict = NGX_HTTP_PACK_ZSTD_ERROR,
+            .rc      = NGX_ERROR,
+        };
     }
 
     if (ctx->state.accepted_for_compression) {
-        return NGX_HTTP_PACK_ZSTD_OK;
+        return (commit_headers_result) {
+            .verdict = NGX_HTTP_PACK_ZSTD_OK,
+        };
     }
 
     /* Pass the held input through untouched. */
@@ -629,92 +681,111 @@ ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
     ctx->request->connection->buffered &=
         ~NGX_HTTP_PACK_ZSTD_BUFFERED;
 
-    *args->rc = ngx_http_next_body_filter(ctx->request, link);
-
-    return NGX_HTTP_PACK_ZSTD_PASS;
+    return (commit_headers_result) {
+        .verdict = NGX_HTTP_PACK_ZSTD_PASS,
+        .rc      = ngx_http_next_body_filter(ctx->request, link),
+    };
 }
 
 typedef struct {
-    ctx_t     *ctx;
-    ngx_int_t *rc;
+    ctx_t *ctx;
 } prepare_args;
+
+/* As commit_headers_result: "verdict" decides, "rc" is what the body
+   filter returns when the verdict is not OK. */
+typedef struct {
+    prepare_e verdict;
+    ngx_int_t rc;
+} prepare_result;
 
 /* Everything that has to be settled before the encoder can run:
    committing headers the header filter held back, and deciding
    whether to go on holding input while the response size is still
    unknown. */
-static prepare_e
+static prepare_result
 ngx_http_pack_zstd_prepare(prepare_args *const args)
 {
-    ctx_t     *ctx;
-    size_t     pending;
-    ngx_uint_t complete;
-    ngx_uint_t urgent;
-    prepare_e  verdict;
+    ctx_t                *ctx;
+    pending_input_result  pending;
+    commit_headers_result committed;
 
     ctx = args->ctx;
 
     /* The steady state: the headers are away and the encoder exists,
        so there is nothing to settle. */
     if (ctx->state.headers_sent && ctx->encoder != NULL) {
-        return NGX_HTTP_PACK_ZSTD_OK;
+        return (prepare_result) {
+            .verdict = NGX_HTTP_PACK_ZSTD_OK,
+        };
     }
 
     pending = ngx_http_pack_zstd_pending_input(&(pending_input_args) {
-        .in       = ctx->in,
-        .complete = &complete,
-        .urgent   = &urgent,
+        .in = ctx->in,
     });
 
     if (!ctx->state.headers_sent) {
-        verdict = ngx_http_pack_zstd_commit_headers(
+        committed = ngx_http_pack_zstd_commit_headers(
             &(commit_headers_args) {
                 .ctx      = ctx,
-                .pending  = pending,
-                .complete = complete,
-                .urgent   = urgent,
-                .rc       = args->rc,
+                .pending  = pending.total,
+                .complete = pending.complete,
+                .urgent   = pending.urgent,
             });
 
-        if (verdict != NGX_HTTP_PACK_ZSTD_OK) {
-            return verdict;
+        if (committed.verdict != NGX_HTTP_PACK_ZSTD_OK) {
+            return (prepare_result) {
+                .verdict = committed.verdict,
+                .rc      = committed.rc,
+            };
         }
     }
 
     if (ctx->encoder != NULL) {
-        return NGX_HTTP_PACK_ZSTD_OK;
+        return (prepare_result) {
+            .verdict = NGX_HTTP_PACK_ZSTD_OK,
+        };
     }
 
     /* The whole body is in hand, so its size is no longer a
        question. */
-    if (complete) {
+    if (pending.complete) {
         if (ctx->content_length < 0) {
-            ctx->content_length = (off_t) pending;
+            ctx->content_length = (off_t) pending.total;
         }
 
-        return NGX_HTTP_PACK_ZSTD_OK;
+        return (prepare_result) {
+            .verdict = NGX_HTTP_PACK_ZSTD_OK,
+        };
     }
 
     /* Choosing the encoder window costs memory that scales with the
        window, so when the response size is unknown it is worth
        waiting a moment to see if the whole thing turns up. */
-    if (!ctx->state.caller_wants_output && !urgent &&
+    if (!ctx->state.caller_wants_output && !pending.urgent &&
         ctx->content_length < 0 &&
-        pending < NGX_HTTP_PACK_ZSTD_MAX_HELD_INPUT) {
+        pending.total < NGX_HTTP_PACK_ZSTD_MAX_HELD_INPUT) {
         ngx_log_debug1(
             NGX_LOG_DEBUG_HTTP,
             ctx->request->connection->log,
             0,
             "zstd deferring encoder: pending:%uz",
-            pending);
+            pending.total);
 
-        *args->rc = NGX_OK;
-        return NGX_HTTP_PACK_ZSTD_DEFER;
+        return (prepare_result) {
+            .verdict = NGX_HTTP_PACK_ZSTD_DEFER,
+            .rc      = NGX_OK,
+        };
     }
 
-    return NGX_HTTP_PACK_ZSTD_OK;
+    return (prepare_result) {
+        .verdict = NGX_HTTP_PACK_ZSTD_OK,
+    };
 }
 
+
+typedef struct {
+    ngx_int_t status;
+} drain_result;
 
 /* Hands what the encoder produced to the filters below, then takes
    account of what came back.
@@ -722,7 +793,7 @@ ngx_http_pack_zstd_prepare(prepare_args *const args)
    A NULL pending chain is not a no-op: it is what asks those filters
    to make progress on buffers they are already holding, which is the
    only way a busy buffer is ever returned. */
-static ngx_int_t
+static drain_result
 ngx_http_pack_zstd_drain(ctx_t *const ctx)
 {
     ngx_int_t rc;
@@ -731,7 +802,9 @@ ngx_http_pack_zstd_drain(ctx_t *const ctx)
         ctx->request,
         ngx_http_pack_zstd_encoder_pending(ctx->encoder));
     if (rc == NGX_ERROR) {
-        return NGX_ERROR;
+        return (drain_result) {
+            .status = NGX_ERROR,
+        };
     }
 
     ngx_http_pack_zstd_encoder_drained(ctx->encoder);
@@ -751,15 +824,21 @@ ngx_http_pack_zstd_drain(ctx_t *const ctx)
             ~NGX_HTTP_PACK_ZSTD_BUFFERED;
     }
 
-    return NGX_OK;
+    return (drain_result) {
+        .status = NGX_OK,
+    };
 }
+
+typedef struct {
+    ngx_int_t status;
+} finish_result;
 
 /* The encoder has nothing left to do for this response. Freeing here
    rather than waiting for the request pool to be destroyed is what
    keeps its memory from outliving the response - but only once the
    last buffer has been taken, since buffers still outstanding mean
    the response is not finished whatever the encoder says. */
-static ngx_int_t
+static finish_result
 ngx_http_pack_zstd_finish(ctx_t *const ctx)
 {
     if (ngx_http_pack_zstd_encoder_frame_closed(ctx->encoder) &&
@@ -768,23 +847,33 @@ ngx_http_pack_zstd_finish(ctx_t *const ctx)
     }
 
     if (ngx_http_pack_zstd_encoder_busy(ctx->encoder)) {
-        return NGX_AGAIN;
+        return (finish_result) {
+            .status = NGX_AGAIN,
+        };
     }
 
-    return NGX_OK;
+    return (finish_result) {
+        .status = NGX_OK,
+    };
 }
+
+typedef struct {
+    ngx_int_t status;
+} ensure_encoder_result;
 
 /* Builds the encoder on first use, translating the directives into
    what ngx_http_pack_zstd_encoder_create wants. Nothing here reaches
    into the encoder: what it is made of is its own business, and this
    is the only place the two vocabularies meet. */
-static ngx_int_t
+static ensure_encoder_result
 ngx_http_pack_zstd_ensure_encoder(ctx_t *const ctx)
 {
     conf_t *conf;
 
     if (ctx->encoder != NULL) {
-        return NGX_OK;
+        return (ensure_encoder_result) {
+            .status = NGX_OK,
+        };
     }
 
     conf = ngx_http_get_module_loc_conf(
@@ -800,11 +889,19 @@ ngx_http_pack_zstd_ensure_encoder(ctx_t *const ctx)
         });
 
     if (ctx->encoder == NULL) {
-        return NGX_ERROR;
+        return (ensure_encoder_result) {
+            .status = NGX_ERROR,
+        };
     }
 
-    return NGX_OK;
+    return (ensure_encoder_result) {
+        .status = NGX_OK,
+    };
 }
+
+typedef struct {
+    ngx_int_t status;
+} pump_result;
 
 /* Everything the body filter does once the encoder exists, and what
    it returns.
@@ -820,7 +917,7 @@ ngx_http_pack_zstd_ensure_encoder(ctx_t *const ctx)
    The loop is here rather than split with the caller so that the one
    condition that turns it - a buffer having come back from below -
    sits with the four that end it. */
-static ngx_int_t
+static pump_result
 ngx_http_pack_zstd_pump(ctx_t *const ctx)
 {
     ngx_http_pack_zstd_step_e step;
@@ -836,7 +933,9 @@ ngx_http_pack_zstd_pump(ctx_t *const ctx)
         if (step == NGX_HTTP_PACK_ZSTD_STEP_FAILED) {
             ngx_http_pack_zstd_close(ctx);
 
-            return NGX_ERROR;
+            return (pump_result) {
+                .status = NGX_ERROR,
+            };
         }
 
         /* Nothing new to send and nothing outstanding: the encoder is
@@ -863,24 +962,32 @@ ngx_http_pack_zstd_pump(ctx_t *const ctx)
             ngx_http_pack_zstd_encoder_pending(ctx->encoder) ==
                 NULL &&
             !ngx_http_pack_zstd_encoder_busy(ctx->encoder)) {
-            return NGX_OK;
+            return (pump_result) {
+                .status = NGX_OK,
+            };
         }
 
-        if (ngx_http_pack_zstd_drain(ctx) != NGX_OK) {
+        if (ngx_http_pack_zstd_drain(ctx).status != NGX_OK) {
             ngx_http_pack_zstd_close(ctx);
 
-            return NGX_ERROR;
+            return (pump_result) {
+                .status = NGX_ERROR,
+            };
         }
 
         if (step == NGX_HTTP_PACK_ZSTD_STEP_DONE) {
-            return ngx_http_pack_zstd_finish(ctx);
+            return (pump_result) {
+                .status = ngx_http_pack_zstd_finish(ctx).status,
+            };
         }
 
         /* Stopped for want of a buffer. If the send handed one back,
            go round; if not, the filters below are full and there is
            nothing more this call can do. */
         if (!ngx_http_pack_zstd_encoder_has_free(ctx->encoder)) {
-            return NGX_AGAIN;
+            return (pump_result) {
+                .status = NGX_AGAIN,
+            };
         }
     }
 
@@ -894,11 +1001,9 @@ ngx_http_pack_zstd_body_filter(
     ngx_http_request_t *const r, ngx_chain_t *const in)
 {
     ctx_t *ctx;
-    /* What this function returns. Set by respective handler below. */
-    ngx_int_t rc;
     /* Status dictates what this function decides to do next. */
-    ngx_int_t chain_status;
-    prepare_e prepare_status;
+    ngx_int_t      chain_status;
+    prepare_result prepared;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_pack_zstd_module);
 
@@ -917,8 +1022,6 @@ ngx_http_pack_zstd_body_filter(
         return ngx_http_next_body_filter(r, in);
     }
 
-    rc = NGX_ERROR;
-
     /* Recorded before "in" is folded into ctx->in: ctx->in running
        dry says the filter has nothing left to compress, this says
        the caller brought nothing new. */
@@ -928,27 +1031,26 @@ ngx_http_pack_zstd_body_filter(
         chain_status = ngx_chain_add_copy(r->pool, &ctx->in, in);
         if (chain_status != NGX_OK) {
             ngx_http_pack_zstd_close(ctx);
-            return rc;
+            return NGX_ERROR;
         }
 
         r->connection->buffered |= NGX_HTTP_PACK_ZSTD_BUFFERED;
     }
 
-    prepare_status = ngx_http_pack_zstd_prepare(&(prepare_args) {
+    prepared = ngx_http_pack_zstd_prepare(&(prepare_args) {
         .ctx = ctx,
-        .rc  = &rc,
     });
 
-    if (prepare_status != NGX_HTTP_PACK_ZSTD_OK) {
-        return rc;
+    if (prepared.verdict != NGX_HTTP_PACK_ZSTD_OK) {
+        return prepared.rc;
     }
 
-    if (ngx_http_pack_zstd_ensure_encoder(ctx) != NGX_OK) {
+    if (ngx_http_pack_zstd_ensure_encoder(ctx).status != NGX_OK) {
         ngx_http_pack_zstd_close(ctx);
         return NGX_ERROR;
     }
 
-    return ngx_http_pack_zstd_pump(ctx);
+    return ngx_http_pack_zstd_pump(ctx).status;
 }
 
 
