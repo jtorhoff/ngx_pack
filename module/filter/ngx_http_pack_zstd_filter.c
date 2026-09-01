@@ -37,17 +37,26 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    This is why it's safe to re-use the constant here. */
 #define NGX_HTTP_PACK_ZSTD_BUFFERED NGX_HTTP_GZIP_BUFFERED
 
-/* The most input that may be held back while waiting to learn the
-   response size. There is no point deferring longer than the window
-   the encoder would use anyway - pack_zstd_window's compiled-in
-   default, below - since committing beyond it cannot change the
-   window choice any further.
+/* Bounds on pack_zstd_held_input: the most input that may be held
+   back while waiting to learn the response size. There is little
+   point deferring past the window the encoder would use anyway -
+   pack_zstd_window's compiled-in default of 32 KB - since committing
+   beyond it cannot change the window choice any further. The ceiling
+   sits above that default rather than at it, at 64 KB: an admin who
+   raised pack_zstd_window is exactly who gets the most out of a
+   longer wait, and this directive moves independently of that one.
+   The floor keeps a configuration from holding so little that it can
+   never see a response's size arrive in one read and always falls
+   through to compressing with the window at its worst-case, unsized
+   cost. */
+#define NGX_HTTP_PACK_ZSTD_HELD_INPUT_MIN (4 * 1024)
+#define NGX_HTTP_PACK_ZSTD_HELD_INPUT_MAX (64 * 1024)
+#define NGX_HTTP_PACK_ZSTD_HELD_INPUT_DEFAULT (16 * 1024)
 
-   That also happens to be one zstd block: a block is
-   MIN(windowSize, ZSTD_BLOCKSIZE_MAX) and the window default is the
-   smaller of the two, so at 64 KB the two coincide. It is derived
-   from the window, so move it if pack_zstd_window's default moves. */
-#define NGX_HTTP_PACK_ZSTD_MAX_HELD_INPUT (64 * 1024)
+#define NGX_HTTP_PACK_ZSTD_HELD_INPUT_MIN_STR "4k"
+#define NGX_HTTP_PACK_ZSTD_HELD_INPUT_MAX_STR "64k"
+
+#define NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT 256
 
 /* windowLog bounds for pack_zstd_window: 1 KB to 1 MB. The floor is
    zstd's own (ZSTD_WINDOWLOG_MIN). The ceiling is memory, not
@@ -57,18 +66,25 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
  */
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 10
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MAX 20
+#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT 15
 
 
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MIN 1
-#define NGX_HTTP_PACK_ZSTD_LEVEL_MAX 22
+#define NGX_HTTP_PACK_ZSTD_LEVEL_MAX 6
+#define NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT 3
 
 /* Bounds on the first parameter of pack_zstd_buffers, the count. One
    buffer is enough to be correct - the filter simply stalls until the
    filters below have taken it - so the floor is 1 rather than
-   anything larger. The ceiling is arbitrary but not unbounded: each
-   buffer costs its size for the lifetime of the response. */
-#define NGX_HTTP_PACK_ZSTD_BUFFERS_NUM_MIN 1
-#define NGX_HTTP_PACK_ZSTD_BUFFERS_NUM_MAX 64
+   anything larger. The ceiling is where more buffers stop being able
+   to help: at the default size below, 8 buffers already cover the
+   largest block zstd can hand back at any pack_zstd_window setting
+   (a block is at most 128 KB, and 8 x 16 KB is 128 KB), so nothing
+   past it can be waiting on output the encoder has not produced yet.
+ */
+#define NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MIN 1
+#define NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MAX 8
+#define NGX_HTTP_PACK_ZSTD_BUFFER_NUM_DEFAULT 4
 
 /* Bounds on the second parameter, the size of one buffer.
 
@@ -86,14 +102,17 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    of a few bytes, which is exactly what script/test-small-buffer.sh
    exists to exercise. That is a build-time default, though, not
    something a configuration may ask for - see below. */
-#define NGX_HTTP_PACK_ZSTD_BUFFERS_SIZE_MIN (4 * 1024)
-#define NGX_HTTP_PACK_ZSTD_BUFFERS_SIZE_MAX (128 * 1024)
+#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN (4 * 1024)
+#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX (128 * 1024)
+
+#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN_STR "4k"
+#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX_STR "128k"
 
 /* The size of one output buffer when pack_zstd_buffers says nothing.
 
-   16 KB rather than anything nearer the ceiling above: at the 64 KB
+   16 KB rather than anything nearer the ceiling above: at the 32 KB
    window default a block never needs more than
-   ZSTD_compressBound(64 KB), and a response that keeps up with its
+   ZSTD_compressBound(32 KB), and a response that keeps up with its
    client refills one buffer round after round rather than filling
    several, so the larger size would be paid for and not used.
 
@@ -106,8 +125,8 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    the value no configuration named. Nothing but the stress build
    should set it; a deployment that wants another size says so in the
    configuration, within the bounds. */
-#ifndef NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE
-#define NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE (16 * 1024)
+#ifndef NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT
+#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT (16 * 1024)
 #endif
 
 
@@ -131,6 +150,11 @@ typedef struct {
        how big each of them is: the two parameters of
        pack_zstd_buffers, kept in the pair nginx parses them into. */
     ngx_bufs_t bufs;
+
+    /* pack_zstd_held_input: the ceiling ngx_http_pack_zstd_prepare
+       reads when deciding whether to keep waiting for a streamed
+       response's size to turn up - see the constant block above. */
+    size_t held_input;
 } conf_t;
 
 /* What the body filter should do once ngx_http_pack_zstd_prepare
@@ -267,15 +291,25 @@ static ngx_int_t ngx_http_pack_zstd_init(ngx_conf_t *cf);
 
 static char *ngx_http_pack_zstd_parse_window(
     ngx_conf_t *cf, void *post, void *data);
+static char *ngx_http_pack_zstd_check_held_input(
+    ngx_conf_t *cf, void *post, void *data);
 static char *ngx_http_pack_zstd_set_buffers(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
-/* 1 and 22 are zstd's own documented stable range (ZSTD_minCLevel()
-   and ZSTD_maxCLevel() are runtime functions, not compile-time
-   constants, so they cannot fill an ngx_conf_num_bounds_t literal);
-   negative levels are a real part of zstd's range but are not
-   exposed through this directive. */
+/* Narrower than zstd's own stable range, which runs 1 to 22
+   (ZSTD_minCLevel() and ZSTD_maxCLevel() are runtime functions, not
+   compile-time constants, so they cannot fill an
+   ngx_conf_num_bounds_t literal regardless). Negative levels are a
+   real part of that range too and are not exposed either.
+
+   The levels past this ceiling reach for zstd's slowest match-finding
+   strategies (btultra2 among them), spending much more encoder CPU
+   per request for a ratio improvement that shrinks as the level
+   climbs - see zstd's own published level/speed/ratio table. 6 is
+   where this module stops asking a request to pay for that; an admin
+   who wants more can raise NGX_HTTP_PACK_ZSTD_LEVEL_MAX and rebuild.
+   script/bench_corpus.py is what would justify moving it instead. */
 static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
     ngx_conf_check_num_bounds,
     NGX_HTTP_PACK_ZSTD_LEVEL_MIN,
@@ -285,6 +319,10 @@ static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
 static ngx_conf_post_handler_pt const
     ngx_http_pack_zstd_parse_window_p =
         ngx_http_pack_zstd_parse_window;
+
+static ngx_conf_post_handler_pt const
+    ngx_http_pack_zstd_check_held_input_p =
+        ngx_http_pack_zstd_check_held_input;
 
 static ngx_command_t const ngx_http_pack_zstd_commands[] = {
     {
@@ -322,6 +360,15 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, window_bits),
         (void *) &ngx_http_pack_zstd_parse_window_p,
+    },
+    {
+        ngx_string("pack_zstd_held_input"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE1,
+        ngx_conf_set_size_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, held_input),
+        (void *) &ngx_http_pack_zstd_check_held_input_p,
     },
     {
         ngx_string("pack_zstd_buffers"),
@@ -743,10 +790,13 @@ static prepare_result
 ngx_http_pack_zstd_prepare(prepare_args *const args)
 {
     ctx_t                *ctx;
+    conf_t               *conf;
     pending_input_result  pending;
     commit_headers_result committed;
 
-    ctx = args->ctx;
+    ctx  = args->ctx;
+    conf = ngx_http_get_module_loc_conf(
+        ctx->request, ngx_http_pack_zstd_module);
 
     /* The steady state: the headers are away and the encoder exists,
        so there is nothing to settle. */
@@ -799,13 +849,12 @@ ngx_http_pack_zstd_prepare(prepare_args *const args)
        window, so when the response size is unknown it is worth
        waiting a moment to see if the whole thing turns up. */
     if (!ctx->state.caller_wants_output && !pending.urgent &&
-        ctx->content_length < 0 &&
-        pending.total < NGX_HTTP_PACK_ZSTD_MAX_HELD_INPUT) {
+        ctx->content_length < 0 && pending.total < conf->held_input) {
         ngx_log_debug1(
             NGX_LOG_DEBUG_HTTP,
             ctx->request->connection->log,
             0,
-            "zstd deferring encoder: pending:%uz",
+            "zstd deferring encoder, pending:%uz",
             pending.total);
 
         return (prepare_result) {
@@ -1115,6 +1164,7 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *const cf)
     conf->enable      = NGX_CONF_UNSET;
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
+    conf->held_input  = NGX_CONF_UNSET_SIZE;
     conf->min_length  = NGX_CONF_UNSET;
 
     return conf;
@@ -1135,9 +1185,10 @@ ngx_http_pack_zstd_merge_conf(
     /* zstd's own documented default (ZSTD_CLEVEL_DEFAULT). Kept
        rather than chosen: script/bench_corpus.py is what would
        justify moving it for a given corpus. */
-    ngx_conf_merge_value(conf->level, prev->level, 3);
+    ngx_conf_merge_value(
+        conf->level, prev->level, NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT);
 
-    /* 16 bits (64 KB), because per-request memory outranks
+    /* 15 bits (32 KB), because per-request memory outranks
        compression ratio here and zstd's memory climbs with the
        window. Multiply any increase by the concurrent requests a
        worker carries before taking it.
@@ -1148,16 +1199,31 @@ ngx_http_pack_zstd_merge_conf(
        buffer grows on its own. The same ordering decides against
        it. */
     ngx_conf_merge_size_value(
-        conf->window_bits, prev->window_bits, 16);
+        conf->window_bits,
+        prev->window_bits,
+        NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT);
 
-    /* Eight rather than nginx's gzip default of 32. The buffers exist
+    /* See the constant block: the default matches nothing in
+       particular, only the general shape of "deferring a little
+       tends to pay for itself, deferring a lot rarely does". An admin
+       who knows their bodies always resolve fast can raise it toward
+       the ceiling; one who never wants the wait can lower it toward
+       the floor. */
+    ngx_conf_merge_size_value(
+        conf->held_input,
+        prev->held_input,
+        NGX_HTTP_PACK_ZSTD_HELD_INPUT_DEFAULT);
+
+    /* Four rather than nginx's gzip default of 32. The buffers exist
        so that a stalled write does not stop the encoder, and past a
        handful they stop buying that: zstd emits at most one block per
-       ZSTD_compressStream2 call, so eight 16 KB buffers cover the
-       largest block zstd can hand back at any window. They also cost
-       - eight times the size below, held for the life of a response
-       that stalls - and gzip's 32 x 4K would be 128 KB per response
-       for a case this module does not have.
+       ZSTD_compressStream2 call, so four 16 KB buffers already cover
+       a whole block at the pack_zstd_window default, with room to
+       spare. They also cost - four times the size below, held for the
+       life of a response that stalls - and gzip's 32 x 4K would be
+       128 KB per response for a case this module does not have. An
+       admin whose window runs larger than the default is who
+       NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MAX's own comment is for.
 
        Both halves move together, as ngx_conf_merge_bufs_value has it:
        a location that names one names the other, so a count inherited
@@ -1169,14 +1235,17 @@ ngx_http_pack_zstd_merge_conf(
     ngx_conf_merge_bufs_value(
         conf->bufs,
         prev->bufs,
-        8,
-        NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE);
+        NGX_HTTP_PACK_ZSTD_BUFFER_NUM_DEFAULT,
+        NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT);
 
     /* Below this a response is not worth encoding: the frame's own
        overhead and the "Content-Encoding" header can together cost
        more than the body saves. 256 sits clear of the length where
        the two balance for small text bodies. */
-    ngx_conf_merge_value(conf->min_length, prev->min_length, 256);
+    ngx_conf_merge_value(
+        conf->min_length,
+        prev->min_length,
+        NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT);
 
     if (ngx_http_merge_types(
             cf,
@@ -1231,6 +1300,27 @@ ngx_http_pack_zstd_parse_window(
            "64k, 128k, 256k, 512k, or 1m";
 }
 
+/* Checks pack_zstd_held_input's parsed size against the bounds above
+   the constant block it shares with pack_zstd_window - see the
+   comment there for why the ceiling is where it is. */
+static char *
+ngx_http_pack_zstd_check_held_input(
+    ngx_conf_t *const cf, void *const post, void *const data)
+{
+    size_t *held;
+
+    held = data;
+
+    if (*held < NGX_HTTP_PACK_ZSTD_HELD_INPUT_MIN ||
+        *held > NGX_HTTP_PACK_ZSTD_HELD_INPUT_MAX) {
+        return "must be "
+               "between " NGX_HTTP_PACK_ZSTD_HELD_INPUT_MIN_STR
+               " and " NGX_HTTP_PACK_ZSTD_HELD_INPUT_MAX_STR;
+    }
+
+    return NGX_CONF_OK;
+}
+
 /* Parses pack_zstd_buffers and checks both parameters.
 
    ngx_conf_set_bufs_slot does the parsing and rejects a repeat, an
@@ -1261,14 +1351,30 @@ ngx_http_pack_zstd_set_buffers(
        the arithmetic has to happen on a char *. */
     bufs = (ngx_bufs_t *) ((char *) conf + cmd->offset);
 
-    if (bufs->num < NGX_HTTP_PACK_ZSTD_BUFFERS_NUM_MIN ||
-        bufs->num > NGX_HTTP_PACK_ZSTD_BUFFERS_NUM_MAX) {
-        return "number of buffers must be between 1 and 64";
+    if (bufs->num < NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MIN ||
+        bufs->num > NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MAX) {
+        ngx_conf_log_error(
+            NGX_LOG_EMERG,
+            cf,
+            0,
+            "number of buffers must be between %i and %i",
+            NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MIN,
+            NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MAX);
+
+        return NGX_CONF_ERROR;
     }
 
-    if (bufs->size < NGX_HTTP_PACK_ZSTD_BUFFERS_SIZE_MIN ||
-        bufs->size > NGX_HTTP_PACK_ZSTD_BUFFERS_SIZE_MAX) {
-        return "buffer size must be between 4k and 128k";
+    if (bufs->size < NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN ||
+        bufs->size > NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX) {
+        ngx_conf_log_error(
+            NGX_LOG_EMERG,
+            cf,
+            0,
+            "buffer size must be between %s and %s",
+            NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN_STR,
+            NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX_STR);
+
+        return NGX_CONF_ERROR;
     }
 
     return NGX_CONF_OK;

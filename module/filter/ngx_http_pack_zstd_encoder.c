@@ -35,9 +35,10 @@ static void ngx_http_pack_zstd_cleanup(void *data);
 /* How many buffers carrying "flush" may share one zstd block.
 
    A flush cuts the block short, which costs both encoder time and
-   output size. A flush landing on a 64 KB boundary costs nothing,
-   because a block is MIN(windowSize, ZSTD_BLOCKSIZE_MAX) and that is
-   where the encoder was going to end one anyway.
+   output size. A flush landing on a 32 KB boundary - the block size
+   at pack_zstd_window's compiled-in default - costs nothing, because
+   a block is MIN(windowSize, ZSTD_BLOCKSIZE_MAX) and that is where
+   the encoder was going to end one anyway.
 
    Several flush-marked buffers do arrive together, and routinely:
    ngx_http_proxy_chunked_filter appends one buffer per parsed chunk

@@ -26,7 +26,7 @@
 #   NGINX_REF   git ref of nginx to build against, as script/build.sh
 #
 # Overridable:
-#   OUT_SIZE    bytes for NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE
+#   OUT_SIZE    bytes for NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT
 #               (default: 64)
 #   SANITIZE    1 to build with AddressSanitizer (default: 0)
 #   JOBS        parallelism (default: number of processors)
@@ -58,7 +58,7 @@ if [ ! -d "$BUILD" ]; then
 		https://github.com/nginx/nginx.git "$BUILD"
 fi
 
-# NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE is #ifndef-guarded purely so
+# NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT is #ifndef-guarded purely so
 # this can reach it. It moves what pack_zstd_buffers falls back to,
 # rather than what the directive can say: 64 bytes is far below the 4k
 # floor the directive enforces, and deliberately so - the bounds are on
@@ -66,7 +66,7 @@ fi
 # configuration named. A location that does name a size still gets the
 # size it named, which is why the suite's own config leaves the default
 # alone almost everywhere.
-CC_OPT="-DNGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE=$OUT_SIZE"
+CC_OPT="-DNGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT=$OUT_SIZE"
 LD_OPT=""
 if [ "$SANITIZE" = "1" ]; then
 	CC_OPT="$CC_OPT -fsanitize=address -fno-omit-frame-pointer -g -O1"
