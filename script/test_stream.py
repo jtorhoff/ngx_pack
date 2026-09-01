@@ -2105,35 +2105,6 @@ def test_window_message(ctx):
     )
 
 
-HELD_INPUT_CASES = [
-    ("4k", True),
-    ("16k", True),
-    ("64k", True),
-    ("0", False),
-    ("3k", False),  # one KB below the floor
-    ("65k", False),  # one KB above the ceiling
-    ("4095", False),  # one byte below the floor, given in bytes
-    ("1m", False),
-    ("nonsense", False),
-]
-
-
-@test("pack_zstd_held_input takes a size of 4k..64k")
-def test_held_input_bounds(ctx):
-    """A custom post handler rather than ngx_conf_num_bounds_t: the slot
-    stores a parsed size_t, and that checker reads its data as ngx_int_t -
-    see ngx_http_pack_zstd_check_held_input and the constant block above
-    it in ngx_http_pack_zstd_filter.c."""
-    for size, want in HELD_INPUT_CASES:
-        got, text = config_accepted(ctx, f"pack_zstd_held_input {size};")
-        check(
-            got == want,
-            f"pack_zstd_held_input {size}: expected "
-            f"{'accepted' if want else 'refused'}, got the opposite"
-            f"{'' if want else chr(10) + text}",
-        )
-
-
 LEVEL_CASES = [
     ("1", True),
     ("3", True),

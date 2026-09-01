@@ -84,21 +84,6 @@ being asked to opt into more - a larger window would produce responses some
 clients simply refuse to decode.
 
 
-### `pack_zstd_held_input`
-
-- **syntax**: `pack_zstd_held_input <size>`
-- **default**: `16k`
-- **context**: `http`, `server`, `location`
-
-Sets how much of a response with no `Content-Length` the filter may hold
-back (between `4k` and `64k`) before starting the encoder anyway.
-Deferring lets a response that turns out to be short pick the encoder window
-from its real size instead of `pack_zstd_window`'s ceiling, at the cost of
-delaying the first byte by however long that much of the body takes to
-arrive. It has no effect once `Content-Length` is known, and none on a
-response that starts with a `flush`-marked buffer - see the notes below.
-
-
 ### `pack_zstd_buffers`
 
 - **syntax**: `pack_zstd_buffers <number> <size>`
@@ -166,20 +151,6 @@ default. Raising the count therefore costs nothing on responses that keep up,
 and lets the ones that stall carry on compressing instead of stopping after
 every buffer, up to the `8`-buffer ceiling (128k); `1` makes the encoder wait
 for each buffer to be written before producing the next.
-
-
-`pack_zstd_held_input` only matters for a response whose `Content-Length` is
-unknown up front - a streamed or chunked upstream response, typically. Left
-at the default, most such responses resolve well inside `16k` and the
-encoder starts with the real size in hand; a response that is still going
-past the ceiling starts compressing at that point with `pack_zstd_window`'s
-full ceiling instead, exactly as if the directive were not there. Raising it
-costs a longer wait before the first compressed byte on responses that turn
-out to be large, in exchange for a better-sized window on ones that turn out
-to be small; lowering it toward the `4k` floor trades the reverse. A buffer
-that arrives already marked `flush` is compressed at once regardless -
-something downstream is waiting on it - so the directive only ever delays
-a response nothing has asked to see yet.
 
 
 `pack_zstd_min_length`: A response of unknown length is held briefly so the
