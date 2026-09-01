@@ -46,7 +46,7 @@ UPSTREAM_PORT = 8901
 
 # The compiled-in pack_zstd_window default, which test_stream.conf deliberately
 # does not override.
-FULL_WINDOW = 64 * 1024
+FULL_WINDOW = 32 * 1024
 
 # Little-endian 0xFD2FB528, the magic a zstd frame opens with.
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
@@ -2105,17 +2105,46 @@ def test_window_message(ctx):
     )
 
 
+HELD_INPUT_CASES = [
+    ("4k", True),
+    ("16k", True),
+    ("64k", True),
+    ("0", False),
+    ("3k", False),  # one KB below the floor
+    ("65k", False),  # one KB above the ceiling
+    ("4095", False),  # one byte below the floor, given in bytes
+    ("1m", False),
+    ("nonsense", False),
+]
+
+
+@test("pack_zstd_held_input takes a size of 4k..64k")
+def test_held_input_bounds(ctx):
+    """A custom post handler rather than ngx_conf_num_bounds_t: the slot
+    stores a parsed size_t, and that checker reads its data as ngx_int_t -
+    see ngx_http_pack_zstd_check_held_input and the constant block above
+    it in ngx_http_pack_zstd_filter.c."""
+    for size, want in HELD_INPUT_CASES:
+        got, text = config_accepted(ctx, f"pack_zstd_held_input {size};")
+        check(
+            got == want,
+            f"pack_zstd_held_input {size}: expected "
+            f"{'accepted' if want else 'refused'}, got the opposite"
+            f"{'' if want else chr(10) + text}",
+        )
+
+
 LEVEL_CASES = [
     ("1", True),
     ("3", True),
-    ("22", True),
+    ("6", True),
     ("0", False),
-    ("23", False),
+    ("7", False),
     ("-1", False),  # a real zstd level, deliberately not exposed
 ]
 
 
-@test("pack_zstd_level is held to 1..22")
+@test("pack_zstd_level is held to 1..6")
 def test_level_bounds(ctx):
     for level, want in LEVEL_CASES:
         got, text = config_accepted(ctx, f"pack_zstd_level {level};")
@@ -2127,15 +2156,15 @@ def test_level_bounds(ctx):
         )
 
 
-BUFFERS_CASES = [("1 16k", True), ("8 16k", True), ("64 16k", True),
+BUFFERS_CASES = [("1 16k", True), ("8 16k", True),
                  ("4 4k", True), ("4 128k", True),
-                 ("0 16k", False), ("65 16k", False), ("-1 16k", False),
+                 ("0 16k", False), ("9 16k", False), ("-1 16k", False),
                  ("4 0", False), ("4 nonsense", False),
                  ("4 4095", False), ("4 129k", False), ("4 1m", False),
                  ("4", False), ("4 16k 4", False)]
 
 
-@test("pack_zstd_buffers takes a count of 1..64 and a size of 4k..128k")
+@test("pack_zstd_buffers takes a count of 1..8 and a size of 4k..128k")
 def test_buffers_bounds(ctx):
     """One buffer is enough to be correct - the filter stalls until the
     filters below take it - so the count floor is 1, and its ceiling is
@@ -2166,7 +2195,7 @@ def test_buffers_bounds(ctx):
 # ---------------------------------------------------------------------------
 
 # module/filter/ngx_http_pack_zstd_filter.c, the pack_zstd_buffers default.
-DEFAULT_BUFFERS = 8
+DEFAULT_BUFFERS = 4
 
 
 def stall_a_response(port, path, seconds=0.6):
@@ -2691,14 +2720,14 @@ def test_output_rounds_account_for_the_body(ctx):
 
     # Only meaningful when the caller has said what the build should have.
     # It is what stops the small-buffer run from passing as a plain re-run of the
-    # suite if -DNGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE stops reaching the compiler.
+    # suite if -DNGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT stops reaching the compiler.
     cap = max(sizes)
     if ctx.max_out_size is not None:
         check(
             cap <= ctx.max_out_size,
             f"largest committed round was {cap} bytes, above the "
             f"{ctx.max_out_size} this build was meant to be limited to: "
-            f"NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE did not reach the compiler",
+            f"NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT did not reach the compiler",
         )
 
 
@@ -2716,7 +2745,7 @@ class Context:
         self.decode = decode
         self.fixtures = fixtures
         self.nginx = nginx
-        # What NGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE was built with, when the
+        # What NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT was built with, when the
         # caller knows; None means "whatever the default is", and the check is
         # skipped.
         self.max_out_size = max_out_size
@@ -2733,7 +2762,7 @@ def main():
         "--max-out-size",
         type=int,
         help="assert the module's output buffer is at most this many bytes, "
-        "i.e. that -DNGX_HTTP_PACK_ZSTD_DEFAULT_BUFFER_SIZE reached the build "
+        "i.e. that -DNGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT reached the build "
         "(see script/test-small-buffer.sh)",
     )
     parser.add_argument(

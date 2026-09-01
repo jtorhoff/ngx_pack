@@ -67,13 +67,14 @@ Responses with the `text/html` MIME type are always compressed.
 - **context**: `http`, `server`, `location`
 
 Sets the compression `level`. Acceptable values are in the range from `1` to
-`22`. Zstandard's negative levels are not exposed through this directive.
+`6`. Zstandard's negative levels, and its higher levels up to `22`, are not
+exposed through this directive - see the notes below.
 
 
 ### `pack_zstd_window`
 
 - **syntax**: `pack_zstd_window <size>`
-- **default**: `64k`
+- **default**: `32k`
 - **context**: `http`, `server`, `location`
 
 Sets the compression window `size`. Acceptable values are `1k`, `2k`, `4k`,
@@ -83,13 +84,28 @@ being asked to opt into more - a larger window would produce responses some
 clients simply refuse to decode.
 
 
+### `pack_zstd_held_input`
+
+- **syntax**: `pack_zstd_held_input <size>`
+- **default**: `16k`
+- **context**: `http`, `server`, `location`
+
+Sets how much of a response with no `Content-Length` the filter may hold
+back (between `4k` and `64k`) before starting the encoder anyway.
+Deferring lets a response that turns out to be short pick the encoder window
+from its real size instead of `pack_zstd_window`'s ceiling, at the cost of
+delaying the first byte by however long that much of the body takes to
+arrive. It has no effect once `Content-Length` is known, and none on a
+response that starts with a `flush`-marked buffer - see the notes below.
+
+
 ### `pack_zstd_buffers`
 
 - **syntax**: `pack_zstd_buffers <number> <size>`
-- **default**: `8 16k`
+- **default**: `4 16k`
 - **context**: `http`, `server`, `location`
 
-Sets the maximum `number` of output buffers (between `1` and `64`) one
+Sets the maximum `number` of output buffers (between `1` and `8`) one
 response may fill before it has to wait for the client to take them,
 and the `size` of each (between `4k` and `128k`). Both parameters are
 required, as with `gzip_buffers`, and both are checked when the
@@ -120,17 +136,23 @@ are compressed regardless of this setting. See notes below.
 `pack_zstd_level`: A high level costs mostly CPU, and only mildly memory.
 The module tells the encoder what to expect: the exact size where a
 `Content-Length` gives one, and a fixed guess where it does not
-(fixed at `256k`). Chunked body at the `64k` default costs 0.95 MB at level
-`3`, 1.07 MB at `6` and `9` alike, and 1.90 MB at `22` - a ceiling that
-holds across the whole directive range, and at or below what the same body
-costs with its length known.
+(fixed at `256k`). Chunked body at a `64k` window costs 0.95 MB at level
+`3` and 1.07 MB at level `6` - a ceiling that holds across the whole
+directive range, and at or below what the same body costs with its length
+known. The directive stops short of zstd's own range (up to `22`) because
+the top levels reach for zstd's slowest match-finding strategies for a
+ratio gain that shrinks as the level climbs; see the comment above
+`ngx_http_pack_zstd_levels` in the filter source for the detail, and
+`script/bench_corpus.py` for what would justify raising the ceiling.
 
 
 `pack_zstd_window` is the main influence on what a request costs in memory.
 Measured against `script/corpus` at level `3`, compressed bytes against peak
 per-request encoder memory: 265,093 / 0.32 MB at `16k`, 241,626 / 1.20 MB at
-the `64k` default, 234,205 / 1.62 MB at `128k`, 230,211 / 1.74 MB at `256k`
-and 230,210 / 2.49 MB at `1m`.
+`64k`, 234,205 / 1.62 MB at `128k`, 230,211 / 1.74 MB at `256k` and
+230,210 / 2.49 MB at `1m`. The compiled-in default, `32k`, was not measured
+separately, but sits between the `16k` and `64k` figures above on both
+axes.
 
 
 `pack_zstd_buffers` only matters when the socket will not take output as fast
@@ -139,11 +161,25 @@ Short of that the encoder keeps refilling the one buffer it already has, so a
 response that never outruns its client costs one buffer whatever the count is
 set to: measured on a 1.5 MB response, a fast client creates a single buffer at
 every count tried. Under `limit_rate 8k` that same response creates as many as
-it is allowed - 1 (16k) at `pack_zstd_buffers 1 16k`, 4 (64k) when allowed 4,
-and 24 (384k) when allowed 32. Raising the count therefore costs nothing on
-responses that keep up, and lets the ones that stall carry on compressing
-instead of stopping after every buffer; `1` makes the encoder wait for each
-buffer to be written before producing the next.
+it is allowed - 1 (16k) at `pack_zstd_buffers 1 16k`, and 4 (64k) at the
+default. Raising the count therefore costs nothing on responses that keep up,
+and lets the ones that stall carry on compressing instead of stopping after
+every buffer, up to the `8`-buffer ceiling (128k); `1` makes the encoder wait
+for each buffer to be written before producing the next.
+
+
+`pack_zstd_held_input` only matters for a response whose `Content-Length` is
+unknown up front - a streamed or chunked upstream response, typically. Left
+at the default, most such responses resolve well inside `16k` and the
+encoder starts with the real size in hand; a response that is still going
+past the ceiling starts compressing at that point with `pack_zstd_window`'s
+full ceiling instead, exactly as if the directive were not there. Raising it
+costs a longer wait before the first compressed byte on responses that turn
+out to be large, in exchange for a better-sized window on ones that turn out
+to be small; lowering it toward the `4k` floor trades the reverse. A buffer
+that arrives already marked `flush` is compressed at once regardless -
+something downstream is waiting on it - so the directive only ever delays
+a response nothing has asked to see yet.
 
 
 `pack_zstd_min_length`: A response of unknown length is held briefly so the
