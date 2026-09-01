@@ -97,9 +97,9 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    encoder memory scales with the window and a server pays that per
    request in flight. Nothing served over HTTP earns more than 1 MB.
  */
-#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 10
+#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 12
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MAX 20
-#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT 15
+#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT 16
 
 
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MIN 1
@@ -1321,8 +1321,7 @@ ngx_http_pack_zstd_parse_window(
         }
     }
 
-    return "must be 1k, 2k, 4k, 8k, 16k, 32k, "
-           "64k, 128k, 256k, 512k, or 1m";
+    return "must be 4k, 8k, 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
 }
 
 /* Checks pack_zstd_hint's parsed size: a floor, and the one ceiling

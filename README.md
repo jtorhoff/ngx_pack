@@ -74,14 +74,13 @@ exposed through this directive - see the notes below.
 ### `pack_zstd_window`
 
 - **syntax**: `pack_zstd_window <size>`
-- **default**: `32k`
+- **default**: `64k`
 - **context**: `http`, `server`, `location`
 
-Sets the compression window `size`. Acceptable values are `1k`, `2k`, `4k`,
-`8k`, `16k`, `32k`, `64k`, `128k`, `256k`, `512k`, `1m`, `2m`, `4m`, `8m`,
-`16m`, `32m`, `64m` and `128m`. The ceiling is what a decoder accepts without
-being asked to opt into more - a larger window would produce responses some
-clients simply refuse to decode.
+Sets the compression window `size`. Acceptable values are `4k`, `8k`, `16k`,
+`32k`, `64k`, `128k`, `256k`, `512k` and `1m`. The ceiling is memory, not
+compatibility - decoders accept far larger windows, but encoder memory
+scales with the window and a server pays that per request in flight.
 
 
 ### `pack_zstd_buffers`
@@ -121,7 +120,7 @@ are compressed regardless of this setting. See notes below.
 `pack_zstd_level`: A high level costs mostly CPU, and only mildly memory.
 The module tells the encoder what to expect: the exact size where a
 `Content-Length` gives one, and a fixed guess where it does not
-(fixed at `256k`). Chunked body at a `64k` window costs 0.95 MB at level
+(fixed at `256k`). Chunked body at the `64k` default costs 0.95 MB at level
 `3` and 1.07 MB at level `6` - a ceiling that holds across the whole
 directive range, and at or below what the same body costs with its length
 known. The directive stops short of zstd's own range (up to `22`) because
@@ -134,10 +133,8 @@ ratio gain that shrinks as the level climbs; see the comment above
 `pack_zstd_window` is the main influence on what a request costs in memory.
 Measured against `script/corpus` at level `3`, compressed bytes against peak
 per-request encoder memory: 265,093 / 0.32 MB at `16k`, 241,626 / 1.20 MB at
-`64k`, 234,205 / 1.62 MB at `128k`, 230,211 / 1.74 MB at `256k` and
-230,210 / 2.49 MB at `1m`. The compiled-in default, `32k`, was not measured
-separately, but sits between the `16k` and `64k` figures above on both
-axes.
+the `64k` default, 234,205 / 1.62 MB at `128k`, 230,211 / 1.74 MB at `256k`
+and 230,210 / 2.49 MB at `1m`.
 
 
 `pack_zstd_buffers` only matters when the socket will not take output as fast

@@ -46,7 +46,7 @@ UPSTREAM_PORT = 8901
 
 # The compiled-in pack_zstd_window default, which test_stream.conf deliberately
 # does not override.
-FULL_WINDOW = 32 * 1024
+FULL_WINDOW = 64 * 1024
 
 # Little-endian 0xFD2FB528, the magic a zstd frame opens with.
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
@@ -2064,19 +2064,20 @@ def config_accepted(ctx, directive):
 # against 1 << bits, so an off-by-one at either end is exactly the
 # mistake it can make.
 WINDOW_CASES = (
-    [(f"{1 << n}", True) for n in range(10, 21)]
-    + [(f"{1 << n}k", True) for n in range(11)]
+    [(f"{1 << n}", True) for n in range(12, 21)]
+    + [(f"{1 << n}k", True) for n in range(2, 11)]
     + [
-        ("512", False),  # one bit below the floor
+        ("2048", False),  # one bit below the floor
         ("2m", False),  # one bit above the ceiling
         ("128m", False),  # the old ceiling, before it was capped
+        ("1k", False),  # accepted under the old 1k floor, not this one
         ("1500", False),  # in range, but not a power of two
         ("0", False),
     ]
 )
 
 
-@test("pack_zstd_window takes every power of two from 1k to 1m and no more")
+@test("pack_zstd_window takes every power of two from 4k to 1m and no more")
 def test_window_bounds(ctx):
     """The directive has a parser of its own rather than
     ngx_conf_num_bounds_t, so nothing checks it but this. Both ends
@@ -2097,7 +2098,7 @@ def test_window_message(ctx):
     """The refusal is all the operator gets, so it has to list the
     values rather than say the size was wrong."""
     _, text = config_accepted(ctx, "pack_zstd_window 2m;")
-    for size in ("1k", "64k", "1m"):
+    for size in ("4k", "64k", "1m"):
         check(size in text, f"the refusal does not mention {size}:\n{text}")
     check(
         "128m" not in text,
