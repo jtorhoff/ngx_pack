@@ -56,6 +56,45 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 #define NGX_HTTP_PACK_ZSTD_HELD_INPUT_MIN_STR "4k"
 #define NGX_HTTP_PACK_ZSTD_HELD_INPUT_MAX_STR "64k"
 
+/* Floor on pack_zstd_hint: what ZSTD_c_srcSizeHint is set to for a
+   response pack_zstd_held_input gave up waiting on - see the
+   constant block above and ngx_http_pack_zstd_configure_encoder,
+   which is the only reader.
+
+   No ceiling of this module's own choosing, per the directive: an
+   operator who knows their unknown-length bodies run large is free
+   to raise it as far as they judge worthwhile. The one ceiling that
+   remains is not ours - ZSTD_c_srcSizeHint itself tops out at
+   ZSTD_SRCSIZEHINT_MAX (INT_MAX, zstd.h), because the value travels
+   through ZSTD_CCtx_setParameter as a plain int - so the directive's
+   post handler still refuses anything wider than that, the same
+   ceiling libzstd would refuse on its own but caught here with a
+   config-time message instead of a request-time failure.
+
+   The floor is a page - the same one pack_zstd_held_input's own
+   floor uses, for a directive that is read at exactly the point
+   that one gave up. Nothing below it is forbidden by libzstd itself;
+   it is here so an operator does not read a hint of a few bytes as
+   sizing anything meaningfully smaller than what a page-sized guess
+   already does. */
+#define NGX_HTTP_PACK_ZSTD_HINT_MIN (4 * 1024)
+#define NGX_HTTP_PACK_ZSTD_HINT_MIN_STR "4k"
+
+/* 256 KB, comfortably past the pack_zstd_window default (32 KB) so
+   the hint is not what regresses ratio on an ordinary response that
+   turns out larger than expected - zstd.h warns compression "may
+   regress significantly if guess considerably underestimates".
+
+   Past whatever pack_zstd_window is actually set to, a larger hint
+   buys nothing: ZSTD_adjustCParams_internal never grows windowLog
+   past the ceiling the directive gave it, only shrinks it, so the
+   configured window remains the binding limit once the hint reaches
+   it. Measured directly against this module's own encoder at the
+   window default: 0.61 MB at a 64 KB hint or above, all the way to
+   1 MB, with no further change. An operator whose pack_zstd_window
+   sits well above this default is who raising this one is for. */
+#define NGX_HTTP_PACK_ZSTD_HINT_DEFAULT (256 * 1024)
+
 #define NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT 256
 
 /* windowLog bounds for pack_zstd_window: 1 KB to 1 MB. The floor is
@@ -155,6 +194,12 @@ typedef struct {
        reads when deciding whether to keep waiting for a streamed
        response's size to turn up - see the constant block above. */
     size_t held_input;
+
+    /* pack_zstd_hint: what ZSTD_c_srcSizeHint is set to for a
+       response held_input gave up waiting on - see the encoder's own
+       ngx_http_pack_zstd_encoder_conf_t, which this is copied into.
+     */
+    size_t hint;
 } conf_t;
 
 /* What the body filter should do once ngx_http_pack_zstd_prepare
@@ -293,6 +338,8 @@ static char *ngx_http_pack_zstd_parse_window(
     ngx_conf_t *cf, void *post, void *data);
 static char *ngx_http_pack_zstd_check_held_input(
     ngx_conf_t *cf, void *post, void *data);
+static char *
+ngx_http_pack_zstd_check_hint(ngx_conf_t *cf, void *post, void *data);
 static char *ngx_http_pack_zstd_set_buffers(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
@@ -323,6 +370,9 @@ static ngx_conf_post_handler_pt const
 static ngx_conf_post_handler_pt const
     ngx_http_pack_zstd_check_held_input_p =
         ngx_http_pack_zstd_check_held_input;
+
+static ngx_conf_post_handler_pt const
+    ngx_http_pack_zstd_check_hint_p = ngx_http_pack_zstd_check_hint;
 
 static ngx_command_t const ngx_http_pack_zstd_commands[] = {
     {
@@ -369,6 +419,15 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, held_input),
         (void *) &ngx_http_pack_zstd_check_held_input_p,
+    },
+    {
+        ngx_string("pack_zstd_hint"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE1,
+        ngx_conf_set_size_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, hint),
+        (void *) &ngx_http_pack_zstd_check_hint_p,
     },
     {
         ngx_string("pack_zstd_buffers"),
@@ -973,6 +1032,7 @@ ngx_http_pack_zstd_ensure_encoder(ctx_t *const ctx)
             .nbuffers       = conf->bufs.num,
             .buffer_size    = conf->bufs.size,
             .content_length = ctx->content_length,
+            .src_size_hint  = conf->hint,
         });
 
     if (ctx->encoder == NULL) {
@@ -1165,6 +1225,7 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *const cf)
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
     conf->held_input  = NGX_CONF_UNSET_SIZE;
+    conf->hint        = NGX_CONF_UNSET_SIZE;
     conf->min_length  = NGX_CONF_UNSET;
 
     return conf;
@@ -1213,6 +1274,12 @@ ngx_http_pack_zstd_merge_conf(
         conf->held_input,
         prev->held_input,
         NGX_HTTP_PACK_ZSTD_HELD_INPUT_DEFAULT);
+
+    /* See the constant block for why 256 KB, and why there is no
+       ceiling here to merge against a bound - the post handler
+       checks the floor alone. */
+    ngx_conf_merge_size_value(
+        conf->hint, prev->hint, NGX_HTTP_PACK_ZSTD_HINT_DEFAULT);
 
     /* Four rather than nginx's gzip default of 32. The buffers exist
        so that a stalled write does not stop the encoder, and past a
@@ -1316,6 +1383,36 @@ ngx_http_pack_zstd_check_held_input(
         return "must be "
                "between " NGX_HTTP_PACK_ZSTD_HELD_INPUT_MIN_STR
                " and " NGX_HTTP_PACK_ZSTD_HELD_INPUT_MAX_STR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+/* Checks pack_zstd_hint's parsed size: a floor, and the one ceiling
+   that is not this module's to set - see the constant block above.
+
+   NGX_MAX_INT32_VALUE rather than the parsed value overflowing
+   silently: ngx_parse_size returns a size_t, but the value travels
+   from there to ZSTD_CCtx_setParameter as a plain int, so anything
+   past what that can hold has to be refused here rather than wrap
+   into a negative or truncated one at request time. Wider than an
+   nginx config directive has any real reason to ask for - it holds
+   because ZSTD_SRCSIZEHINT_MAX (zstd.h) is INT_MAX too, the same
+   width for the same reason on libzstd's own side of the call. */
+static char *
+ngx_http_pack_zstd_check_hint(
+    ngx_conf_t *const cf, void *const post, void *const data)
+{
+    size_t *hint;
+
+    hint = data;
+
+    if (*hint < NGX_HTTP_PACK_ZSTD_HINT_MIN) {
+        return "must be at least " NGX_HTTP_PACK_ZSTD_HINT_MIN_STR;
+    }
+
+    if (*hint > NGX_MAX_INT32_VALUE) {
+        return "must not exceed 2147483647 bytes";
     }
 
     return NGX_CONF_OK;

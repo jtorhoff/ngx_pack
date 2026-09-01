@@ -54,31 +54,6 @@ static void ngx_http_pack_zstd_cleanup(void *data);
    burst in one block while keeping the deferral short. */
 #define NGX_HTTP_PACK_ZSTD_FLUSH_FOLD 4
 
-/* What the encoder is told to expect from a response whose length is
-   never learned - see ZSTD_c_srcSizeHint at the call site.
-
-   Unlike ZSTD_CCtx_setPledgedSrcSize this is a guess, not a promise:
-   it is not written to the frame header and not checked at the end of
-   the frame, so it may be wrong in either direction. That is the
-   whole reason it can be used here at all. A pledge cannot: it is
-   "controlled at end of frame, and trigger an error if not respected"
-   (zstd.h), so pledging a fixed size for a stream would fail every
-   response that did not happen to be exactly that long, with
-   "Src size is incorrect".
-
-   Without one of the two, zstd sizes its match-finder tables for the
-   worst case the window allows, which is what makes a stream cost
-   several times what the same body costs when its length is known -
-   see the pledge below.
-
-   256 KB rather than the window, which was the first guess and is
-   wrong in both directions: at the default window it is small enough
-   to cost ratio, the "regress significantly if guess considerably
-   underestimates" zstd.h warns of, and above 256 KB it stops capping
-   the tables at all. A smaller hint bounds the tables further but
-   gives up output size for memory this module does not need. */
-#define NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT (256 * 1024)
-
 /* What libzstd owns on this response's behalf: the encoder itself,
    and the directive still owed to it. Held inside the context by
    value like the flags above, so both are zeroed before the first
@@ -1332,14 +1307,25 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
     } else {
         /* No length to pledge, so give the guess instead - which is
            the difference between tables sized to the body and tables
-           sized to the worst case the window allows. See
-           NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT for what it costs and why
-           it is that number. */
+           sized to the worst case the window allows.
+
+           Unlike ZSTD_CCtx_setPledgedSrcSize this is a guess, not a
+           promise: it is not written to the frame header and not
+           checked at the end of the frame, so it may be wrong in
+           either direction. That is the whole reason it can be used
+           here at all - a pledge cannot, since it is "controlled at
+           end of frame, and trigger an error if not respected"
+           (zstd.h), and would fail every response that did not
+           happen to be exactly that long.
+
+           pack_zstd_hint is what an operator sets it to; see the
+           constant block in the filter for the compiled-in default
+           and why it is that number. */
         rc = ngx_http_pack_zstd_set_param(
                  &(set_param_args) {
                      .enc   = enc,
                      .param = ZSTD_c_srcSizeHint,
-                     .value = NGX_HTTP_PACK_ZSTD_SRC_SIZE_HINT,
+                     .value = (int32_t) enc->conf.src_size_hint,
                      .name  = &sizeHint,
                  })
                  .status;

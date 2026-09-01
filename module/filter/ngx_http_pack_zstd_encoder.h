@@ -64,7 +64,9 @@ typedef enum {
  * encoder actually runs out.
  *
  * "content_length" is -1 when the response size is not known, which
- * is what decides between a pledged size and a hint.
+ * is what decides between a pledged size and a hint; "src_size_hint"
+ * is what the encoder is told in the latter case - see
+ * pack_zstd_hint and ZSTD_c_srcSizeHint at the call site.
  */
 typedef struct {
     ngx_int_t level;
@@ -72,6 +74,7 @@ typedef struct {
     ngx_int_t nbuffers;
     size_t    buffer_size;
     off_t     content_length;
+    size_t    src_size_hint;
 } ngx_http_pack_zstd_encoder_conf_t;
 
 

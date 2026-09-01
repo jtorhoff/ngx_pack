@@ -2559,6 +2559,32 @@ def test_stream_memory_ceiling(ctx):
     )
 
 
+@test("pack_zstd_hint reaches the encoder", needs_debug=True)
+def test_hint_directive_reaches_encoder(ctx):
+    """/small-hint/ is /stream/ with pack_zstd_hint pulled to its floor.
+
+    Both take the same unknown-length path through the same upstream, so a
+    difference between them can only be the directive - unlike
+    test_stream_memory_ceiling, which shows the hint exists at all but not
+    that it is configurable.
+    """
+    default_peak, default_body = peak_encoder_bytes(ctx, "/stream/big.html")
+    small_peak, small_body = peak_encoder_bytes(ctx, "/small-hint/big.html")
+
+    check(
+        not frame_declares_size(default_body)
+        and not frame_declares_size(small_body),
+        "one of the two took the pledge path rather than the hint path, so "
+        "this does not compare what it means to",
+    )
+    check(
+        small_peak < default_peak,
+        f"pack_zstd_hint 4k peaked at {small_peak / 1024:.0f} KB, not below "
+        f"the {default_peak / 1024:.0f} KB the compiled-in default peaked "
+        f"at - the directive is parsed but not reaching the encoder",
+    )
+
+
 @test("repeated requests neither leak nor drift", needs_debug=True)
 def test_alloc_soak(ctx):
     rounds = 25
