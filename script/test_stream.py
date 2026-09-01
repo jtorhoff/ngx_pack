@@ -292,6 +292,19 @@ def make_text(word_count, seed):
     return " ".join(rng.choice(WORDS) for _ in range(word_count))
 
 
+def make_dense_text(length, seed):
+    """`length` characters that barely compress.
+
+    make_text() repeats a small vocabulary and so compresses away to almost
+    nothing; drawing every character independently leaves the compressed body
+    close to its raw size, which is what a test comparing output buffer sizes
+    needs to see.
+    """
+    rng = random.Random(seed)
+    alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    return "".join(rng.choice(alphabet) for _ in range(length))
+
+
 # Real-world files, checked in under script/corpus. Everything else here is
 # make_text() output, which is a poor stand-in for the web: random words drawn
 # from a small list repeat at long range, so they compress far better and far
@@ -334,6 +347,14 @@ def build_fixtures(work):
         "over_min.html": ("<html><body>" + "y" * 376 + "</body></html>"),
         # Not in pack_zstd_types.
         "data.bin": make_text(500, 3),
+        # Deliberately close to incompressible, unlike everything above:
+        # make_text() draws on a small vocabulary and compresses ~130x, so
+        # even a megabyte of it lands under 16k compressed - too small to
+        # tell one output buffer size from another. Random characters keep
+        # the compressed body roughly its raw size, which is what lets
+        # test_buffer_size_is_honoured see a round larger than the default
+        # buffer could hold.
+        "dense.html": make_dense_text(200000, 4),
     }
     for name, content in files.items():
         with open(os.path.join(html, name), "w") as handle:
@@ -2063,27 +2084,46 @@ def config_accepted(ctx, directive):
 # parser walks a loop from WINDOW_BITS_MIN to WINDOW_BITS_MAX comparing
 # against 1 << bits, so an off-by-one at either end is exactly the
 # mistake it can make.
-WINDOW_CASES = (
-    [(f"{1 << n}", True) for n in range(12, 21)]
-    + [(f"{1 << n}k", True) for n in range(2, 11)]
-    + [
-        ("2048", False),  # one bit below the floor
-        ("2m", False),  # one bit above the ceiling
-        ("128m", False),  # the old ceiling, before it was capped
-        ("1k", False),  # accepted under the old 1k floor, not this one
+def window_sizes(ctx):
+    """The window sizes this nginx accepts, read out of its own refusal.
+
+    The refusal is generated from NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN/MAX, so
+    reading it back is what keeps this test from having to be edited every
+    time a bound moves - and comparing it against what is actually accepted
+    below is what would catch the list and the parser disagreeing.
+    """
+    _, text = config_accepted(ctx, "pack_zstd_window 1500;")
+    listed = re.search(r"must be (.+?) in ", text)
+    check(listed is not None, f"no size list in the refusal:\n{text}")
+
+    sizes = [
+        size.strip()
+        for size in listed.group(1).replace(", or ", ", ").split(", ")
+    ]
+    check(len(sizes) > 1, f"only one size listed:\n{text}")
+    return sizes
+
+
+@test("pack_zstd_window takes every power of two it lists, and no more")
+def test_window_bounds(ctx):
+    """The directive has a parser of its own rather than
+    ngx_conf_num_bounds_t, so nothing checks it but this. Both ends matter:
+    the floor and the ceiling are what keep a window from costing more
+    memory per request in flight than this module is willing to spend."""
+    sizes = window_sizes(ctx)
+    accepted = [parse_size(size) for size in sizes]
+
+    cases = [(size, True) for size in sizes]
+    cases += [(str(value), True) for value in accepted]
+    cases += [
+        (str(min(accepted) // 2), False),  # one bit below the floor
+        (str(max(accepted) * 2), False),  # one bit above the ceiling
+        ("128m", False),  # far past the ceiling
         ("1500", False),  # in range, but not a power of two
         ("0", False),
     ]
-)
 
-
-@test("pack_zstd_window takes every power of two from 4k to 1m and no more")
-def test_window_bounds(ctx):
-    """The directive has a parser of its own rather than
-    ngx_conf_num_bounds_t, so nothing checks it but this. Both ends
-    matter: 128m was legal until the ceiling was cut to 1m for memory,
-    and a window is per request in flight."""
-    for size, want in WINDOW_CASES:
+    for size, want in cases:
         got, text = config_accepted(ctx, f"pack_zstd_window {size};")
         check(
             got == want,
@@ -2095,14 +2135,25 @@ def test_window_bounds(ctx):
 
 @test("pack_zstd_window names the sizes it takes when it refuses one")
 def test_window_message(ctx):
-    """The refusal is all the operator gets, so it has to list the
-    values rather than say the size was wrong."""
-    _, text = config_accepted(ctx, "pack_zstd_window 2m;")
-    for size in ("4k", "64k", "1m"):
-        check(size in text, f"the refusal does not mention {size}:\n{text}")
+    """The refusal is all the operator gets, so it has to list the values
+    rather than say the size was wrong. Every one it names has to be a
+    power of two, in ascending order, and none may be past the ceiling."""
+    sizes = window_sizes(ctx)
+    values = [parse_size(size) for size in sizes]
+
+    for size, value in zip(sizes, values):
+        check(
+            value and (value & (value - 1)) == 0,
+            f"the refusal offers {size}, which is not a power of two:\n"
+            f"{sizes}",
+        )
     check(
-        "128m" not in text,
-        f"the refusal still offers 128m, which is no longer taken:\n{text}",
+        values == sorted(values),
+        f"the refusal lists its sizes out of order: {sizes}",
+    )
+    check(
+        parse_size("128m") not in values,
+        f"the refusal still offers 128m, which is no longer taken: {sizes}",
     )
 
 
@@ -2128,31 +2179,77 @@ def test_level_bounds(ctx):
         )
 
 
-BUFFERS_CASES = [("1 16k", True), ("8 16k", True),
-                 ("4 4k", True), ("4 128k", True),
-                 ("0 16k", False), ("9 16k", False), ("-1 16k", False),
-                 ("4 0", False), ("4 nonsense", False),
-                 ("4 4095", False), ("4 129k", False), ("4 1m", False),
-                 ("4", False), ("4 16k 4", False)]
+def parse_size(text):
+    """"16k" to 16384, the units ngx_parse_size accepts."""
+    if text.endswith("k"):
+        return int(text[:-1]) * 1024
+    if text.endswith("m"):
+        return int(text[:-1]) * 1024 * 1024
+    return int(text)
 
 
-@test("pack_zstd_buffers takes a count of 1..8 and a size of 4k..128k")
+def buffer_bounds(ctx):
+    """(count_min, count_max, size_min, size_max) this nginx enforces.
+
+    Both pack_zstd_buffers bounds derive from ngx_pagesize, so they differ
+    between a 4k-page x86 box and a 16k-page arm64 one, and there is no way
+    to ask the host from here: this suite's interpreter may be an x86_64
+    build under Rosetta, and its children - getconf included - inherit the
+    translated personality, answering 4096 while the natively built nginx
+    under test sees 16384.
+
+    The binary is therefore the only source that can be trusted, and reading
+    the bounds out of its own refusals checks something worth checking on the
+    way past: that what it reports matches what it enforces.
+    """
+    _, text = config_accepted(ctx, "pack_zstd_buffers 1 1;")
+    sizes = re.search(r"buffer size must be between (\S+) and (\S+)", text)
+    check(sizes is not None, f"no buffer size bounds in the refusal:\n{text}")
+
+    _, text = config_accepted(
+        ctx, f"pack_zstd_buffers 100000 {sizes.group(1)};"
+    )
+    counts = re.search(
+        r"number of buffers must be between (\d+) and (\d+)", text
+    )
+    check(counts is not None, f"no buffer count bounds in the refusal:\n{text}")
+
+    return (
+        int(counts.group(1)),
+        int(counts.group(2)),
+        parse_size(sizes.group(1)),
+        parse_size(sizes.group(2)),
+    )
+
+
+@test("pack_zstd_buffers holds both parameters to their page-derived bounds")
 def test_buffers_bounds(ctx):
     """One buffer is enough to be correct - the filter stalls until the
-    filters below take it - so the count floor is 1, and its ceiling is
-    there because each buffer costs a size for the life of the response.
-
-    The size ceiling is where a larger buffer stops being able to do
-    anything: a zstd block is at most 128k, and the encoder emits at most
-    one per call. The floor is a page, below which the fixed cost of a
-    round outweighs what the round carries - correctness does not need
-    it, which is why script/test-small-buffer.sh can move the compiled-in
-    default under the floor without the directive allowing it.
+    filters below take it - so the count floor is 1. Both the count ceiling
+    and the size floor come from ngx_pagesize, so the accepted range is a
+    property of the host, not a constant this test can spell out.
 
     Both parameters are required, as with gzip_buffers, so a lone count
     is a configuration error rather than a count with the default size.
     """
-    for parameters, want in BUFFERS_CASES:
+    num_min, num_max, size_min, size_max = buffer_bounds(ctx)
+
+    cases = [
+        (f"{num_min} {size_min}", True),
+        (f"{num_max} {size_min}", True),
+        (f"{num_min} {size_max}", True),
+        (f"{num_min - 1} {size_min}", False),
+        (f"{num_max + 1} {size_min}", False),
+        (f"-1 {size_min}", False),
+        (f"{num_min} {size_min - 1}", False),
+        (f"{num_min} {size_max + 1}", False),
+        (f"{num_min} 0", False),
+        (f"{num_min} nonsense", False),
+        (f"{num_min}", False),
+        (f"{num_min} {size_min} {num_min}", False),
+    ]
+
+    for parameters, want in cases:
         got, text = config_accepted(ctx, f"pack_zstd_buffers {parameters};")
         check(
             got == want,
@@ -2166,8 +2263,6 @@ def test_buffers_bounds(ctx):
 # Output buffers
 # ---------------------------------------------------------------------------
 
-# module/filter/ngx_http_pack_zstd_filter.c, the pack_zstd_buffers default.
-DEFAULT_BUFFERS = 4
 
 
 def stall_a_response(port, path, seconds=0.6):
@@ -2195,6 +2290,11 @@ def test_multiple_output_buffers(ctx):
     client throttled compression as well as delivery. Several buffers let it
     run on, and the first parameter of pack_zstd_buffers is the bound on
     how far."""
+    # Half the ceiling, which is what merge_conf defaults the count to -
+    # itself page-derived, so it is read from the binary rather than
+    # spelled out here. See buffer_bounds().
+    default_buffers = buffer_bounds(ctx)[1] // 2
+
     ctx.nginx.mark_log()
     stall_a_response(ctx.port, "/throttled/wiki.html")
     created = buffers_created(ctx.nginx.read_log())
@@ -2206,9 +2306,9 @@ def test_multiple_output_buffers(ctx):
         f"nothing",
     )
     check(
-        created <= DEFAULT_BUFFERS,
+        created <= default_buffers,
         f"a stalled response created {created} output buffers, past the "
-        f"pack_zstd_buffers default of {DEFAULT_BUFFERS}",
+        f"pack_zstd_buffers default of {default_buffers}",
     )
 
 
@@ -2228,9 +2328,13 @@ def test_buffers_directive_is_honoured(ctx):
     )
 
 
-# script/test_stream.conf, the size /small-buffers/ asks for: the floor the
-# directive allows, which is also the smallest a test can ask for by config.
-SMALL_BUFFER_SIZE = 4096
+# script/test_stream.conf, the size /wide-buffers/ asks for, and the
+# compiled-in default it has to be told apart from. Larger rather than
+# smaller because the floor is ngx_pagesize: on a 16k-page host the smallest
+# a config may ask for is the default itself, so only a bigger size proves
+# the directive reached the encoder on every platform.
+WIDE_BUFFER_SIZE = 64 * 1024
+DEFAULT_BUFFER_SIZE = 16 * 1024
 
 
 @test("the pack_zstd_buffers size bounds what one round commits", needs_debug=True)
@@ -2238,32 +2342,31 @@ def test_buffer_size_is_honoured(ctx):
     """The second parameter, checked by what the encoder does with it.
 
     A round can commit at most one buffer's worth, so a location asking for
-    4k buffers cannot log a round above 4096 - and the same body through the
-    default 16k location does, which is what tells a working directive apart
-    from a body too small to fill anything.
+    64k buffers can log a round the 16k default never could - which is what
+    tells a working directive apart from one that is parsed and ignored.
     """
     ctx.nginx.mark_log()
-    status, headers, body = fetch(ctx.port, "/small-buffers/big.html")
+    status, headers, body = fetch(ctx.port, "/wide-buffers/dense.html")
     check(status == 200, f"expected 200, got {status}")
     check(headers.get("content-encoding") == "zstd", "response was not compressed")
 
     sizes = [int(size) for _, size in OUT_RE.findall(ctx.nginx.read_log())]
     check(sizes != [], "no committed rounds were traced")
     check(
-        max(sizes) <= SMALL_BUFFER_SIZE,
+        max(sizes) <= WIDE_BUFFER_SIZE,
         f"a round committed {max(sizes)} bytes against a "
-        f"{SMALL_BUFFER_SIZE}-byte buffer, so the size did not reach the "
-        f"encoder",
+        f"{WIDE_BUFFER_SIZE}-byte buffer, which is more than one buffer holds",
+    )
+    check(
+        max(sizes) > DEFAULT_BUFFER_SIZE,
+        f"the largest round was {max(sizes)} bytes, within what the "
+        f"{DEFAULT_BUFFER_SIZE}-byte default could have committed, so the "
+        f"configured size did not reach the encoder",
     )
     check(
         sum(sizes) == len(body),
         f"the filter committed {sum(sizes)} bytes over {len(sizes)} rounds "
         f"but the client received {len(body)}",
-    )
-    check(
-        len(sizes) > 1,
-        "the whole body fitted in one round, so this says nothing about the "
-        "size that was asked for",
     )
 
 
@@ -2551,7 +2654,7 @@ def test_hint_directive_reaches_encoder(ctx):
     )
     check(
         small_peak < default_peak,
-        f"pack_zstd_hint 4k peaked at {small_peak / 1024:.0f} KB, not below "
+        f"the smaller hint peaked at {small_peak / 1024:.0f} KB, not below "
         f"the {default_peak / 1024:.0f} KB the compiled-in default peaked "
         f"at - the directive is parsed but not reaching the encoder",
     )

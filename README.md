@@ -77,8 +77,8 @@ exposed through this directive - see the notes below.
 - **default**: `64k`
 - **context**: `http`, `server`, `location`
 
-Sets the compression window `size`. Acceptable values are `4k`, `8k`, `16k`,
-`32k`, `64k`, `128k`, `256k`, `512k` and `1m`. The ceiling is memory, not
+Sets the compression window `size`. Acceptable values are `16k`, `32k`,
+`64k`, `128k`, `256k`, `512k` and `1m`. The ceiling is memory, not
 compatibility - decoders accept far larger windows, but encoder memory
 scales with the window and a server pays that per request in flight.
 
@@ -91,7 +91,7 @@ scales with the window and a server pays that per request in flight.
 
 Sets the maximum `number` of output buffers (between `1` and `8`) one
 response may fill before it has to wait for the client to take them,
-and the `size` of each (between `4k` and `128k`). Both parameters are
+and the `size` of each (between `16k` and `128k`). Both parameters are
 required, as with `gzip_buffers`, and both are checked when the
 configuration is read.
 

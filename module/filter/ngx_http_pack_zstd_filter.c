@@ -23,18 +23,18 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 
 /* The most input held back while learning the response size, before
    falling back to the window at its worst-case, unsized cost. Not a
-   directive: nginx's own buffering usually ends the wait short of
-   any exposed ceiling. 16 KB: enough for a quick response to still
-   get an exact pledge. */
-#define NGX_HTTP_PACK_ZSTD_HELD_INPUT (16 * 1024)
+   directive: nginx's own buffering usually ends the wait first
+   regardless of any exposed ceiling. */
+#define NGX_HTTP_PACK_ZSTD_HELD_INPUT ngx_pagesize
 
 /* Floor on pack_zstd_hint: what ZSTD_c_srcSizeHint is set to for a
-   response the held-input threshold above gave up waiting on. No
-   ceiling of this module's own; the one that remains is
-   ZSTD_SRCSIZEHINT_MAX (zstd.h), refused here at config time rather
-   than by libzstd at request time. */
-#define NGX_HTTP_PACK_ZSTD_HINT_MIN (4 * 1024)
-#define NGX_HTTP_PACK_ZSTD_HINT_MIN_STR "4k"
+   response the held-input threshold above gave up waiting on. Fixed
+   rather than page-derived - a hint is a compression parameter, not
+   an allocation, so a config naming one should not become invalid on
+   a host with larger pages. No ceiling of this module's own; the one
+   that remains is ZSTD_SRCSIZEHINT_MAX (zstd.h), refused here at
+   config time rather than by libzstd at request time. */
+#define NGX_HTTP_PACK_ZSTD_HINT_MIN (16 * 1024)
 
 /* 256 KB, comfortably past the pack_zstd_window default so an
    ordinary larger-than-expected response does not regress ratio -
@@ -45,15 +45,13 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 
 #define NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT 256
 
-/* windowLog bounds for pack_zstd_window: 4 KB to 1 MB, the floor
-   above zstd's own minimum (1 KB, ZSTD_WINDOWLOG_MIN). The ceiling is
-   memory, not compatibility - encoder memory scales with the window
-   and a server pays that per request in flight. */
-#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 12
+/* The ceiling is memory - encoder memory scales
+   with the window, paid per request in flight. */
+#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 14
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MAX 20
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT 16
 
-
+/* Compression level. */
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MIN 1
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MAX 6
 #define NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT 3
@@ -72,11 +70,8 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    ZSTD_BLOCKSIZE_MAX), so 128 KB covers the largest one zstd ever
    hands back. The floor is a page, below which a round's fixed cost
    outweighs the bytes it carries; correctness needs none. */
-#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN (4 * 1024)
+#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN (16 * 1024)
 #define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX (128 * 1024)
-
-#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN_STR "4k"
-#define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX_STR "128k"
 
 /* pack_zstd_buffers' default size. 16 KB rather than nearer the
    ceiling: a response that keeps up with its client only ever
@@ -127,6 +122,7 @@ typedef enum {
     /* Not yet: pack_zstd_min_length can't be answered, or the size is
        still worth waiting on before the window is fixed. Input stays
        in ctx->in for a later call to decide; "rc" is NGX_OK. */
+
     NGX_HTTP_PACK_ZSTD_DEFER,
     /* Settled, uncompressed: too small to be worth it, so the held
        input already went to the filters below untouched. "rc" is
@@ -213,6 +209,9 @@ static char *
 ngx_http_pack_zstd_check_hint(ngx_conf_t *cf, void *post, void *data);
 static char *ngx_http_pack_zstd_set_buffers(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
+static ngx_str_t
+ngx_http_pack_zstd_human_size(ngx_pool_t *pool, size_t bytes);
 
 
 /* Narrower than zstd's own stable range (1 to 22, plus negatives,
@@ -1118,7 +1117,7 @@ ngx_http_pack_zstd_parse_window(
         }
     }
 
-    return "must be 4k, 8k, 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
+    return "must be 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
 }
 
 /* Checks pack_zstd_hint's parsed size: a floor, and the one ceiling
@@ -1130,16 +1129,29 @@ static char *
 ngx_http_pack_zstd_check_hint(
     ngx_conf_t *const cf, void *const post, void *const data)
 {
-    size_t *hint;
+    size_t   *hint;
+    ngx_str_t limit;
 
     hint = data;
 
     if (*hint < NGX_HTTP_PACK_ZSTD_HINT_MIN) {
-        return "must be at least " NGX_HTTP_PACK_ZSTD_HINT_MIN_STR;
+        limit = ngx_http_pack_zstd_human_size(
+            cf->pool, NGX_HTTP_PACK_ZSTD_HINT_MIN);
+
+        ngx_conf_log_error(
+            NGX_LOG_EMERG, cf, 0, "must be at least %V", &limit);
+
+        return NGX_CONF_ERROR;
     }
 
     if (*hint > NGX_MAX_INT32_VALUE) {
-        return "must not exceed 2147483647 bytes";
+        limit = ngx_http_pack_zstd_human_size(
+            cf->pool, NGX_MAX_INT32_VALUE);
+
+        ngx_conf_log_error(
+            NGX_LOG_EMERG, cf, 0, "must not exceed %V", &limit);
+
+        return NGX_CONF_ERROR;
     }
 
     return NGX_CONF_OK;
@@ -1156,6 +1168,8 @@ ngx_http_pack_zstd_set_buffers(
 {
     char       *rv;
     ngx_bufs_t *bufs;
+    ngx_str_t   min;
+    ngx_str_t   max;
 
     rv = ngx_conf_set_bufs_slot(cf, cmd, conf);
     if (rv != NGX_CONF_OK) {
@@ -1169,6 +1183,7 @@ ngx_http_pack_zstd_set_buffers(
 
     if (bufs->num < NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MIN ||
         bufs->num > NGX_HTTP_PACK_ZSTD_BUFFER_NUM_MAX) {
+
         ngx_conf_log_error(
             NGX_LOG_EMERG,
             cf,
@@ -1182,16 +1197,74 @@ ngx_http_pack_zstd_set_buffers(
 
     if (bufs->size < NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN ||
         bufs->size > NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX) {
+
+        min = ngx_http_pack_zstd_human_size(
+            cf->pool, NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN);
+        max = ngx_http_pack_zstd_human_size(
+            cf->pool, NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX);
+
         ngx_conf_log_error(
             NGX_LOG_EMERG,
             cf,
             0,
-            "buffer size must be between %s and %s",
-            NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN_STR,
-            NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX_STR);
+            "buffer size must be between %V and %V",
+            &min,
+            &max);
 
         return NGX_CONF_ERROR;
     }
 
     return NGX_CONF_OK;
+}
+
+/* The inverse of ngx_parse_size: 4096 back to "4k". Exact rather than
+   rounded: a size this module ever prints is one of its own byte
+   constants, so it either divides evenly by 1k/1m or it does not, and
+   only those two are worth answering in since that is all
+   ngx_parse_size itself accepts back. */
+static ngx_str_t
+ngx_http_pack_zstd_human_size(
+    ngx_pool_t *const pool, size_t const bytes)
+{
+    /* Room for any size this function prints, plus its unit letter.
+       A decimal digit carries more than a bit does, so a number never
+       needs more digits than it has bits - and the k/m form only ever
+       divides the value down. Overshoots wildly (64 digits reserved
+       where 20 is the most a size_t can reach) in exchange for not
+       needing a complicated derivation. */
+    enum {
+        max_str_len = (sizeof(size_t) * CHAR_BIT + sizeof("k") - 1)
+    };
+
+    ngx_str_t result;
+    size_t    value;
+    u_char    unit;
+    size_t    end;
+
+    result.data = ngx_pnalloc(pool, max_str_len);
+    if (result.data == NULL) {
+        return (ngx_str_t) ngx_null_string;
+    }
+
+    if (bytes != 0 && bytes % (1024 * 1024) == 0) {
+        value = bytes / (1024 * 1024);
+        unit  = 'm';
+    } else if (bytes != 0 && bytes % 1024 == 0) {
+        value = bytes / 1024;
+        unit  = 'k';
+    } else {
+        value = bytes;
+        unit  = 0;
+    }
+
+    end = (size_t) (ngx_sprintf(result.data, "%uz", value) -
+                    result.data);
+    if (unit) {
+        result.data[end] = unit;
+        result.len       = end + 1;
+    } else {
+        result.len = end;
+    }
+
+    return result;
 }
