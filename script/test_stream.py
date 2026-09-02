@@ -2191,16 +2191,13 @@ def parse_size(text):
 def buffer_bounds(ctx):
     """(count_min, count_max, size_min, size_max) this nginx enforces.
 
-    Both pack_zstd_buffers bounds derive from ngx_pagesize, so they differ
-    between a 4k-page x86 box and a 16k-page arm64 one, and there is no way
-    to ask the host from here: this suite's interpreter may be an x86_64
-    build under Rosetta, and its children - getconf included - inherit the
-    translated personality, answering 4096 while the natively built nginx
-    under test sees 16384.
+    Read out of the binary rather than spelled out here, so a bound that
+    moves in the module is picked up instead of needing this suite edited
+    alongside it - and so the tests below cannot drift out of step with
+    what the module actually accepts.
 
-    The binary is therefore the only source that can be trusted, and reading
-    the bounds out of its own refusals checks something worth checking on the
-    way past: that what it reports matches what it enforces.
+    Reading them from the refusals checks something worth checking on the
+    way past: that what the module reports matches what it enforces.
     """
     _, text = config_accepted(ctx, "pack_zstd_buffers 1 1;")
     sizes = re.search(r"buffer size must be between (\S+) and (\S+)", text)
@@ -2222,12 +2219,12 @@ def buffer_bounds(ctx):
     )
 
 
-@test("pack_zstd_buffers holds both parameters to their page-derived bounds")
+@test("pack_zstd_buffers holds both parameters to the bounds it reports")
 def test_buffers_bounds(ctx):
     """One buffer is enough to be correct - the filter stalls until the
-    filters below take it - so the count floor is 1. Both the count ceiling
-    and the size floor come from ngx_pagesize, so the accepted range is a
-    property of the host, not a constant this test can spell out.
+    filters below take it - so the count floor is 1. Every case here is
+    built from the bounds the binary names in its own refusals, so what
+    is checked is that each end is enforced, not what the ends are.
 
     Both parameters are required, as with gzip_buffers, so a lone count
     is a configuration error rather than a count with the default size.
@@ -2290,10 +2287,11 @@ def test_multiple_output_buffers(ctx):
     client throttled compression as well as delivery. Several buffers let it
     run on, and the first parameter of pack_zstd_buffers is the bound on
     how far."""
-    # Half the ceiling, which is what merge_conf defaults the count to -
-    # itself page-derived, so it is read from the binary rather than
-    # spelled out here. See buffer_bounds().
-    default_buffers = buffer_bounds(ctx)[1] // 2
+    # The ceiling the binary reports, not the default count: nothing the
+    # module prints names the default, and a stalled response is bounded
+    # by the ceiling either way. Checking against the looser of the two
+    # is what keeps this from restating a constant it cannot read.
+    _, max_buffers, _, _ = buffer_bounds(ctx)
 
     ctx.nginx.mark_log()
     stall_a_response(ctx.port, "/throttled/wiki.html")
@@ -2306,9 +2304,9 @@ def test_multiple_output_buffers(ctx):
         f"nothing",
     )
     check(
-        created <= default_buffers,
+        created <= max_buffers,
         f"a stalled response created {created} output buffers, past the "
-        f"pack_zstd_buffers default of {default_buffers}",
+        f"pack_zstd_buffers ceiling of {max_buffers}",
     )
 
 
@@ -2330,9 +2328,9 @@ def test_buffers_directive_is_honoured(ctx):
 
 # script/test_stream.conf, the size /wide-buffers/ asks for, and the
 # compiled-in default it has to be told apart from. Larger rather than
-# smaller because the floor is ngx_pagesize: on a 16k-page host the smallest
-# a config may ask for is the default itself, so only a bigger size proves
-# the directive reached the encoder on every platform.
+# smaller because the size floor and the default are both 16k: the
+# smallest a config may ask for is the default itself, so only a bigger
+# size proves the directive reached the encoder.
 WIDE_BUFFER_SIZE = 64 * 1024
 DEFAULT_BUFFER_SIZE = 16 * 1024
 

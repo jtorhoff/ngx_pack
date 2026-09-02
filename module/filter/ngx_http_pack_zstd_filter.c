@@ -43,6 +43,9 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    window buys nothing: windowLog only ever shrinks to fit it. */
 #define NGX_HTTP_PACK_ZSTD_HINT_DEFAULT (256 * 1024)
 
+/* Applies to a response of unknown length too, once its end is in
+   hand - the exception is a flush marker arriving first, which
+   compresses whatever the size. See merge_conf for why 256. */
 #define NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT 256
 
 /* The ceiling is memory - encoder memory scales
@@ -68,8 +71,8 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 /* Bounds on pack_zstd_buffers' size. The ceiling is where a larger
    buffer stops helping: a block is MIN(windowSize,
    ZSTD_BLOCKSIZE_MAX), so 128 KB covers the largest one zstd ever
-   hands back. The floor is a page, below which a round's fixed cost
-   outweighs the bytes it carries; correctness needs none. */
+   hands back. The floor is where a round's fixed cost starts to
+   outweigh the bytes it carries; correctness needs none. */
 #define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN (16 * 1024)
 #define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX (128 * 1024)
 
