@@ -124,11 +124,12 @@ typedef struct {
 typedef enum {
     /* Carry on into the encoder loop. */
     NGX_HTTP_PACK_ZSTD_OK = 0,
+
     /* Not yet: pack_zstd_min_length can't be answered, or the size is
        still worth waiting on before the window is fixed. Input stays
        in ctx->in for a later call to decide; "rc" is NGX_OK. */
-
     NGX_HTTP_PACK_ZSTD_DEFER,
+
     /* Settled, uncompressed: too small to be worth it, so the held
        input already went to the filters below untouched. "rc" is
        what that call returned; no "Content-Encoding" of ours, so

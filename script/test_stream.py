@@ -490,7 +490,7 @@ class Upstream:
                 return
 
             if path.startswith("/burst"):
-                self._burst(conn)
+                self._burst(conn, wide="wide" in path)
                 return
 
             if path.startswith("/status/"):
@@ -531,19 +531,33 @@ class Upstream:
     BURST_CHUNKS = 12
     BURST_TEXT = b"<p>zstd flush folding burst chunk payload</p>"
 
-    def _burst(self, conn):
+    # The wide burst carries more than the fold is allowed to hold, so the
+    # bound has to cut it; /burst-wide/ raises proxy_buffer_size to match,
+    # since the point is a single oversized chain rather than several.
+    WIDE_CHUNKS = 128
+    WIDE_CHUNK_SIZE = 1024
+
+    def _burst(self, conn, wide=False):
         """Writes every chunk in a single send.
 
         nginx then reads them together and ngx_http_proxy_chunked_filter
         appends one buffer per chunk, each with flush set, into one chain -
-        the case NGX_HTTP_PACK_ZSTD_FLUSH_FOLD exists for. Sending them as
-        separate writes would let nginx read them one at a time, and the
-        chain would hold a single flush marker with nothing to fold.
+        the case flush folding exists for. Sending them as separate writes
+        would let nginx read them one at a time, and the chain would hold a
+        single flush marker with nothing to fold.
         """
-        body = b"".join(
-            self._chunk(b"%d %s" % (i, self.BURST_TEXT))
-            for i in range(self.BURST_CHUNKS)
-        )
+        if wide:
+            pieces = [
+                b"%08d " % i + make_dense_text(self.WIDE_CHUNK_SIZE - 9, i).encode()
+                for i in range(self.WIDE_CHUNKS)
+            ]
+        else:
+            pieces = [
+                b"%d %s" % (i, self.BURST_TEXT)
+                for i in range(self.BURST_CHUNKS)
+            ]
+
+        body = b"".join(self._chunk(piece) for piece in pieces)
         conn.sendall(
             b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
             b"Transfer-Encoding: chunked\r\n\r\n" + body + b"0\r\n\r\n"
@@ -2413,20 +2427,22 @@ def test_buffer_size_is_honoured(ctx):
 # Flush folding
 # ---------------------------------------------------------------------------
 
-# module/filter/ngx_http_pack_zstd_filter.c
-FLUSH_FOLD = 4
+# module/filter/ngx_http_pack_zstd_encoder.c, the bound on both the fold
+# and the flush the filter makes on its own.
+FLUSH_AFTER = 32 * 1024
 
 
 @test("a burst of flush-marked chunks folds into fewer blocks", needs_decoder=True)
 def test_flush_folding(ctx):
     """The upstream writes every chunk in one send, so the chunked filter
     hands the module a single chain of flush markers - one per chunk. Only
-    the last of a fold has to cut a block, and the cap on how many fold is
-    what bounds it.
+    the last of a fold has to cut a block.
 
-    Asserting a bound rather than an exact count: how much nginx reads at
-    once is not ours to fix, so a burst may still arrive as more than one
-    chain, and each chain folds separately.
+    This burst is far smaller than the fold is allowed to hold, so what it
+    checks is that folding happens at all; test_flush_folding_bounded is
+    what checks where it stops. Asserting a bound rather than an exact
+    count, since how much nginx reads at once is not ours to fix and a
+    burst may still arrive as more than one chain.
     """
     chunks = Upstream.BURST_CHUNKS
     _, headers, body = fetch(ctx.port, "/burst")
@@ -2439,17 +2455,54 @@ def test_flush_folding(ctx):
     )
 
     blocks = frame_blocks(body)
-    ceiling = -(-chunks // FLUSH_FOLD) + 2
 
     check(
         blocks < chunks,
         f"{chunks} flush-marked chunks produced {blocks} blocks, so every "
         f"flush still cut its own block and nothing was folded",
     )
+
+
+@test("flush folding stops at the bound rather than swallowing a burst",
+      needs_decoder=True)
+def test_flush_folding_bounded(ctx):
+    """The other end of the fold, and the one a count of buffers could not
+    express: a chain carrying more than FLUSH_AFTER has to be cut, however
+    many buffers those bytes arrive in.
+
+    Both directions are checked because either alone is satisfied by a
+    mistake. A ceiling alone passes if nothing folds alone; a floor alone
+    passes if the fold is unbounded and one block covers everything. The
+    payload is close to incompressible so the input, not the output, is
+    what reaches the bound, and the location raises proxy_buffer_size so
+    the burst really does arrive as one chain.
+    """
+    raw = Upstream.WIDE_CHUNKS * Upstream.WIDE_CHUNK_SIZE
+    _, headers, body = fetch(ctx.port, "/burst-wide/x")
+
     check(
-        blocks <= ceiling,
-        f"{chunks} flush-marked chunks produced {blocks} blocks, more than "
-        f"the {ceiling} a fold of {FLUSH_FOLD} allows",
+        headers.get("content-encoding") == "zstd",
+        f"wide burst was not compressed, got "
+        f"{headers.get('content-encoding')!r}",
+    )
+    check(
+        len(ctx.decode(body)) == raw,
+        f"expected {raw} bytes back, got {len(ctx.decode(body))}",
+    )
+
+    blocks = frame_blocks(body)
+    floor = raw // FLUSH_AFTER
+
+    check(
+        blocks >= floor,
+        f"{raw} bytes of flush-marked input produced {blocks} block(s), "
+        f"fewer than the {floor} a {FLUSH_AFTER}-byte fold bound allows - "
+        f"the fold ran past where it should stop",
+    )
+    check(
+        blocks < Upstream.WIDE_CHUNKS,
+        f"{Upstream.WIDE_CHUNKS} flush-marked chunks produced {blocks} "
+        f"blocks, so nothing was folded at all",
     )
 
 
