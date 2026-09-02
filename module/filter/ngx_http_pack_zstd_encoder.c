@@ -1238,13 +1238,8 @@ ngx_http_pack_zstd_ensure_stream(encoder_t *const enc)
     };
 }
 
-/* The encoder allocates from the heap, not the request pool: its
-   allocations vary widely in size and lifetime, and ngx_pfree only
-   reclaims "large" blocks, so pool-backed ones would pile up until
-   the request ends. "opaque" is still the pool, but only for logging.
- */
-#if (NGX_HTTP_PACK_ZSTD_FAULT_INJECT)
 
+#if (NGX_HTTP_PACK_ZSTD_FAULT_INJECT)
 /* Test-only, and never in a shipping binary: script/build.sh does not
    define NGX_HTTP_PACK_ZSTD_FAULT_INJECT. Refuses the Nth allocation
    libzstd asks for and every one after it, so the out-of-memory
@@ -1285,17 +1280,25 @@ ngx_http_pack_zstd_fault_refuses(void)
     return ++ngx_http_pack_zstd_fault_seen >=
            ngx_http_pack_zstd_fault_after;
 }
+#endif
 
+
+/* The encoder allocates from the heap, not the request pool: its
+   allocations vary widely in size and lifetime, and ngx_pfree only
+   reclaims "large" blocks, so pool-backed ones would pile up until
+   the request ends. "opaque" is still the pool, but only for logging.
+ */
 static void *
 ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
 {
     ngx_pool_t *pool;
     ngx_log_t  *log;
-    void       *p;
+    void       *ptr;
 
     pool = opaque;
     log  = pool->log;
 
+#if (NGX_HTTP_PACK_ZSTD_FAULT_INJECT)
     if (ngx_http_pack_zstd_fault_refuses()) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -1306,44 +1309,20 @@ ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
 
         return NULL;
     }
-
-    p = ngx_alloc(size, log);
-
-    ngx_log_debug2(
-        NGX_LOG_DEBUG_HTTP,
-        log,
-        0,
-        "zstd alloc: %p, size: %uz",
-        p,
-        size);
-
-    return p;
-}
-#else
-
-static void *
-ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
-{
-    ngx_pool_t *pool;
-    ngx_log_t  *log;
-    void       *p;
-
-    pool = opaque;
-    log  = pool->log;
-
-    p = ngx_alloc(size, log);
-
-    ngx_log_debug2(
-        NGX_LOG_DEBUG_HTTP,
-        log,
-        0,
-        "zstd alloc: %p, size: %uz",
-        p,
-        size);
-
-    return p;
-}
 #endif
+
+    ptr = ngx_alloc(size, log);
+
+    ngx_log_debug2(
+        NGX_LOG_DEBUG_HTTP,
+        log,
+        0,
+        "zstd alloc: %p, size: %uz",
+        ptr,
+        size);
+
+    return ptr;
+}
 
 static void
 ngx_http_pack_zstd_free(void *const opaque, void *const address)
