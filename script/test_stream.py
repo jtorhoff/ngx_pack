@@ -2875,6 +2875,47 @@ def test_cleanup_handler_on_abort(ctx):
     )
 
 
+# One of each shape the encoder can be built on: a length known when the
+# headers were written, and one the filter had to wait for.
+RELEASED_EARLY_PATHS = ("/big.html", "/stream/big.html")
+
+
+@test("a finished response releases the encoder before the request closes",
+      needs_debug=True)
+def test_encoder_released_before_close(ctx):
+    """The mirror of the abort test above, and the only cover for the close
+    in ngx_http_pack_zstd_finish.
+
+    Both routes end with the encoder freed and the counts balanced, so
+    assert_balanced cannot tell them apart - a response that reached the
+    pool cleanup handler instead looks exactly as healthy. What separates
+    them is where the frees sit: nginx logs "http close request" on entry
+    to ngx_http_free_request and destroys the pool, cleanup handlers and
+    all, some eighty lines later. Freeing before that line is what keeps an
+    encoder's memory from outliving the response, which is the whole reason
+    finish() closes rather than leaving it to the pool.
+    """
+    for path in RELEASED_EARLY_PATHS:
+        ctx.nginx.mark_log()
+        _, headers, _ = fetch(ctx.port, path)
+        check(
+            headers.get("content-encoding") == "zstd",
+            f"{path} was not compressed, so no encoder was built to release",
+        )
+
+        active = assert_balanced(
+            wait_for_encoder_release(ctx.nginx), f"finished {path}")
+
+        late = sum(entry["frees_after_close"] for entry in active.values())
+        check(
+            late == 0,
+            f"{path}: {late} of the encoder's allocations were freed after "
+            f'"http close request", so the request left them to the pool '
+            f"cleanup handler rather than releasing them when the frame "
+            f"closed",
+        )
+
+
 @test("committed output rounds account for every byte of the body", needs_debug=True)
 def test_output_rounds_account_for_the_body(ctx):
     """The filter owns one output buffer and refills it round after round.
