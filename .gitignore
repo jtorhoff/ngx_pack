@@ -5,6 +5,7 @@ nginx/
 # cannot be mistaken for the one the normal suites run against.
 nginx-small-buffer/
 nginx-fault/
+nginx-oom/
 objs/
 objs-dyn/
 # Build output from the vendored zstd; the submodule itself is

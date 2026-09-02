@@ -271,6 +271,43 @@ jobs:
             tail -n 100 "$log"
           done
 
+  out-of-memory:
+    name: Run the out-of-memory paths
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake libpcre3-dev zlib1g-dev
+
+      # For libzstd; test-oom.sh builds its own nginx tree, with the
+      # allocation-fault hook compiled in.
+      - name: Build zstd and nginx
+        run: script/build.sh
+
+      - name: Prepare fixtures
+        run: script/prepare-tests.sh
+
+      # The branches taken when libzstd cannot get memory. Nothing else
+      # reaches them: a test cannot make malloc fail for one module and
+      # not the rest of the worker.
+      - name: Refused allocations
+        run: script/test-oom.sh
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          for log in script/test/logs/*.log script/test/*.log; do
+            [ -s "$log" ] || continue
+            echo "===== $log"
+            tail -n 100 "$log"
+          done
+
   fuzz:
     name: Fuzz the Accept-Encoding parser
     runs-on: ubuntu-24.04

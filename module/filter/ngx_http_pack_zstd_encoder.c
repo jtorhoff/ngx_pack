@@ -1243,6 +1243,49 @@ ngx_http_pack_zstd_ensure_stream(encoder_t *const enc)
    reclaims "large" blocks, so pool-backed ones would pile up until
    the request ends. "opaque" is still the pool, but only for logging.
  */
+#if (NGX_HTTP_PACK_ZSTD_FAULT_INJECT)
+
+/* Test-only, and never in a shipping binary: script/build.sh does not
+   define NGX_HTTP_PACK_ZSTD_FAULT_INJECT. Refuses the Nth allocation
+   libzstd asks for and every one after it, so the out-of-memory
+   branches can be reached on demand - the only allocations this
+   module makes that a test can single out, the rest coming from the
+   request pool.
+
+   N is read from the environment rather than built in, so one binary
+   covers every case script/test_oom.py drives: refusing the first
+   allocation fails the context outright, refusing a later one fails a
+   context that already exists. Absent or zero refuses nothing. */
+static ngx_uint_t ngx_http_pack_zstd_fault_read;
+static ngx_uint_t ngx_http_pack_zstd_fault_after;
+static ngx_uint_t ngx_http_pack_zstd_fault_seen;
+
+static ngx_uint_t
+ngx_http_pack_zstd_fault_refuses(void)
+{
+    char     *spec;
+    ngx_int_t after;
+
+    if (!ngx_http_pack_zstd_fault_read) {
+        ngx_http_pack_zstd_fault_read = 1;
+
+        spec = getenv("PACK_ZSTD_FAULT_AFTER");
+        if (spec != NULL) {
+            after = ngx_atoi((u_char *) spec, ngx_strlen(spec));
+            if (after > 0) {
+                ngx_http_pack_zstd_fault_after = (ngx_uint_t) after;
+            }
+        }
+    }
+
+    if (ngx_http_pack_zstd_fault_after == 0) {
+        return 0;
+    }
+
+    return ++ngx_http_pack_zstd_fault_seen >=
+           ngx_http_pack_zstd_fault_after;
+}
+
 static void *
 ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
 {
@@ -1252,7 +1295,19 @@ ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
 
     pool = opaque;
     log  = pool->log;
-    p    = ngx_alloc(size, log);
+
+    if (ngx_http_pack_zstd_fault_refuses()) {
+        ngx_log_error(
+            NGX_LOG_ALERT,
+            log,
+            0,
+            "zstd fault injection: refusing %uz bytes",
+            size);
+
+        return NULL;
+    }
+
+    p = ngx_alloc(size, log);
 
     ngx_log_debug2(
         NGX_LOG_DEBUG_HTTP,
@@ -1264,6 +1319,31 @@ ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
 
     return p;
 }
+#else
+
+static void *
+ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
+{
+    ngx_pool_t *pool;
+    ngx_log_t  *log;
+    void       *p;
+
+    pool = opaque;
+    log  = pool->log;
+
+    p = ngx_alloc(size, log);
+
+    ngx_log_debug2(
+        NGX_LOG_DEBUG_HTTP,
+        log,
+        0,
+        "zstd alloc: %p, size: %uz",
+        p,
+        size);
+
+    return p;
+}
+#endif
 
 static void
 ngx_http_pack_zstd_free(void *const opaque, void *const address)
