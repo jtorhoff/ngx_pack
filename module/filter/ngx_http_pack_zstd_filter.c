@@ -1220,29 +1220,22 @@ ngx_http_pack_zstd_set_buffers(
 /* The inverse of ngx_parse_size: 4096 back to "4k". Exact rather than
    rounded: a size this module ever prints is one of its own byte
    constants, so it either divides evenly by 1k/1m or it does not, and
-   only those two are worth answering in since that is all
+   only those two are worth answering since that is all
    ngx_parse_size itself accepts back. */
 static ngx_str_t
 ngx_http_pack_zstd_human_size(
     ngx_pool_t *const pool, size_t const bytes)
 {
-    /* Room for any size this function prints, plus its unit letter.
-       A decimal digit carries more than a bit does, so a number never
-       needs more digits than it has bits - and the k/m form only ever
-       divides the value down. Overshoots wildly (64 digits reserved
-       where 20 is the most a size_t can reach) in exchange for not
-       needing a complicated derivation. */
-    enum {
-        max_str_len = (sizeof(size_t) * CHAR_BIT + sizeof("k") - 1)
-    };
+    /* nginx's own bound on how many characters a size_t can need. */
+    enum { max_str_len = NGX_SIZE_T_LEN + sizeof("k") - 1 };
 
-    ngx_str_t result;
-    size_t    value;
-    u_char    unit;
-    size_t    end;
+    size_t  value;
+    u_char  unit;
+    u_char *data;
+    size_t  end;
 
-    result.data = ngx_pnalloc(pool, max_str_len);
-    if (result.data == NULL) {
+    data = ngx_pnalloc(pool, max_str_len);
+    if (data == NULL) {
         return (ngx_str_t) ngx_null_string;
     }
 
@@ -1257,14 +1250,14 @@ ngx_http_pack_zstd_human_size(
         unit  = 0;
     }
 
-    end = (size_t) (ngx_sprintf(result.data, "%uz", value) -
-                    result.data);
+    end = (size_t) (ngx_sprintf(data, "%uz", value) - data);
     if (unit) {
-        result.data[end] = unit;
-        result.len       = end + 1;
-    } else {
-        result.len = end;
+        data[end]  = unit;
+        end       += 1;
     }
 
-    return result;
+    return (ngx_str_t) {
+        .data = data,
+        .len  = end,
+    };
 }
