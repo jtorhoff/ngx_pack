@@ -2256,6 +2256,47 @@ def test_buffers_bounds(ctx):
         )
 
 
+# A fragment of the warning set_buffers logs for a count of 1, not the
+# whole sentence: what the test is for is that the operator is told,
+# so a reword should not have to come here to be allowed.
+ONE_BUFFER_WARNING = "multiple buffers are recommended"
+
+
+@test("pack_zstd_buffers warns when a count of 1 gives up the run-ahead")
+def test_buffers_one_warns(ctx):
+    """A count of 1 is legal, and costs the thing pack_zstd_buffers
+    exists to buy: the encoder stops after each buffer until the filters
+    below give it back. Nothing else says so - the configuration is
+    accepted and the server runs - so the warning is the only notice an
+    operator gets, and it has to be a warning rather than a refusal.
+
+    The count above the floor is the control: without it a warning
+    emitted unconditionally would pass just as well."""
+    num_min, _, size_min, _ = buffer_bounds(ctx)
+
+    accepted, text = config_accepted(
+        ctx, f"pack_zstd_buffers {num_min} {size_min};"
+    )
+    check(accepted, f"a count of {num_min} was refused:\n{text}")
+    check(
+        ONE_BUFFER_WARNING in text,
+        f"a count of {num_min} drew no warning:\n{text}",
+    )
+    check(
+        "[warn]" in text,
+        f"the notice was not logged at warn level:\n{text}",
+    )
+
+    accepted, text = config_accepted(
+        ctx, f"pack_zstd_buffers {num_min + 1} {size_min};"
+    )
+    check(accepted, f"a count of {num_min + 1} was refused:\n{text}")
+    check(
+        ONE_BUFFER_WARNING not in text,
+        f"a count of {num_min + 1} drew the one-buffer warning:\n{text}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Output buffers
 # ---------------------------------------------------------------------------

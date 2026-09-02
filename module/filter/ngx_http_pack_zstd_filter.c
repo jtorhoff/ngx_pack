@@ -1217,6 +1217,19 @@ ngx_http_pack_zstd_set_buffers(
         return NGX_CONF_ERROR;
     }
 
+    /* Legal, and rarely what an operator wants: with nothing to run
+       ahead into, the encoder waits for each buffer to be written
+       before producing the next. */
+    if (bufs->num == 1) {
+        ngx_conf_log_error(
+            NGX_LOG_WARN,
+            cf,
+            0,
+            "multiple buffers are recommended so that the encoder "
+            "does not have to wait for one buffer to be consumed by "
+            "a slow client");
+    }
+
     return NGX_CONF_OK;
 }
 
