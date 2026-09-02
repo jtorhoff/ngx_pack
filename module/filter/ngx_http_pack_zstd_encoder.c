@@ -33,23 +33,13 @@ static void ngx_http_pack_zstd_free(void *opaque, void *address);
 static void ngx_http_pack_zstd_cleanup(void *data);
 
 
-/* How much input may go in under ZSTD_e_continue before the encoder
-   ends the block itself, and equally how far a run of flush-marked
-   buffers may be folded into one. Without it a response nothing marks
-   for flushing waits on a block filling - up to 128 KB - and nothing
-   asks the filter to do better: ngx_event_pipe passes a NULL chain
-   only once its own unconsumed buffers reach proxy_busy_buffers_size,
-   which a filter that takes everything it is handed never causes.
-   32 KB rather than a fraction of the block: over script/corpus at
-   every level and window it costs at worst 0.14% and saves up to
-   2.19%, where half the block reaches 1.40% worse.
-
-   A bound in bytes rather than in buffers because that is what the
-   measurement follows: swept over chunk sizes from 512 B to 16 KB,
-   the best fold is always the one reaching the same block size, so
-   any fixed count of buffers is tuned to one upstream's chunking and
-   wrong for the rest - at 512 B chunks a count of four gave up 6% of
-   what folding is worth, and at 16 KB chunks it cost 2%. */
+/* How much input a block may hold - how far ZSTD_e_continue runs, and
+   how far flush-marked buffers fold into one. Left alone a block ends
+   only when it fills, up to 128 KB, and nothing asks the filter to do
+   better: ngx_event_pipe passes a NULL chain only once its own
+   unconsumed buffers reach proxy_busy_buffers_size, which a filter
+   that takes everything it is handed never causes. 32 KB is measured
+   over script/corpus, not randomly picked. */
 #define NGX_HTTP_PACK_ZSTD_FLUSH_AFTER (32 * 1024)
 
 /* What libzstd owns on this response's behalf. A struct of its own so
