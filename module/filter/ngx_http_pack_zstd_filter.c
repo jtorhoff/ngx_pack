@@ -547,12 +547,22 @@ typedef struct {
 
 /* Totals the unconsumed input, reporting whether the chain closes the
    response ("complete") and whether anything in it demands to be
-   pushed out now ("urgent"). */
+   pushed out now ("urgent").
+
+   Only what is in memory is counted, which is what the encoder will
+   take - see the same test in ngx_http_pack_zstd_next_input. Not
+   ngx_buf_size: for a file-backed buffer that reports the file range,
+   and this total decides whether pack_zstd_min_length is met and
+   becomes the size pledged to zstd, which is checked at the end of
+   the frame. main_filter_need_in_memory should keep such a buffer
+   away, so this is the count agreeing with the encoder about what it
+   is counting rather than a case either expects. */
 static pending_input_result
 ngx_http_pack_zstd_pending_input(pending_input_args *const args)
 {
     pending_input_result result;
     ngx_chain_t         *in;
+    ngx_buf_t           *buf;
 
     result = (pending_input_result) {
         .total    = 0,
@@ -566,13 +576,17 @@ ngx_http_pack_zstd_pending_input(pending_input_args *const args)
             break;
         }
 
-        result.total += ngx_buf_size(in->buf);
+        buf = in->buf;
 
-        if (in->buf->last_buf) {
+        if (ngx_buf_in_memory(buf) && buf->last > buf->pos) {
+            result.total += (size_t) (buf->last - buf->pos);
+        }
+
+        if (buf->last_buf) {
             result.complete = 1;
         }
 
-        if (in->buf->flush) {
+        if (buf->flush) {
             result.urgent = 1;
         }
 
@@ -690,9 +704,10 @@ ngx_http_pack_zstd_prepare(prepare_args *const args)
         };
     }
 
-    pending = ngx_http_pack_zstd_pending_input(&(pending_input_args) {
-        .in = ctx->in,
-    });
+    pending = ngx_http_pack_zstd_pending_input(
+        &((pending_input_args) {
+            .in = ctx->in,
+        }));
 
     if (!ctx->state.headers_sent) {
         committed = ngx_http_pack_zstd_commit_headers(
@@ -735,6 +750,7 @@ ngx_http_pack_zstd_prepare(prepare_args *const args)
     if (!ctx->state.caller_wants_output && !pending.urgent &&
         ctx->content_length < 0 &&
         pending.total < NGX_HTTP_PACK_ZSTD_HELD_INPUT) {
+
         ngx_log_debug1(
             NGX_LOG_DEBUG_HTTP,
             ctx->request->connection->log,
@@ -765,11 +781,12 @@ typedef struct {
 static drain_result
 ngx_http_pack_zstd_drain(ctx_t *const ctx)
 {
-    ngx_int_t rc;
+    ngx_chain_t *pending;
+    ngx_int_t    rc;
+    ngx_uint_t   busy;
 
-    rc = ngx_http_next_body_filter(
-        ctx->request,
-        ngx_http_pack_zstd_encoder_pending(ctx->encoder));
+    pending = ngx_http_pack_zstd_encoder_pending(ctx->encoder);
+    rc      = ngx_http_next_body_filter(ctx->request, pending);
     if (rc == NGX_ERROR) {
         return (drain_result) {
             .status = NGX_ERROR,
@@ -780,11 +797,11 @@ ngx_http_pack_zstd_drain(ctx_t *const ctx)
 
     /* What nginx has to be told to come back for. Buffers the
        filters below still hold count, and so does uncompressed
-       input: drop the bit while either is outstanding, or a stalled
-       last write can be finalized as complete and truncate the
-       tail. */
-    if (ngx_http_pack_zstd_encoder_busy(ctx->encoder) ||
-        ctx->in != NULL) {
+       input: drop the bit while either is outstanding, or a
+       stalled last write can be finalized as complete and
+       truncate the tail. */
+    busy = ngx_http_pack_zstd_encoder_busy(ctx->encoder);
+    if (busy || ctx->in != NULL) {
         ctx->request->connection->buffered |= MASK_BUFFERED;
     } else {
         ctx->request->connection->buffered &= ~MASK_BUFFERED;
@@ -807,12 +824,21 @@ typedef struct {
 static finish_result
 ngx_http_pack_zstd_finish(ctx_t *const ctx)
 {
-    if (ngx_http_pack_zstd_encoder_frame_closed(ctx->encoder) &&
-        !ngx_http_pack_zstd_encoder_busy(ctx->encoder)) {
+    ngx_uint_t busy;
+    ngx_uint_t frame_closed;
+
+    /* Read before the close below, which drops the chains this
+       answers about: asking again afterwards would be answering
+       about a torn-down encoder. */
+    busy         = ngx_http_pack_zstd_encoder_busy(ctx->encoder);
+    frame_closed = ngx_http_pack_zstd_encoder_frame_closed(
+        ctx->encoder);
+
+    if (!busy && frame_closed) {
         ngx_http_pack_zstd_close(ctx);
     }
 
-    if (ngx_http_pack_zstd_encoder_busy(ctx->encoder)) {
+    if (busy) {
         return (finish_result) {
             .status = NGX_AGAIN,
         };
@@ -880,6 +906,12 @@ static pump_result
 ngx_http_pack_zstd_pump(ctx_t *const ctx)
 {
     ngx_http_pack_zstd_step_e step;
+    ngx_uint_t                frame_closed;
+    ngx_chain_t              *pending;
+    ngx_uint_t                busy;
+    ngx_int_t                 drain;
+    ngx_int_t                 finish;
+    ngx_uint_t                has_free;
 
     for (;;) {
         do {
@@ -891,44 +923,47 @@ ngx_http_pack_zstd_pump(ctx_t *const ctx)
 
         if (step == NGX_HTTP_PACK_ZSTD_STEP_FAILED) {
             ngx_http_pack_zstd_close(ctx);
-
             return (pump_result) {
                 .status = NGX_ERROR,
             };
         }
 
-        /* Nothing new to send and nothing outstanding: the encoder
-           waits for input, not the filters below. A closed frame is
-           excluded on purpose - this is the one path past finish(),
-           which closes the encoder once the last buffer is taken, or
-           it would strand until the pool is destroyed. */
-        if (!ngx_http_pack_zstd_encoder_frame_closed(ctx->encoder) &&
-            ngx_http_pack_zstd_encoder_pending(ctx->encoder) ==
-                NULL &&
-            !ngx_http_pack_zstd_encoder_busy(ctx->encoder)) {
+        frame_closed = ngx_http_pack_zstd_encoder_frame_closed(
+            ctx->encoder);
+        pending = ngx_http_pack_zstd_encoder_pending(ctx->encoder);
+        busy    = ngx_http_pack_zstd_encoder_busy(ctx->encoder);
+        /* Nothing new to send and nothing outstanding: the
+           encoder waits for input, not the filters below. A
+           closed frame is excluded on purpose - this is the one
+           path past finish(), which closes the encoder once the
+           last buffer is taken, or it would strand until the pool
+           is destroyed. */
+        if (!frame_closed && pending == NULL && !busy) {
             return (pump_result) {
                 .status = NGX_OK,
             };
         }
 
-        if (ngx_http_pack_zstd_drain(ctx).status != NGX_OK) {
+        drain = ngx_http_pack_zstd_drain(ctx).status;
+        if (drain != NGX_OK) {
             ngx_http_pack_zstd_close(ctx);
-
             return (pump_result) {
                 .status = NGX_ERROR,
             };
         }
 
         if (step == NGX_HTTP_PACK_ZSTD_STEP_DONE) {
+            finish = ngx_http_pack_zstd_finish(ctx).status;
             return (pump_result) {
-                .status = ngx_http_pack_zstd_finish(ctx).status,
+                .status = finish,
             };
         }
 
+        has_free = ngx_http_pack_zstd_encoder_has_free(ctx->encoder);
         /* Stopped for want of a buffer. If the send handed one back,
            go round; if not, the filters below are full and there is
            nothing more this call can do. */
-        if (!ngx_http_pack_zstd_encoder_has_free(ctx->encoder)) {
+        if (!has_free) {
             return (pump_result) {
                 .status = NGX_AGAIN,
             };
@@ -944,8 +979,7 @@ static ngx_int_t
 ngx_http_pack_zstd_body_filter(
     ngx_http_request_t *const r, ngx_chain_t *const in)
 {
-    ctx_t *ctx;
-    /* Status dictates what this function decides to do next. */
+    ctx_t         *ctx;
     ngx_int_t      chain_status;
     prepare_result prepared;
 
