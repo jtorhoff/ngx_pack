@@ -19,7 +19,7 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    zstd and gzip never stack, i.e. when one of them sets
    "Content-Encoding" the other becomes a pass-through filter.
    This is why it's safe to re-use the constant here. */
-#define NGX_HTTP_PACK_ZSTD_BUFFERED NGX_HTTP_GZIP_BUFFERED
+#define MASK_BUFFERED NGX_HTTP_GZIP_BUFFERED
 
 /* The most input held back while learning the response size. Arriving
    inside it earns an exact pledge, sizing zstd's tables to the body:
@@ -345,8 +345,7 @@ ngx_http_pack_zstd_close(ctx_t *const ctx)
     /* Closed means this instance owes the connection nothing, so the
        bit goes with it - left set it tells nginx output is still
        pending from a filter that has stopped producing any. */
-    ctx->request->connection->buffered &=
-        ~NGX_HTTP_PACK_ZSTD_BUFFERED;
+    ctx->request->connection->buffered &= ~MASK_BUFFERED;
 
     /* Releasing libzstd and its buffer chains is the encoder's own
        business. The pointer is left as it is rather than cleared:
@@ -651,8 +650,7 @@ ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
     link    = ctx->in;
     ctx->in = NULL;
 
-    ctx->request->connection->buffered &=
-        ~NGX_HTTP_PACK_ZSTD_BUFFERED;
+    ctx->request->connection->buffered &= ~MASK_BUFFERED;
 
     return (commit_headers_result) {
         .verdict = NGX_HTTP_PACK_ZSTD_PASS,
@@ -787,11 +785,9 @@ ngx_http_pack_zstd_drain(ctx_t *const ctx)
        tail. */
     if (ngx_http_pack_zstd_encoder_busy(ctx->encoder) ||
         ctx->in != NULL) {
-        ctx->request->connection->buffered |=
-            NGX_HTTP_PACK_ZSTD_BUFFERED;
+        ctx->request->connection->buffered |= MASK_BUFFERED;
     } else {
-        ctx->request->connection->buffered &=
-            ~NGX_HTTP_PACK_ZSTD_BUFFERED;
+        ctx->request->connection->buffered &= ~MASK_BUFFERED;
     }
 
     return (drain_result) {
@@ -977,7 +973,7 @@ ngx_http_pack_zstd_body_filter(
             return NGX_ERROR;
         }
 
-        r->connection->buffered |= NGX_HTTP_PACK_ZSTD_BUFFERED;
+        r->connection->buffered |= MASK_BUFFERED;
     }
 
     prepared = ngx_http_pack_zstd_prepare(&(prepare_args) {
