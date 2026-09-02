@@ -21,11 +21,13 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    This is why it's safe to re-use the constant here. */
 #define NGX_HTTP_PACK_ZSTD_BUFFERED NGX_HTTP_GZIP_BUFFERED
 
-/* The most input held back while learning the response size, before
-   falling back to the window at its worst-case, unsized cost. Not a
-   directive: nginx's own buffering usually ends the wait first
-   regardless of any exposed ceiling. */
-#define NGX_HTTP_PACK_ZSTD_HELD_INPUT ngx_pagesize
+/* The most input held back while learning the response size. Arriving
+   inside it earns an exact pledge, sizing zstd's tables to the body:
+   99 KB of encoder memory for a 4 KB body against 969 KB for one that
+   falls back to pack_zstd_hint. Fixed, not page-derived, because
+   proxy_buffer_size is ngx_pagesize too - matching it, the first
+   delivery fills the allowance and nothing is ever held. */
+#define NGX_HTTP_PACK_ZSTD_HELD_INPUT (32 * 1024)
 
 /* Floor on pack_zstd_hint: what ZSTD_c_srcSizeHint is set to for a
    response the held-input threshold above gave up waiting on. Fixed

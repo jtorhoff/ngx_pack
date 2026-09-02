@@ -40,6 +40,17 @@ static void ngx_http_pack_zstd_cleanup(void *data);
    because the bytes behind a folded flush stay inside the encoder. */
 #define NGX_HTTP_PACK_ZSTD_FLUSH_FOLD 4
 
+/* How much input may go in under ZSTD_e_continue before the encoder
+   ends the block itself. Without it a response nothing marks for
+   flushing waits on a block filling - up to 128 KB - and nothing asks
+   the filter to do better: ngx_event_pipe passes a NULL chain only
+   once its own unconsumed buffers reach proxy_busy_buffers_size,
+   which a filter that takes everything it is handed never causes.
+   32 KB rather than a fraction of the block: over script/corpus at
+   every level and window it costs at worst 0.14% and saves up to
+   2.19%, where half the block reaches 1.40% worse. */
+#define NGX_HTTP_PACK_ZSTD_FLUSH_AFTER (32 * 1024)
+
 /* What libzstd owns on this response's behalf. A struct of its own so
    the pool cleanup that frees the encoder on an aborted request can
    be handed exactly this much and no more - not the context, so
@@ -104,6 +115,10 @@ struct ngx_http_pack_zstd_encoder_s {
        being built. Reset when a flush or the frame completes, since
        that is what starts the next block. */
     ngx_uint_t folded_flushes;
+
+    /* Input taken under ZSTD_e_continue since the last block ended.
+       Reset wherever folded_flushes is, and for the same reason. */
+    size_t unflushed_bytes;
 
     /* Built, holding, done; see encoder_state_t. */
     encoder_state_t state;
@@ -397,6 +412,19 @@ ngx_http_pack_zstd_select_mode(select_mode_args *const args)
     }
 
     if (!buffer->flush) {
+        /* Nothing is asking for this block to end, so zstd would
+           carry on until one fills. End it here once enough has gone
+           in - see NGX_HTTP_PACK_ZSTD_FLUSH_AFTER for why waiting is
+           not free. */
+        if (args->enc->unflushed_bytes >=
+            NGX_HTTP_PACK_ZSTD_FLUSH_AFTER) {
+
+            return (select_mode_result) {
+                .mode   = ZSTD_e_flush,
+                .folded = folded,
+            };
+        }
+
         return (select_mode_result) {
             .mode   = ZSTD_e_continue,
             .folded = folded,
@@ -622,7 +650,8 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
 {
     if (args->mode == ZSTD_e_continue) {
         if (args->consumed > 0) {
-            args->enc->state.unflushed_input = 1;
+            args->enc->state.unflushed_input  = 1;
+            args->enc->unflushed_bytes       += args->consumed;
         }
 
         return;
@@ -639,8 +668,9 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
     args->enc->zstd.repeat_mode = ZSTD_e_continue;
 
     /* Either directive ends the block, so the next one starts with
-       nothing folded into it. */
-    args->enc->folded_flushes = 0;
+       nothing folded into it and nothing owed a flush. */
+    args->enc->folded_flushes  = 0;
+    args->enc->unflushed_bytes = 0;
 
     if (args->mode == ZSTD_e_flush) {
         args->enc->state.unflushed_input = 0;
