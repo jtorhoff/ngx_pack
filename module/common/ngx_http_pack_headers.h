@@ -104,7 +104,7 @@ ngx_http_pack_is_zero_weighted(
    9110 defines as "not acceptable" - so "gzip;q=1.0, zstd;q=0.1"
    still matches "zstd", but "zstd;q=0" does not. A wildcard "*" is
    ignored.
-   Returns NGX_OK on a match, NGX_DECLINE otherwise.
+   Returns NGX_OK on a match, NGX_DECLINED otherwise.
 */
 static ngx_int_t
 ngx_http_pack_check_encoding(

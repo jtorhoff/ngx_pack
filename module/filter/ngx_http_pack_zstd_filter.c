@@ -1050,15 +1050,16 @@ ngx_http_pack_zstd_merge_conf(
         prev->window_bits,
         NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT);
 
-    /* See the constant block for why 256 KB, and why there is no
-       ceiling here to merge against a bound - the post handler
-       checks the floor alone. */
+    /* See the constant block for why 256 KB. Both bounds are the post
+       handler's: a floor of this module's own, and the ceiling
+       libzstd itself imposes. */
     ngx_conf_merge_size_value(
         conf->hint, prev->hint, NGX_HTTP_PACK_ZSTD_HINT_DEFAULT);
 
-    /* Four rather than nginx's gzip default of 32: four 16 KB buffers
-       already cover a whole block at the pack_zstd_window default,
-       past which more stop buying anything. Both halves move
+    /* Four 16 KB buffers already cover a whole block at the
+       pack_zstd_window default, past which more stop buying anything.
+       A fixed pair rather than gzip's, which derives both from
+       ngx_pagesize and so differs between hosts. Both halves move
        together, so a count inherited from an unrelated size cannot
        arise. */
     ngx_conf_merge_bufs_value(

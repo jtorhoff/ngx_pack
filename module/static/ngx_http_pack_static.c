@@ -582,12 +582,6 @@ ngx_http_pack_static_try_sibling(try_sibling_args *const args)
         "http static fd: %d",
         opened.file_info.fd);
 
-    /* The suffixed path is not a file we can serve. Declined rather
-       than refused, which is where this parts company with
-       gzip_static: there the odd file is the resource asked for, so
-       404 is the answer, but here it is only a sibling. A fifo left
-       lying about named "a.txt.br" must not take "a.txt" down with
-       it. Still logged - nothing should be creating one. */
     if (opened.file_info.is_dir) {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, log, 0, "http dir");
         return (try_sibling_result) {
@@ -595,6 +589,11 @@ ngx_http_pack_static_try_sibling(try_sibling_args *const args)
             .path   = path,
         };
     }
+    /* Declined rather than refused, which is where this parts company
+       with gzip_static: there the odd file is the resource asked for,
+       so 404 is the answer, but here it is only a sibling. A fifo
+       left lying about named "a.txt.br" must not take "a.txt" down
+       with it. Still logged - nothing should be creating one. */
 #if !(NGX_WIN32)
     if (!opened.file_info.is_file) {
         ngx_log_error(
