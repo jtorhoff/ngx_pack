@@ -175,7 +175,7 @@ ngx_http_pack_zstd_get_buf(get_buf_args *const args)
         NGX_LOG_DEBUG_HTTP,
         r->connection->log,
         0,
-        "zstd buffer created: %p, total:%ui",
+        "zstd buffer created: %p, total: %ui",
         buf,
         enc->nbuffers);
 
@@ -234,7 +234,7 @@ ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
         NGX_LOG_DEBUG_HTTP,
         args->enc->request->connection->log,
         0,
-        "zstd out: %p, size:%O",
+        "zstd out: %p, size: %O",
         buf,
         ngx_buf_size(buf));
 
@@ -683,8 +683,8 @@ ngx_http_pack_zstd_made_progress(made_progress_args *const args)
             NGX_LOG_ALERT,
             args->enc->request->connection->log,
             0,
-            "zstd compress made no progress: mode:%d "
-            "remaining:%uz",
+            "zstd compress made no progress: mode: %d "
+            "remaining: %uz",
             (int) args->mode,
             remaining);
 
@@ -1251,7 +1251,7 @@ ngx_http_pack_zstd_alloc(void *const opaque, size_t const size)
         NGX_LOG_DEBUG_HTTP,
         log,
         0,
-        "zstd alloc: %p, size:%uz",
+        "zstd alloc: %p, size: %uz",
         p,
         size);
 

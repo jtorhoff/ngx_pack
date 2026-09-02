@@ -758,13 +758,13 @@ def fetch_and_abort(port, path, settle=1.5):
 # Debug log analysis
 # ---------------------------------------------------------------------------
 
-ALLOC_RE = re.compile(r"\*(\d+) zstd alloc: (?:0x)?([0-9A-Fa-f]+), size:(\d+)")
+ALLOC_RE = re.compile(r"\*(\d+) zstd alloc: (?:0x)?([0-9A-Fa-f]+), size: (\d+)")
 FREE_RE = re.compile(r"\*(\d+) zstd free: (?:0x)?([0-9A-Fa-f]+)")
 CLOSE_RE = re.compile(r"\*(\d+) http close request")
 INIT_RE = re.compile(r"\*(\d+) zstd encoder instance created and configured")
-OUT_RE = re.compile(r"\*(\d+) zstd out: (?:0x)?[0-9A-Fa-f]+, size:(\d+)")
+OUT_RE = re.compile(r"\*(\d+) zstd out: (?:0x)?[0-9A-Fa-f]+, size: (\d+)")
 BUF_RE = re.compile(
-    r"\*(\d+) zstd buffer created: (?:0x)?[0-9A-Fa-f]+, total:(\d+)"
+    r"\*(\d+) zstd buffer created: (?:0x)?[0-9A-Fa-f]+, total: (\d+)"
 )
 
 

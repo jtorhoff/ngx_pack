@@ -738,7 +738,7 @@ ngx_http_pack_zstd_prepare(prepare_args *const args)
             NGX_LOG_DEBUG_HTTP,
             ctx->request->connection->log,
             0,
-            "zstd deferring encoder, pending:%uz",
+            "zstd deferring encoder, pending: %uz",
             pending.total);
 
         return (prepare_result) {
