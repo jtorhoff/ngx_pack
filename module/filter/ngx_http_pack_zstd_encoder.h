@@ -12,10 +12,8 @@
 
 /* A streaming Zstandard encoder and the output buffers it fills.
  *
- * Opaque on purpose: nothing here exposes libzstd, the three buffer
- * chains, or what a round left for the next one. The filter hands it
- * input and takes finished buffers back, and that is the whole of the
- * conversation - so the rules about which chain a buffer may be on,
+ * Opaque on purpose: the filter hands it input and takes finished
+ * buffers back, so the rules about which chain a buffer may be on,
  * when a directive has to be repeated, and when the frame is closed
  * stay on this side of the line.
  */
@@ -30,8 +28,7 @@ typedef enum {
     /* Not a step at all, and never returned by
        ngx_http_pack_zstd_encoder_step: what the round's own input
        stage says when it has settled nothing and the encoder should
-       run. It is here because that stage answers in this type, and
-       kept at 0 as it was before this header existed. */
+       run. It is here because that stage answers in this type. */
     NGX_HTTP_PACK_ZSTD_STEP_READY = 0,
 
     /* Made progress; go round again. */
@@ -51,22 +48,11 @@ typedef enum {
 
 
 /* What the directives settle before an encoder can exist. Passed in
- * rather than read from the module's location configuration, so that
- * nothing here has to know nginx has directives at all.
- *
- * "window_bits" is a windowLog, not a size: the directive's parser
- * has already turned 1k..1m into 10..20.
- *
- * "nbuffers" and "buffer_size" are the two halves of one directive:
- * how many output buffers a response may hold at once, and how big
- * each of them is. The count is a ceiling, not an allocation - see
- * ngx_http_pack_zstd_get_buf, which creates them one at a time as the
- * encoder actually runs out.
- *
- * "content_length" is -1 when the response size is not known, which
- * is what decides between a pledged size and a hint; "src_size_hint"
- * is what the encoder is told in the latter case - see
- * pack_zstd_hint and ZSTD_c_srcSizeHint at the call site.
+ * rather than read from the location configuration, so nothing here
+ * has to know nginx has directives at all. "window_bits" is a
+ * windowLog, not a size; "nbuffers" a ceiling, not an allocation;
+ * "content_length" -1 when the size is unknown, which is what decides
+ * between a pledge and "src_size_hint".
  */
 typedef struct {
     ngx_int_t level;
@@ -79,26 +65,19 @@ typedef struct {
 
 
 /* Builds an encoder on the request's pool and registers the cleanup
- * that frees libzstd's allocations if the request is aborted.
- *
- * NULL on failure, with the reason logged. A non-NULL return is what
- * "the encoder exists" means - there is no separate initialised flag.
+ * that frees libzstd's allocations if the request is aborted. NULL on
+ * failure, with the reason logged - a non-NULL return is what "the
+ * encoder exists" means, there being no separate initialised flag.
  */
 ngx_http_pack_zstd_encoder_t *ngx_http_pack_zstd_encoder_create(
     ngx_http_request_t *r, ngx_http_pack_zstd_encoder_conf_t *conf);
 
 
 /* Runs one round: takes what it can from "*in", compresses it, and
- * appends whatever came out to the pending chain.
- *
- * "*in" is advanced as buffers are consumed, and links are handed
- * back to the pool, so the caller's chain head moves. Buffers that
- * carry only a flush or last_buf marker are consumed too.
- *
- * "wants_output" says this call of the body filter brought no new
- * data, i.e. nginx is asking for progress rather than adding to the
- * work. It belongs to the call, not to the response, which is why it
- * is a parameter and not state.
+ * appends whatever came out to the pending chain. "*in" is advanced
+ * as buffers are consumed, so the caller's chain head moves.
+ * "wants_output" says this call brought no new data - it belongs to
+ * the call, not the response, which is why it is not state.
  */
 ngx_http_pack_zstd_step_e ngx_http_pack_zstd_encoder_step(
     ngx_http_pack_zstd_encoder_t *enc,
@@ -106,26 +85,26 @@ ngx_http_pack_zstd_step_e ngx_http_pack_zstd_encoder_step(
     ngx_uint_t                    wants_output);
 
 
-/* The buffers filled since the last send, to be passed to the next
- * body filter. NULL when the round produced nothing, which is not the
- * same as nothing to do: sending NULL is how the filters below are
- * asked to make progress on what they already hold.
+/* The buffers filled since the last send. NULL when the round
+ * produced nothing, which is not the same as nothing to do: sending
+ * NULL is how the filters below are asked to make progress on what
+ * they hold.
  */
 ngx_chain_t *
 ngx_http_pack_zstd_encoder_pending(ngx_http_pack_zstd_encoder_t *enc);
 
 
-/* Takes account of what the filters below consumed, moving buffers
- * they have finished with back to where the encoder can refill them.
- * Call once after each send, whatever the send returned.
+/* Takes account of what the filters below consumed, moving finished
+ * buffers back where the encoder can refill them. Call once after
+ * each send, whatever the send returned.
  */
 void
 ngx_http_pack_zstd_encoder_drained(ngx_http_pack_zstd_encoder_t *enc);
 
 
-/* Whether buffers handed downstream have yet to come back. While
- * this holds, the response is not finished however done the encoder
- * is, and the connection still owes output.
+/* Whether buffers handed downstream have yet to come back. While this
+ * holds, the connection still owes output however done the encoder
+ * is.
  */
 ngx_uint_t
 ngx_http_pack_zstd_encoder_busy(ngx_http_pack_zstd_encoder_t *enc);
@@ -146,9 +125,8 @@ ngx_uint_t ngx_http_pack_zstd_encoder_frame_closed(
 
 
 /* Releases libzstd's allocations and drops the buffer chains. Safe to
- * call more than once, and safe to call with buffers still
- * downstream: those point into the request pool, and the filters
- * below copied the chain links they were given.
+ * call more than once, and with buffers still downstream: those point
+ * into the request pool, and the filters below copied their links.
  */
 void
 ngx_http_pack_zstd_encoder_close(ngx_http_pack_zstd_encoder_t *enc);

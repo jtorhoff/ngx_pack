@@ -5,9 +5,10 @@
  * Copyright (C) 2026 Juri Torhoff
  */
 
+#include <ngx_config.h>
+#include <ngx_core.h>
+
 #include "ngx_http_pack_zstd_encoder.h"
-#include "ngx_config.h"
-#include "ngx_core.h"
 
 /* Needed for ZSTD_createCCtx_advanced (the custom allocator) and
    ZSTD_c_srcSizeHint. */
