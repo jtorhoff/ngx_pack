@@ -2427,7 +2427,7 @@ def test_buffer_size_is_honoured(ctx):
 # Flush folding
 # ---------------------------------------------------------------------------
 
-# module/filter/ngx_http_pack_zstd_encoder.c, the bound on both the fold
+# module/filter/zstd/ngx_http_pack_zstd_encoder.c, the bound on both the fold
 # and the flush the filter makes on its own.
 FLUSH_AFTER = 32 * 1024
 

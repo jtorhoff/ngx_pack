@@ -11,11 +11,15 @@
 # was added directly. PACK_ROOT_DIR has to reach the repository root
 # either way, since the zstd submodule lives there rather than beside
 # the sources.
+#
+# The sources sit one level below this file, in a directory named for
+# the encoding they wrap, so that a second encoding can be added
+# beside them without either set of sources moving.
 if [ "$ngx_addon_name" = "ngx_pack" ]; then
-	PACK_MODULE_SRC_DIR="$ngx_addon_dir/module/filter"
+	PACK_MODULE_SRC_DIR="$ngx_addon_dir/module/filter/zstd"
 	PACK_ROOT_DIR="$ngx_addon_dir"
 else
-	PACK_MODULE_SRC_DIR="$ngx_addon_dir"
+	PACK_MODULE_SRC_DIR="$ngx_addon_dir/zstd"
 	PACK_ROOT_DIR="$ngx_addon_dir/../.."
 fi
 
@@ -51,7 +55,12 @@ ZSTD_H="$PACK_ZSTD_DIR/lib/zstd.h"
 
 # Shared with the static module. Listed as a dependency so that
 # editing it actually rebuilds this module.
-PACK_COMMON_DIR="$PACK_MODULE_SRC_DIR/../common"
+#
+# Reached from the repository root rather than from the sources: the
+# sources are nested a level deeper than this file, and only
+# PACK_ROOT_DIR is the same distance from module/common in both
+# branches above.
+PACK_COMMON_DIR="$PACK_ROOT_DIR/module/common"
 PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
 
 # The encoder is a translation unit of its own so that the filter

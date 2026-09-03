@@ -1,5 +1,5 @@
 # Formatting for this project's own C sources: module/common,
-# module/filter, module/static and the fuzz targets under
+# module/filter/*, module/static and the fuzz targets under
 # script/fuzz.
 #
 # Approximates the nginx coding style, so these modules read like

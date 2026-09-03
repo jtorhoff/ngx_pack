@@ -395,5 +395,5 @@ jobs:
           clang-format --version
           # deps/ is vendored and formats to its own conventions.
           clang-format --dry-run --Werror \
-            module/common/*.h module/filter/*.c module/static/*.c \
+            module/common/*.h module/filter/*/*.c module/static/*.c \
             script/fuzz/*.c

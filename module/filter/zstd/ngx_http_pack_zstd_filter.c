@@ -9,7 +9,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-#include "../common/ngx_http_pack_headers.h"
+#include "../../common/ngx_http_pack_headers.h"
 #include "ngx_http_pack_zstd_encoder.h"
 
 
