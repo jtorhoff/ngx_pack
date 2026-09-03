@@ -1059,23 +1059,28 @@ ngx_http_pack_zstd_set_param(set_param_args *const args)
 }
 
 typedef struct {
+    encoder_t *enc;
+    uint64_t   size;
+} set_pledged_size_args;
+
+typedef struct {
     ngx_int_t status;
 } set_pledged_size_result;
 
 static set_pledged_size_result
-ngx_http_pack_zstd_set_pledged_size(encoder_t *const enc)
+ngx_http_pack_zstd_set_pledged_size(set_pledged_size_args *const args)
 {
     size_t zrc;
 
     zrc = ZSTD_CCtx_setPledgedSrcSize(
-        enc->zstd.cctx, enc->conf.content_length);
+        args->enc->zstd.cctx, args->size);
     if (ZSTD_isError(zrc)) {
         ngx_log_error(
             NGX_LOG_ALERT,
-            enc->request->connection->log,
+            args->enc->request->connection->log,
             0,
             "zstd error while trying to set pledgedSrcSize=%O: %s",
-            enc->conf.content_length,
+            args->size,
             ZSTD_getErrorName(zrc));
 
         return (set_pledged_size_result) {
@@ -1085,6 +1090,35 @@ ngx_http_pack_zstd_set_pledged_size(encoder_t *const enc)
 
     return (set_pledged_size_result) {
         .status = NGX_OK,
+    };
+}
+
+typedef struct {
+    encoder_t *enc;
+    int32_t    hint;
+} set_src_hint_args;
+
+typedef struct {
+    ngx_int_t status;
+} set_src_hint_result;
+
+static set_src_hint_result
+ngx_http_pack_zstd_set_src_hint(set_src_hint_args *const args)
+{
+    static ngx_str_t const sizeHint = ngx_string("srcSizeHint");
+
+    ngx_int_t rc;
+
+    rc = (ngx_http_pack_zstd_set_param(&(set_param_args) {
+              .enc   = args->enc,
+              .param = ZSTD_c_srcSizeHint,
+              .value = args->hint,
+              .name  = &sizeHint,
+          }))
+             .status;
+
+    return (set_src_hint_result) {
+        .status = rc,
     };
 }
 
@@ -1099,10 +1133,9 @@ typedef struct {
 static configure_encoder_result
 ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
 {
-    static ngx_str_t const level    = ngx_string("compressionLevel");
-    static ngx_str_t const window   = ngx_string("windowLog");
-    static ngx_str_t const workers  = ngx_string("nbWorkers");
-    static ngx_str_t const sizeHint = ngx_string("srcSizeHint");
+    static ngx_str_t const level   = ngx_string("compressionLevel");
+    static ngx_str_t const window  = ngx_string("windowLog");
+    static ngx_str_t const workers = ngx_string("nbWorkers");
 
     enum { nparams = 3 };
 
@@ -1143,8 +1176,8 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
     };
 
     for (idx = 0; idx < nparams; idx++) {
-        if (ngx_http_pack_zstd_set_param(&params[idx]).status !=
-            NGX_OK) {
+        rc = ngx_http_pack_zstd_set_param(&params[idx]).status;
+        if (rc != NGX_OK) {
             return (configure_encoder_result) {
                 .status = NGX_ERROR,
             };
@@ -1159,7 +1192,13 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
        at the end of the frame, having compressed the response first.
      */
     if (enc->conf.content_length >= 0) {
-        rc = ngx_http_pack_zstd_set_pledged_size(enc).status;
+        rc = ngx_http_pack_zstd_set_pledged_size(
+                 &(set_pledged_size_args) {
+                     .enc  = enc,
+                     .size = enc->conf.content_length,
+                 })
+                 .status;
+
         if (rc != NGX_OK) {
             return (configure_encoder_result) {
                 .status = NGX_ERROR,
@@ -1173,12 +1212,10 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
            of frame" (zstd.h) and would fail every response that did
            not happen to be exactly that long. pack_zstd_hint sets it.
          */
-        rc = ngx_http_pack_zstd_set_param(
-                 &(set_param_args) {
-                     .enc   = enc,
-                     .param = ZSTD_c_srcSizeHint,
-                     .value = (int32_t) enc->conf.src_size_hint,
-                     .name  = &sizeHint,
+        rc = ngx_http_pack_zstd_set_src_hint(
+                 &(set_src_hint_args) {
+                     .enc  = enc,
+                     .hint = (int32_t) enc->conf.src_size_hint,
                  })
                  .status;
 
