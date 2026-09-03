@@ -2916,6 +2916,59 @@ def test_encoder_released_before_close(ctx):
         )
 
 
+# What one request may cost, per pack_zstd_window and pack_zstd_level,
+# with the encoder capping hashLog and chainLog at the window - see
+# ngx_http_pack_zstd_derive_tables.
+#
+# Each ceiling sits between what the capped encoder actually takes and
+# what it took before, so dropping the cap fails the test. Measured
+# against the vendored libzstd, which the submodule pins - a bump that
+# moves these is worth re-measuring rather than widening.
+#
+#   window  level      capped    uncapped    ceiling
+#      16k      3    261.1 KB    325.1 KB     300 KB
+#      16k      6    261.1 KB    325.1 KB     300 KB
+#      64k      6    777.3 KB   1097.3 KB     900 KB
+#     256k      3   1438.7 KB   1438.7 KB    1600 KB   (unchanged)
+#     256k      6   2206.7 KB   3486.7 KB    2600 KB
+TABLE_CEILINGS = (
+    ("/tables-16k-3/", 300 * 1024),
+    ("/tables-16k-6/", 300 * 1024),
+    ("/tables-64k-6/", 900 * 1024),
+    ("/tables-256k-3/", 1600 * 1024),
+    ("/tables-256k-6/", 2600 * 1024),
+)
+
+
+@test("the encoder sizes its tables to the window, not to the level",
+      needs_debug=True)
+def test_table_sizing(ctx):
+    """Nothing in the frame says what tables made it, so this measures
+    the only thing visible from outside - what the encoder allocated -
+    against ceilings a build without the cap exceeds. The 256k level 3
+    case is the opposite: zstd is already under the window there, so it
+    fails if capping ever raises what a request costs.
+    """
+    for path, ceiling in TABLE_CEILINGS:
+        ctx.nginx.mark_log()
+        _, headers, body = fetch(ctx.port, path + "wiki.html")
+        check(
+            headers.get("content-encoding") == "zstd",
+            f"{path} was not compressed, so no encoder was built",
+        )
+
+        active = assert_balanced(
+            wait_for_encoder_release(ctx.nginx), f"tables {path}")
+        peak = max(entry["peak_bytes"] for entry in active.values())
+
+        check(
+            peak <= ceiling,
+            f"{path}: the encoder peaked at {peak / 1024:.1f} KB against a "
+            f"{ceiling / 1024:.0f} KB ceiling - its tables are sized to "
+            f"the level rather than to the window",
+        )
+
+
 @test("committed output rounds account for every byte of the body", needs_debug=True)
 def test_output_rounds_account_for_the_body(ctx):
     """The filter owns one output buffer and refills it round after round.

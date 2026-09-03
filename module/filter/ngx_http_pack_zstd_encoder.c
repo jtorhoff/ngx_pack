@@ -696,7 +696,7 @@ ngx_http_pack_zstd_made_progress(made_progress_args *const args)
             0,
             "zstd compress made no progress: mode: %d "
             "remaining: %uz",
-            (int) args->mode,
+            (int32_t) args->mode,
             remaining);
 
         return (made_progress_result) {
@@ -1126,6 +1126,44 @@ typedef struct {
     ngx_int_t status;
 } configure_encoder_result;
 
+typedef struct {
+    ngx_int_t level;
+    size_t    window_bits;
+    /* What the encoder is about to be told to expect: the pledge when
+       the length is known, the hint when it is not. */
+    uint64_t expected;
+} derive_tables_args;
+
+typedef struct {
+    int32_t hash_log;
+    int32_t chain_log;
+} derive_tables_result;
+
+/* How big the match finder's tables should be. zstd derives them from
+   the level alone, which says nothing about the window: at
+   pack_zstd_window's floor it asks for a hash table several times the
+   window it indexes, memory no response can fill. Capping both at the
+   window returns a fifth to a third of the footprint for at worst
+   0.54% of compressed size, measured. */
+static derive_tables_result
+ngx_http_pack_zstd_derive_tables(derive_tables_args *const args)
+{
+    ZSTD_compressionParameters cparams;
+    uint32_t                   window;
+
+    window  = (uint32_t) args->window_bits;
+    cparams = ZSTD_getCParams(
+        (int32_t) args->level, args->expected, 0);
+
+    cparams.windowLog = window;
+    cparams = ZSTD_adjustCParams(cparams, args->expected, 0);
+
+    return (derive_tables_result) {
+        .hash_log  = (int32_t) ngx_min(cparams.hashLog, window),
+        .chain_log = (int32_t) ngx_min(cparams.chainLog, window),
+    };
+}
+
 /* Tells the encoder what the directives asked for and what to expect
    of the body. Every rejection is fatal rather than skipped: libzstd
    is vendored and pinned (see deps/zstd), so one means a broken build
@@ -1136,12 +1174,25 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
     static ngx_str_t const level   = ngx_string("compressionLevel");
     static ngx_str_t const window  = ngx_string("windowLog");
     static ngx_str_t const workers = ngx_string("nbWorkers");
+    static ngx_str_t const hash    = ngx_string("hashLog");
+    static ngx_str_t const chain   = ngx_string("chainLog");
 
-    enum { nparams = 3 };
+    enum { nparams = 5 };
 
-    set_param_args params[nparams];
-    ngx_uint_t     idx;
-    ngx_int_t      rc;
+    set_param_args       params[nparams];
+    ngx_uint_t           idx;
+    ngx_int_t            rc;
+    derive_tables_result tables;
+
+    /* The figure the encoder is about to be given, so the tables are
+       sized against the same expectation. */
+    tables = ngx_http_pack_zstd_derive_tables(&(derive_tables_args) {
+        .level       = enc->conf.level,
+        .window_bits = enc->conf.window_bits,
+        .expected    = enc->conf.content_length >= 0
+                           ? (uint64_t) enc->conf.content_length
+                           : (uint64_t) enc->conf.src_size_hint,
+    });
 
     /* The one of these an operator is meant to tune: it trades CPU
        for size. Bounded where pack_zstd_level is parsed, so nothing
@@ -1173,6 +1224,21 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
         .param = ZSTD_c_nbWorkers,
         .value = 0,
         .name  = &workers,
+    };
+
+    /* See ngx_http_pack_zstd_derive_tables. */
+    params[3] = (set_param_args) {
+        .enc   = enc,
+        .param = ZSTD_c_hashLog,
+        .value = tables.hash_log,
+        .name  = &hash,
+    };
+
+    params[4] = (set_param_args) {
+        .enc   = enc,
+        .param = ZSTD_c_chainLog,
+        .value = tables.chain_log,
+        .name  = &chain,
     };
 
     for (idx = 0; idx < nparams; idx++) {
