@@ -1,0 +1,118 @@
+#!/bin/sh
+# shellcheck disable=SC1091,SC2034,SC2154
+
+# Copyright (C) Igor Sysoev
+# Copyright (C) Nginx, Inc.
+# Copyright (C) Google Inc.
+# Copyright (C) 2026 Juri Torhoff
+
+# Either the repository root was added as the module (the top-level
+# config sources this, having set ngx_addon_name), or this directory
+# was added directly. PACK_ROOT_DIR has to reach the repository root
+# either way, since the Brotli submodule lives there rather than
+# beside the sources.
+#
+# Unlike the zstd filter beside it, the sources are in this same
+# directory: the encoding's name is already on the directory, so
+# there is nothing for a further level to distinguish.
+if [ "$ngx_addon_name" = "ngx_pack" ]; then
+	PACK_MODULE_SRC_DIR="$ngx_addon_dir/module/filter/brotli"
+	PACK_ROOT_DIR="$ngx_addon_dir"
+else
+	PACK_MODULE_SRC_DIR="$ngx_addon_dir"
+	PACK_ROOT_DIR="$ngx_addon_dir/../../.."
+fi
+
+ngx_addon_name=ngx_pack_brotli_filter
+ngx_module_type=HTTP_FILTER
+ngx_module_name=ngx_http_pack_brotli_module
+
+# Vendored rather than taken from the system, for the same reason the
+# zstd submodule is: pinning keeps the version the same everywhere
+# this builds.
+#
+# Absolute, by way of PACK_ROOT_DIR: configure runs from the nginx
+# tree and writes objs/Makefile there, so a path relative to this file
+# would be read relative to nginx/ instead and find nothing.
+PACK_BROTLI_DIR="$PACK_ROOT_DIR/deps/brotli/c"
+if [ ! -f "$PACK_BROTLI_DIR/include/brotli/encode.h" ]; then
+	cat <<END
+
+$0: error: \
+Brotli library is missing from the $PACK_BROTLI_DIR directory.
+
+Please make sure that the git submodule has been checked out:
+
+    cd $PACK_ROOT_DIR && git submodule update --init && cd $PWD
+
+END
+	exit 1
+fi
+
+BROTLI_OUTPUT_DIRECTORY="$PACK_ROOT_DIR/deps/brotli/out"
+BROTLI_ENC_H="$PACK_BROTLI_DIR/include/brotli/encode.h \
+              $PACK_BROTLI_DIR/include/brotli/port.h \
+              $PACK_BROTLI_DIR/include/brotli/types.h"
+
+# Shared with the static module. Listed as a dependency so that
+# editing it actually rebuilds this module.
+#
+# Reached from the repository root rather than from the sources, so
+# that the path does not have to change if these sources move.
+PACK_COMMON_DIR="$PACK_ROOT_DIR/module/common"
+PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
+
+# The encoder is a translation unit of its own so that the filter
+# cannot see inside it: the header declares an incomplete type, and
+# only ngx_http_pack_brotli_encoder.c knows what it holds.
+PACK_ENCODER_H="$PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_encoder.h"
+
+ngx_module_incs="$PACK_BROTLI_DIR/include"
+ngx_module_deps="$BROTLI_ENC_H $PACK_COMMON_H $PACK_ENCODER_H"
+ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_filter.c \
+                 $PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_encoder.c"
+# -lm because Brotli's encoder uses log2() in its cost model.
+ngx_module_libs="-L$BROTLI_OUTPUT_DIRECTORY \
+-lbrotlienc -lbrotlicommon -lm"
+ngx_module_order="$ngx_module_name \
+                  ngx_pagespeed \
+                  ngx_http_postpone_filter_module \
+                  ngx_http_ssi_filter_module \
+                  ngx_http_charset_filter_module \
+                  ngx_http_xslt_filter_module \
+                  ngx_http_image_filter_module \
+                  ngx_http_sub_filter_module \
+                  ngx_http_addition_filter_module \
+                  ngx_http_gunzip_filter_module \
+                  ngx_http_userid_filter_module \
+                  ngx_http_headers_filter_module \
+                  ngx_http_copy_filter_module \
+                  ngx_http_range_body_filter_module \
+                  ngx_http_not_modified_filter_module \
+                  ngx_http_slice_filter_module"
+
+. auto/module
+
+if [ "$ngx_module_link" != DYNAMIC ]; then
+	# ngx_module_order doesn't work with static modules,
+	# so we must re-order filters here.
+
+	if [ "$HTTP_GZIP" = YES ]; then
+		next=ngx_http_gzip_filter_module
+	elif
+		echo "$HTTP_FILTER_MODULES" |
+			grep pagespeed_etag_filter >/dev/null
+	then
+		next=ngx_pagespeed_etag_filter
+	else
+		next=ngx_http_range_header_filter_module
+	fi
+
+	HTTP_FILTER_MODULES=$(echo "$HTTP_FILTER_MODULES" |
+		sed "s/$ngx_module_name//" |
+		sed "s/$next/$next $ngx_module_name/")
+fi
+
+CFLAGS="$CFLAGS -Wno-deprecated-declarations"
+
+have=NGX_HTTP_PACK_BROTLI_FILTER_MODULE . auto/have

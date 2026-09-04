@@ -12,6 +12,10 @@ ngx_addon_name=ngx_pack
 
 # Make sure the module knows it is a submodule.
 ngx_addon_name=ngx_pack
+. "$ngx_addon_dir"/module/filter/brotli/config
+
+# Make sure the module knows it is a submodule.
+ngx_addon_name=ngx_pack
 . "$ngx_addon_dir"/module/static/config
 
 # The final name for reporting.
