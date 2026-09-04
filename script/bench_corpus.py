@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """Compression benchmark against the real-world corpus in script/corpus.
 
-Reports what the filter actually achieves on real HTML, CSS, JavaScript and
-prose - compressed size, ratio, and time per request - optionally across a
-range of pack_zstd_level and pack_zstd_window settings.
+Reports what either filter actually achieves on real HTML, CSS, JavaScript
+and prose - compressed size, ratio, and time per request - optionally across
+a range of level and window settings, and for one codec or both.
 
 This is a measurement tool, not a test: a compression ratio has no pass or
-fail, and the numbers move with the linked zstd version. Run it by hand
+fail, and the numbers move with the linked library version. Run it by hand
 when tuning a default, and put the table in the commit message. test_stream.py
 is what asserts correctness.
 
-Two traps worth knowing before trusting any number this prints:
+The two codecs do not share a level range - pack_zstd_level starts at 1 and
+pack_brotli_level at 0, and their ceilings are set separately - so a value
+one accepts may be refused by the other. Each codec therefore gets an nginx
+of its own: a refusal then costs that codec's table rather than the whole
+run, and neither codec's first measurement pays for warming a worker the
+other has already warmed.
+
+Three traps worth knowing before trusting any number this prints:
 
   * Never measure ratio on synthetic fixtures. test_stream.py's make_text()
     output is random words from a small list, which repeat at long range and
@@ -23,8 +30,13 @@ Two traps worth knowing before trusting any number this prints:
     forces error_log to "crit" for that reason, but a debug build still pays
     for the branches, so prefer a release build for timings.
 
+  * These are steady-state figures: every path is warmed before it is timed,
+    and the best of five batches is what gets printed. The first request a
+    fresh worker serves costs substantially more, and nothing here shows it.
+
 Usage:
     python3 script/bench_corpus.py
+    python3 script/bench_corpus.py --codec brotli --level 0,2,5
     python3 script/bench_corpus.py --level 1,3,6 --window 16k,64k
     python3 script/bench_corpus.py --nginx /path/to/nginx --repeat 40
 """
@@ -47,19 +59,36 @@ MIME = {
 }
 
 
-def render_conf(work, port, levels, windows):
-    """One location per (level, window) pair, so a sweep needs one nginx."""
+def location(codec, level, window):
+    """The path a (level, window) pair is served under, codec included.
+
+    Named rather than numbered so a failure in the middle of a sweep says
+    which configuration produced it."""
+    return f"/{codec.name}-q{level or 'default'}w{window or 'default'}/"
+
+
+def render_conf(work, port, codec, levels, windows):
+    """One location per (level, window) pair, for this codec alone."""
     locations = []
     for level in levels:
         for window in windows:
-            window_directive = f"pack_zstd_window {window};" if window else ""
+            body = ["      root html;"]
+            if level:
+                body.append(f"      {codec.directive}_level {level};")
+            if window:
+                body.append(f"      {codec.directive}_window {window};")
             locations.append(
-                f"    location /q{level}w{window or 'default'}/ {{\n"
-                f"      root html;\n"
-                f"      pack_zstd_level {level};\n"
-                f"      {window_directive}\n"
-                f"    }}"
+                f"    location {location(codec, level, window)} {{\n"
+                + "\n".join(body)
+                + "\n    }"
             )
+
+    # The other codec is turned off by name rather than left unmentioned:
+    # both filters see every response, and an explicit "off" is what keeps
+    # a table headed "brotli" from measuring whichever one won the chain.
+    others = "\n  ".join(
+        f"{other.directive} off;" for other in T.CODECS if other is not codec
+    )
 
     conf = f"""
 daemon off;
@@ -83,8 +112,12 @@ http {{
   }}
   default_type application/octet-stream;
 
-  pack_zstd on;
-  pack_zstd_types text/html text/css application/javascript text/plain;
+  {codec.directive} on;
+  # text/html is deliberately absent: it is always compressed, and naming
+  # it draws a "duplicate MIME type" warning into output meant for a
+  # commit message.
+  {codec.directive}_types text/css application/javascript text/plain;
+  {others}
 
   server {{
     listen 127.0.0.1:{port};
@@ -100,17 +133,122 @@ http {{
     return path
 
 
-def bench_once(port, path, repeat):
+def bench_once(port, path, token, repeat):
     """Milliseconds per request, best of five batches."""
     for _ in range(min(8, repeat)):
-        T.fetch(port, path)
+        T.fetch(port, path, token)
     samples = []
     for _ in range(5):
         start = time.perf_counter()
         for _ in range(repeat):
-            T.fetch(port, path)
+            T.fetch(port, path, token)
         samples.append((time.perf_counter() - start) / repeat * 1000)
     return min(samples)
+
+
+def label_for(codec, level, window):
+    parts = []
+    if level:
+        parts.append(f"{codec.directive}_level {level}")
+    else:
+        parts.append(f"{codec.name}, compiled-in level")
+    if window:
+        parts.append(f"{codec.directive}_window {window}")
+    return ", ".join(parts)
+
+
+def run_codec(codec, args, corpus, names, nginx_bin, summary):
+    """Measures every (level, window) pair for one codec, in its own nginx."""
+    levels = [lv.strip() for lv in args.level.split(",") if lv.strip()] or [""]
+    windows = (
+        [w.strip() for w in args.window.split(",")] if args.window else [""]
+    )
+
+    work = tempfile.mkdtemp(prefix=f"ngx-bench-{codec.name}-")
+    html = os.path.join(work, "html")
+    os.makedirs(os.path.join(work, "logs"), exist_ok=True)
+    for level in levels:
+        for window in windows:
+            directory = os.path.join(
+                html, location(codec, level, window).strip("/")
+            )
+            os.makedirs(directory, exist_ok=True)
+            for name, blob in corpus.items():
+                with open(os.path.join(directory, name), "wb") as handle:
+                    handle.write(blob)
+
+    conf = render_conf(work, args.port, codec, levels, windows)
+    nginx = T.Nginx(nginx_bin, work, conf, args.port)
+    nginx.start()
+
+    try:
+        for level in levels:
+            for window in windows:
+                print(f"### {label_for(codec, level, window)}")
+                print(
+                    f"{'file':>12} {'raw':>9} {'compressed':>11} "
+                    f"{'ratio':>7} {'ms':>8}"
+                )
+                print("-" * 52)
+
+                total_raw = total_out = 0
+                total_ms = 0.0
+                for name in names:
+                    path = location(codec, level, window) + name
+                    _, headers, body = T.fetch(args.port, path, codec.token)
+                    if headers.get("content-encoding") != codec.token:
+                        print(
+                            f"{name:>12}   not compressed - check "
+                            f"{codec.directive}_types"
+                        )
+                        continue
+                    raw = len(corpus[name])
+                    total_raw += raw
+                    total_out += len(body)
+                    elapsed = bench_once(
+                        args.port, path, codec.token, args.repeat
+                    )
+                    total_ms += elapsed
+                    print(
+                        f"{name:>12} {raw:>9,} {len(body):>11,} "
+                        f"{raw / len(body):>6.2f}x {elapsed:>7.2f}"
+                    )
+
+                if total_out:
+                    print(
+                        f"{'total':>12} {total_raw:>9,} {total_out:>11,} "
+                        f"{total_raw / total_out:>6.2f}x {total_ms:>7.2f}"
+                    )
+                    summary.append(
+                        {
+                            "codec": codec.name,
+                            "level": level or "default",
+                            "window": window or "default",
+                            "raw": total_raw,
+                            "out": total_out,
+                            "ms": total_ms,
+                        }
+                    )
+                print()
+    finally:
+        nginx.stop()
+
+
+def print_summary(rows):
+    """Every configuration on one page, for pasting into a commit message."""
+    print("### summary")
+    print(
+        f"{'codec':>8} {'level':>8} {'window':>8} {'bytes':>11} "
+        f"{'ratio':>7} {'ms':>8}"
+    )
+    print("-" * 54)
+    for row in rows:
+        print(
+            f"{row['codec']:>8} {row['level']:>8} {row['window']:>8} "
+            f"{row['out']:>11,} {row['raw'] / row['out']:>6.2f}x "
+            f"{row['ms']:>7.2f}"
+        )
+    print()
 
 
 def main():
@@ -121,14 +259,21 @@ def main():
     parser.add_argument("--nginx", help="path to the nginx binary under test")
     parser.add_argument("--port", type=int, default=T.PORT)
     parser.add_argument(
+        "--codec",
+        default=",".join(c.name for c in T.CODECS),
+        help="comma-separated codecs to measure (default: all of them)",
+    )
+    parser.add_argument(
         "--level",
-        default="3",
-        help="comma-separated pack_zstd_level values (default: 3)",
+        default="",
+        help="comma-separated level values; empty means the compiled-in "
+        "default. The two codecs accept different ranges",
     )
     parser.add_argument(
         "--window",
         default="",
-        help="comma-separated pack_zstd_window values; empty means the compiled-in default",
+        help="comma-separated window values; empty means the compiled-in "
+        "default",
     )
     parser.add_argument(
         "--repeat",
@@ -138,15 +283,22 @@ def main():
     )
     args = parser.parse_args()
 
+    by_name = {c.name: c for c in T.CODECS}
+    wanted = [name.strip() for name in args.codec.split(",") if name.strip()]
+    unknown = [name for name in wanted if name not in by_name]
+    if unknown:
+        raise SystemExit(
+            f"error: no such codec {', '.join(unknown)}. "
+            f"Known: {', '.join(by_name)}"
+        )
+    codecs = [by_name[name] for name in wanted]
+
     corpus = T.load_corpus()
     if not corpus:
         raise SystemExit(
             f"error: no corpus in {T.CORPUS}. It is checked in; a partial "
             f"clone or a stray delete is the usual cause."
         )
-
-    levels = [lv.strip() for lv in args.level.split(",") if lv.strip()]
-    windows = [w.strip() for w in args.window.split(",")] if args.window else [""]
 
     nginx_bin = T.locate_nginx(args.nginx)
     version, has_debug = T.nginx_build_info(nginx_bin)
@@ -162,56 +314,16 @@ def main():
         )
     print()
 
-    work = tempfile.mkdtemp(prefix="ngx-zstd-bench-")
-    html = os.path.join(work, "html")
-    os.makedirs(os.path.join(work, "logs"), exist_ok=True)
-    for level in levels:
-        for window in windows:
-            directory = os.path.join(html, f"q{level}w{window or 'default'}")
-            os.makedirs(directory, exist_ok=True)
-            for name, blob in corpus.items():
-                with open(os.path.join(directory, name), "wb") as handle:
-                    handle.write(blob)
-
-    conf = render_conf(work, args.port, levels, windows)
-    nginx = T.Nginx(nginx_bin, work, conf, args.port)
-    nginx.start()
-
     names = sorted(corpus, key=lambda n: MIME.get(os.path.splitext(n)[1], ""))
-    try:
-        for level in levels:
-            for window in windows:
-                label = f"pack_zstd_level {level}"
-                if window:
-                    label += f", pack_zstd_window {window}"
-                print(f"### {label}")
-                print(
-                    f"{'file':>12} {'raw':>9} {'compressed':>11} {'ratio':>7} {'ms':>8}"
-                )
-                print("-" * 52)
-                total_raw = total_out = 0
-                for name in names:
-                    path = f"/q{level}w{window or 'default'}/{name}"
-                    _, headers, body = T.fetch(args.port, path)
-                    if headers.get("content-encoding") != "zstd":
-                        print(f"{name:>12}   not compressed - check pack_zstd_types")
-                        continue
-                    raw = len(corpus[name])
-                    total_raw += raw
-                    total_out += len(body)
-                    elapsed = bench_once(args.port, path, args.repeat)
-                    print(
-                        f"{name:>12} {raw:>9,} {len(body):>11,} "
-                        f"{raw / len(body):>6.2f}x {elapsed:>7.2f}"
-                    )
-                if total_out:
-                    print(
-                        f"{'total':>12} {total_raw:>9,} {total_out:>11,} "
-                        f"{total_raw / total_out:>6.2f}x"
-                    )
-                print()
-    finally:
-        nginx.stop()
+
+    summary = []
+    for codec in codecs:
+        run_codec(codec, args, corpus, names, nginx_bin, summary)
+
+    # One codec at its compiled-in default is a single row, and the table
+    # above already said everything it would.
+    if len(summary) > 1:
+        print_summary(summary)
 
 
 if __name__ == "__main__":
