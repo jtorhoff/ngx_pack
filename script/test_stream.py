@@ -55,25 +55,140 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
 
 # ---------------------------------------------------------------------------
+# Codecs
+# ---------------------------------------------------------------------------
+
+
+class Codec:
+    """One encoder, and everything the suite needs in order to address it.
+
+    The two filters are the same machinery with a different library
+    underneath, so a structural test - buffers, stalls, teardown, allocator
+    balance - is the same test twice. Everything that differs between the
+    two is here: the token a client asks for, the prefix its locations
+    carry in test_stream.conf, the directive name its messages use, and
+    the word its debug log puts in front of an allocation.
+
+    What is deliberately NOT here is anything read out of the compressed
+    bytes. zstd states its window in the frame header and Brotli does not,
+    so the window tests stay zstd-only rather than growing a "does this
+    codec support it" flag per assertion.
+    """
+
+    def __init__(self, name, token, ext, directive, prefix, log_tag):
+        self.name = name
+        self.token = token
+        self.ext = ext
+        self.directive = directive
+        self.prefix = prefix
+        self.log_tag = log_tag
+
+        # Filled in by main(). None when no decoder for this codec is
+        # installed, which is what makes needs_decoder skip rather than
+        # fail.
+        self.decode = None
+
+        self.alloc_re = re.compile(
+            rf"\*(\d+) {log_tag} alloc: (?:0x)?([0-9A-Fa-f]+), size: (\d+)"
+        )
+        self.free_re = re.compile(
+            rf"\*(\d+) {log_tag} free: (?:0x)?([0-9A-Fa-f]+)"
+        )
+        self.out_re = re.compile(
+            rf"\*(\d+) {log_tag} out: (?:0x)?[0-9A-Fa-f]+, size: (\d+)"
+        )
+        self.buf_re = re.compile(
+            rf"\*(\d+) {log_tag} buffer created: (?:0x)?[0-9A-Fa-f]+, "
+            rf"total: (\d+)"
+        )
+        self.init_re = re.compile(
+            rf"\*(\d+) {log_tag} encoder instance created and configured"
+        )
+
+    def path(self, location, name=""):
+        """Where this codec's twin of `location` lives.
+
+        zstd carries no prefix, so every path it has always used is
+        unchanged and the conf did not have to be rewritten around the
+        parameterisation; Brotli's twins sit beside them under "br-".
+        """
+        return f"/{self.prefix}{location}/{name}"
+
+    def file(self, name):
+        """A plain static file this codec's filter compresses.
+
+        zstd's is the server root, which the http block already has
+        pack_zstd on for; Brotli needs a location of its own to turn its
+        filter on, so the two are not the same shape and this hides the
+        difference.
+        """
+        return f"/{name}" if not self.prefix else f"/{self.prefix}static/{name}"
+
+    def __repr__(self):
+        return self.name
+
+
+ZSTD = Codec("zstd", "zstd", ".zst", "pack_zstd", "", "zstd")
+BROTLI = Codec("brotli", "br", ".br", "pack_brotli", "br-", "brotli")
+
+CODECS = [ZSTD, BROTLI]
+
+
+# ---------------------------------------------------------------------------
 # Test registry
 # ---------------------------------------------------------------------------
 
 REGISTRY = []
 
 
-def test(name, needs_decoder=False, needs_debug=False, needs_corpus=False):
-    """Registers a test. The body raises Failure to report a failure."""
+def test(
+    name,
+    needs_decoder=False,
+    needs_debug=False,
+    needs_corpus=False,
+    codecs=None,
+):
+    """Registers a test. The body raises Failure to report a failure.
+
+    "codecs" is what makes a test structural: given a list, it is
+    registered once per codec and its body takes (ctx, codec) instead of
+    (ctx), reaching every path and directive through that codec rather
+    than naming zstd. The registered name gets the codec appended, so a
+    failure still says which one broke.
+
+    Left None the test runs once against zstd and takes (ctx) alone -
+    which is what every test that reads the compressed bytes has to do,
+    zstd's frame header being the only one this suite can parse.
+    """
 
     def register(fn):
-        REGISTRY.append(
-            {
-                "name": name,
-                "fn": fn,
-                "needs_decoder": needs_decoder,
-                "needs_debug": needs_debug,
-                "needs_corpus": needs_corpus,
-            }
-        )
+        if codecs is None:
+            REGISTRY.append(
+                {
+                    "name": name,
+                    "fn": fn,
+                    "codec": ZSTD,
+                    "needs_decoder": needs_decoder,
+                    "needs_debug": needs_debug,
+                    "needs_corpus": needs_corpus,
+                }
+            )
+            return fn
+
+        for codec in codecs:
+            REGISTRY.append(
+                {
+                    "name": f"{name} [{codec.name}]",
+                    # Bound now rather than read from the closure: every
+                    # entry shares one function, and a late read would
+                    # give them all the last codec in the list.
+                    "fn": (lambda ctx, _fn=fn, _codec=codec: _fn(ctx, _codec)),
+                    "codec": codec,
+                    "needs_decoder": needs_decoder,
+                    "needs_debug": needs_debug,
+                    "needs_corpus": needs_corpus,
+                }
+            )
         return fn
 
     return register
@@ -121,10 +236,20 @@ def nginx_build_info(nginx):
     return version, "--with-debug" in text
 
 
-def locate_decoder():
-    """Returns a callable bytes->bytes, or None if zstd cannot be decoded."""
-    bundled = os.path.join(ROOT, "deps", "zstd", "out", "programs", "zstd")
-    cli = shutil.which("zstd")
+# Where each codec's own command line tool is built, when the vendored
+# one was built at all. script/build.sh asks for zstd's; Brotli's is off
+# by default there, since nothing but this needs it, so that path is
+# usually a miss and the system CLI is what answers.
+BUNDLED_DECODERS = {
+    "zstd": ("deps", "zstd", "out", "programs", "zstd"),
+    "brotli": ("deps", "brotli", "out", "brotli"),
+}
+
+
+def locate_decoder(codec=ZSTD):
+    """Returns a callable bytes->bytes, or None if `codec` cannot be decoded."""
+    bundled = os.path.join(ROOT, *BUNDLED_DECODERS[codec.name])
+    cli = shutil.which(codec.name)
     if not cli and os.path.isfile(bundled) and os.access(bundled, os.X_OK):
         cli = bundled
     if not cli:
@@ -133,7 +258,9 @@ def locate_decoder():
     def decode_with_cli(data):
         # The CLI is happiest with a real file; this also keeps us clear of
         # stdin-buffering differences between zstd releases.
-        with tempfile.NamedTemporaryFile(suffix=".zst", delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            suffix=codec.ext, delete=False
+        ) as handle:
             handle.write(data)
             path = handle.name
         try:
@@ -772,24 +899,28 @@ def fetch_and_abort(port, path, settle=1.5):
 # Debug log analysis
 # ---------------------------------------------------------------------------
 
-ALLOC_RE = re.compile(r"\*(\d+) zstd alloc: (?:0x)?([0-9A-Fa-f]+), size: (\d+)")
-FREE_RE = re.compile(r"\*(\d+) zstd free: (?:0x)?([0-9A-Fa-f]+)")
 CLOSE_RE = re.compile(r"\*(\d+) http close request")
-INIT_RE = re.compile(r"\*(\d+) zstd encoder instance created and configured")
-OUT_RE = re.compile(r"\*(\d+) zstd out: (?:0x)?[0-9A-Fa-f]+, size: (\d+)")
-BUF_RE = re.compile(
-    r"\*(\d+) zstd buffer created: (?:0x)?[0-9A-Fa-f]+, total: (\d+)"
-)
+
+# The zstd codec's own patterns, kept under their original names: every
+# helper below takes a codec and defaults to this one, so a test that
+# never mentions a codec still reads and behaves exactly as it did.
+ALLOC_RE = ZSTD.alloc_re
+FREE_RE = ZSTD.free_re
+INIT_RE = ZSTD.init_re
+OUT_RE = ZSTD.out_re
+BUF_RE = ZSTD.buf_re
 
 
-def buffers_created(log):
+def buffers_created(log, codec=ZSTD):
     """Most output buffers any one response was seen to create."""
-    return max((int(m.group(2)) for m in BUF_RE.finditer(log)), default=0)
+    return max(
+        (int(m.group(2)) for m in codec.buf_re.finditer(log)), default=0
+    )
 
 
-def encoder_count(log):
+def encoder_count(log, codec=ZSTD):
     """How many encoders were built, in this slice of the log."""
-    return len(INIT_RE.findall(log))
+    return len(codec.init_re.findall(log))
 
 
 def frame_window(data):
@@ -888,7 +1019,7 @@ def _frame_header(data):
     return window, pos
 
 
-def allocator_events(log):
+def allocator_events(log, codec=ZSTD):
     """Replays the encoder's allocator trace, per connection.
 
     Tracks whether every pointer came back exactly once, the peak
@@ -916,7 +1047,7 @@ def allocator_events(log):
         )
 
     for line in log.splitlines():
-        match = ALLOC_RE.search(line)
+        match = codec.alloc_re.search(line)
         if match:
             entry = slot(match.group(1))
             ptr, size = match.group(2).lstrip("0"), int(match.group(3))
@@ -928,7 +1059,7 @@ def allocator_events(log):
             entry["peak_bytes"] = max(entry["peak_bytes"], entry["live_bytes"])
             continue
 
-        match = FREE_RE.search(line)
+        match = codec.free_re.search(line)
         if match:
             entry = slot(match.group(1))
             ptr = match.group(2).lstrip("0")
@@ -954,7 +1085,7 @@ def allocator_events(log):
 REQUEST_LINE_RE = re.compile(r"\*(\d+) http request line")
 
 
-def allocator_timeline(log):
+def allocator_timeline(log, codec=ZSTD):
     """Replays the allocator trace in order instead of grouping by connection.
 
     allocator_events() sums per connection, which is what a test opening one
@@ -975,7 +1106,7 @@ def allocator_timeline(log):
             at_request_start.append(live_bytes)
             continue
 
-        match = ALLOC_RE.search(line)
+        match = codec.alloc_re.search(line)
         if match:
             ptr, size = match.group(2).lstrip("0"), int(match.group(3))
             live[ptr] = size
@@ -984,7 +1115,7 @@ def allocator_timeline(log):
             allocs += 1
             continue
 
-        match = FREE_RE.search(line)
+        match = codec.free_re.search(line)
         if match:
             ptr = match.group(2).lstrip("0")
             if not ptr:
@@ -1007,7 +1138,7 @@ def allocator_timeline(log):
     }
 
 
-def wait_for_encoder_release(nginx, timeout=10.0):
+def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
     """Polls the debug log until every traced request has been torn down.
 
     A client can hold the whole response before the worker has released the
@@ -1034,7 +1165,7 @@ def wait_for_encoder_release(nginx, timeout=10.0):
     """
     deadline = time.time() + timeout
     while True:
-        stats = allocator_events(nginx.read_log())
+        stats = allocator_events(nginx.read_log(), codec)
         active = [entry for entry in stats.values() if entry["allocs"]]
         settled = active and all(
             entry["closed"] and entry["allocs"] == entry["frees"] and not entry["live"]
@@ -2202,7 +2333,7 @@ def parse_size(text):
     return int(text)
 
 
-def buffer_bounds(ctx):
+def buffer_bounds(ctx, codec=ZSTD):
     """(count_min, count_max, size_min, size_max) this nginx enforces.
 
     Read out of the binary rather than spelled out here, so a bound that
@@ -2213,12 +2344,12 @@ def buffer_bounds(ctx):
     Reading them from the refusals checks something worth checking on the
     way past: that what the module reports matches what it enforces.
     """
-    _, text = config_accepted(ctx, "pack_zstd_buffers 1 1;")
+    _, text = config_accepted(ctx, f"{codec.directive}_buffers 1 1;")
     sizes = re.search(r"buffer size must be between (\S+) and (\S+)", text)
     check(sizes is not None, f"no buffer size bounds in the refusal:\n{text}")
 
     _, text = config_accepted(
-        ctx, f"pack_zstd_buffers 100000 {sizes.group(1)};"
+        ctx, f"{codec.directive}_buffers 100000 {sizes.group(1)};"
     )
     counts = re.search(
         r"number of buffers must be between (\d+) and (\d+)", text
@@ -2317,7 +2448,7 @@ def test_buffers_one_warns(ctx):
 
 
 
-def stall_a_response(port, path, seconds=0.6):
+def stall_a_response(port, path, accept_encoding="zstd", seconds=0.6):
     """Asks for a rate-limited response and deliberately does not read it.
 
     Reading it would let the write filter drain, which is exactly what must
@@ -2329,55 +2460,67 @@ def stall_a_response(port, path, seconds=0.6):
     try:
         sock.sendall(
             f"GET {path} HTTP/1.1\r\nHost: localhost\r\n"
-            f"Accept-Encoding: zstd\r\n\r\n".encode()
+            f"Accept-Encoding: {accept_encoding}\r\n\r\n".encode()
         )
         time.sleep(seconds)
     finally:
         sock.close()
 
 
-@test("a stalled write does not stop the encoder", needs_debug=True)
-def test_multiple_output_buffers(ctx):
+@test(
+    "a stalled write does not stop the encoder",
+    needs_debug=True,
+    codecs=CODECS,
+)
+def test_multiple_output_buffers(ctx, codec):
     """With one buffer the encoder had to stop until it came back, so a slow
     client throttled compression as well as delivery. Several buffers let it
-    run on, and the first parameter of pack_zstd_buffers is the bound on
+    run on, and the first parameter of the buffers directive is the bound on
     how far."""
     # The ceiling the binary reports, not the default count: nothing the
     # module prints names the default, and a stalled response is bounded
     # by the ceiling either way. Checking against the looser of the two
     # is what keeps this from restating a constant it cannot read.
-    _, max_buffers, _, _ = buffer_bounds(ctx)
+    _, max_buffers, _, _ = buffer_bounds(ctx, codec)
 
     ctx.nginx.mark_log()
-    stall_a_response(ctx.port, "/throttled/wiki.html")
-    created = buffers_created(ctx.nginx.read_log())
+    stall_a_response(
+        ctx.port, codec.path("throttled", "wiki.html"), codec.token
+    )
+    created = buffers_created(ctx.nginx.read_log(), codec)
 
     check(
         created > 1,
         f"a stalled response created {created} output buffer(s), so the "
-        f"encoder still stops on the first one and pack_zstd_buffers buys "
-        f"nothing",
+        f"encoder still stops on the first one and "
+        f"{codec.directive}_buffers buys nothing",
     )
     check(
         created <= max_buffers,
         f"a stalled response created {created} output buffers, past the "
-        f"pack_zstd_buffers ceiling of {max_buffers}",
+        f"{codec.directive}_buffers ceiling of {max_buffers}",
     )
 
 
-@test("pack_zstd_buffers 1 holds the encoder to a single buffer", needs_debug=True)
-def test_buffers_directive_is_honoured(ctx):
+@test(
+    "buffers 1 holds the encoder to a single buffer",
+    needs_debug=True,
+    codecs=CODECS,
+)
+def test_buffers_directive_is_honoured(ctx, codec):
     """The same stall against a location that allows only one buffer. This is
     what tells a failure of the test above apart: if this one also reports
     more than one, the directive is being ignored rather than the stall
     failing to happen."""
     ctx.nginx.mark_log()
-    stall_a_response(ctx.port, "/throttled-one/wiki.html")
-    created = buffers_created(ctx.nginx.read_log())
+    stall_a_response(
+        ctx.port, codec.path("throttled-one", "wiki.html"), codec.token
+    )
+    created = buffers_created(ctx.nginx.read_log(), codec)
 
     check(
         created == 1,
-        f"pack_zstd_buffers 1 still created {created} output buffers",
+        f"{codec.directive}_buffers 1 still created {created} output buffers",
     )
 
 
@@ -2637,18 +2780,92 @@ def test_stream_uses_full_window(ctx):
 # ---------------------------------------------------------------------------
 
 
-@test("encoder allocations balance on a static response", needs_debug=True)
-def test_alloc_balance_static(ctx):
-    ctx.nginx.mark_log()
-    fetch(ctx.port, "/big.html")
-    assert_balanced(wait_for_encoder_release(ctx.nginx), "static")
+# Short on purpose. A deadlock shows up as a response that never ends,
+# so the only way this test can fail is by waiting - and waiting the
+# default 30s per codec would make a regression look like a hung suite
+# rather than a failure. Anything this size compresses in milliseconds.
+DEADLOCK_TIMEOUT = 8
 
 
-@test("encoder allocations balance on a streamed response", needs_debug=True)
-def test_alloc_balance_stream(ctx):
+@test(
+    "the smallest window still finishes the response",
+    needs_decoder=True,
+    codecs=CODECS,
+)
+def test_small_window_does_not_deadlock(ctx, codec):
+    """A regression test for a deadlock between the encoder and the write
+    filter, at the smallest window each codec allows.
+
+    Brotli at a 1k window emits blocks of a few hundred bytes. nginx's
+    write filter holds a buffer that small until postpone_output (1460
+    bytes by default) has accumulated - and while it held one, an encoder
+    whose only output buffer was that buffer could not produce the bytes
+    being waited for. Neither side moved again: the worker sat at 0.0%
+    CPU and the client timed out. Every corpus file hung at 1k and four
+    of five at 4k.
+
+    What actually keeps it away is the "recycled" flag on the output
+    buffers, which tells the write filter the memory has to come back
+    rather than be sat on. That was measured rather than assumed:
+    dropping the flag alone, with everything else in place, brings the
+    deadlock straight back here while zstd carries on unaffected. The
+    encoder owning its buffers is what makes the flag honest - nothing
+    can promise to reuse Brotli's own storage - so the two go together.
+
+    This fails by timing out, and the timeout is deliberately short.
+
+    The whole body is checked, not just the arrival of a response: a
+    deadlock that merely truncated would otherwise read as a pass.
+    """
+    path = codec.path("tiny-window", "dense.html")
+    try:
+        _, headers, body = fetch(
+            ctx.port, path, codec.token, timeout=DEADLOCK_TIMEOUT
+        )
+    except (TimeoutError, socket.timeout) as exc:
+        raise Failure(
+            f"{path} did not finish within {DEADLOCK_TIMEOUT}s ({exc}). "
+            f"The encoder and the write filter are deadlocked: each output "
+            f"block is below postpone_output, so the write filter holds it "
+            f"while the encoder waits for it back."
+        ) from exc
+
+    check(
+        headers.get("content-encoding") == codec.token,
+        f"{path} came back as "
+        f"{headers.get('content-encoding')!r}, so nothing was compressed "
+        f"and the deadlock could not have been reached either way",
+    )
+    check(
+        codec.decode(body) == ctx.fixtures["dense.html"],
+        f"{path}: decoded body differs from the original",
+    )
+
+
+@test(
+    "encoder allocations balance on a static response",
+    needs_debug=True,
+    codecs=CODECS,
+)
+def test_alloc_balance_static(ctx, codec):
     ctx.nginx.mark_log()
-    fetch(ctx.port, "/stream/big.html")
-    assert_balanced(wait_for_encoder_release(ctx.nginx), "stream")
+    fetch(ctx.port, codec.file("big.html"), codec.token)
+    assert_balanced(
+        wait_for_encoder_release(ctx.nginx, codec=codec), "static"
+    )
+
+
+@test(
+    "encoder allocations balance on a streamed response",
+    needs_debug=True,
+    codecs=CODECS,
+)
+def test_alloc_balance_stream(ctx, codec):
+    ctx.nginx.mark_log()
+    fetch(ctx.port, codec.path("stream", "big.html"), codec.token)
+    assert_balanced(
+        wait_for_encoder_release(ctx.nginx, codec=codec), "stream"
+    )
 
 
 def peak_encoder_bytes(ctx, path):
@@ -3067,7 +3284,12 @@ def main():
 
     nginx_bin = locate_nginx(args.nginx)
     version, has_debug = nginx_build_info(nginx_bin)
-    decode = locate_decoder()
+    for codec in CODECS:
+        codec.decode = locate_decoder(codec)
+
+    # The zstd one still has a name of its own: it is what ctx.decode
+    # hands the tests that read the compressed bytes directly.
+    decode = ZSTD.decode
     has_corpus = bool(load_corpus())
 
     for port in (args.port, args.upstream_port):
@@ -3076,7 +3298,13 @@ def main():
 
     print(f"nginx:   {nginx_bin}")
     print(f"build:   {version}{'' if has_debug else '   (no --with-debug)'}")
-    print(f"decoder: {'available' if decode else 'MISSING'}")
+    print(
+        "decoder: "
+        + ", ".join(
+            f"{codec.name} {'available' if codec.decode else 'MISSING'}"
+            for codec in CODECS
+        )
+    )
     print(f"corpus:  {'present' if has_corpus else 'MISSING (script/corpus)'}")
     if args.max_out_size is not None:
         print(f"buffer:  asserting at most {args.max_out_size} bytes per round")
@@ -3110,8 +3338,11 @@ def main():
         width = max(len(entry["name"]) for entry in REGISTRY)
         for entry in REGISTRY:
             name = entry["name"]
-            if entry["needs_decoder"] and not decode:
-                results.append((SKIP, name, "no zstd decoder available"))
+            codec = entry["codec"]
+            if entry["needs_decoder"] and codec.decode is None:
+                results.append(
+                    (SKIP, name, f"no {codec.name} decoder available")
+                )
             elif entry["needs_debug"] and not has_debug:
                 results.append((SKIP, name, "nginx lacks --with-debug"))
             elif entry["needs_corpus"] and not has_corpus:
