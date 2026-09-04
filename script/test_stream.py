@@ -2228,6 +2228,43 @@ def test_encoding_lists(ctx, codec):
         )
 
 
+@test("zstd claims a response the client would take either way")
+def test_codec_precedence(ctx):
+    """Which filter takes a response both would accept is settled by
+    chain order, not by the client and not by configuration.
+
+    Each filter prepends itself to the header chain, so whichever
+    registers last runs first: zstd, which follows Brotli in
+    objs/ngx_modules.c. It labels the response, and the other then sees
+    a Content-Encoding already set and passes through.
+
+    Nothing in either module states that preference - it falls out of
+    the order the root config walks the subdirectories - so it would
+    flip silently if those moved. The client cannot influence it either:
+    weights are read only for an explicit zero, so a client that asks
+    for Brotli by preference still gets zstd.
+    """
+    for accept in ("br, zstd", "zstd, br", "br;q=1.0, zstd;q=0.1"):
+        _, headers, _ = fetch(ctx.port, "/both/small.html", accept)
+        check(
+            headers.get("content-encoding") == ZSTD.token,
+            f"Accept-Encoding: {accept!r} was answered with "
+            f"{headers.get('content-encoding')!r}; the filters have "
+            f"changed places in the chain",
+        )
+
+    # The control. Without it every assertion above would pass just as
+    # well with the Brotli filter switched off at this location, which
+    # would make the precedence they claim to pin meaningless.
+    _, headers, _ = fetch(ctx.port, "/both/small.html", BROTLI.token)
+    check(
+        headers.get("content-encoding") == BROTLI.token,
+        f"a client taking only br got {headers.get('content-encoding')!r}, "
+        f"so Brotli is not enabled at /both/ and the precedence above "
+        f"proves nothing",
+    )
+
+
 @test("HTTP/1.0 clients are not served a compressed body", codecs=CODECS)
 def test_http_version_gate(ctx, codec):
     """Mirrors gzip_http_version, whose default is 1.1. Declining still leaves
