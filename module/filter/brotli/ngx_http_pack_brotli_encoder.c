@@ -19,6 +19,29 @@
  */
 static ngx_int_t encoder_tag;
 
+/* How much input a meta-block may hold - how far
+   BROTLI_OPERATION_PROCESS runs, and how far flush-marked buffers
+   fold into one.
+
+   nginx's chunked proxy filter marks every upstream chunk with
+   "flush", so a burst of small chunks arrives as a chain of
+   flush-marked buffers. Taken literally that ends a meta-block per
+   chunk, and a Brotli meta-block carries its own Huffman tables, so
+   the overhead is heavier than the block header zstd pays for the
+   same shape: measured against the burst upstream, 12 small chunks
+   cost +123.6% against the same bytes uninterrupted, and 128 KB in
+   1 KB chunks +2.4%.
+
+   32 KB, the same bound the zstd encoder uses, and checked here
+   rather than assumed to carry over: folding the 12-chunk burst at
+   this bound reaches 72 bytes, which is exactly what the same bytes
+   cost uninterrupted, so there is nothing left to recover. On the
+   128 KB burst it gives 97,960 against 97,899 uninterrupted, and
+   raising the bound to 128 KB recovers 23 of those 61 bytes - 0.02%,
+   inside the noise - while the look-ahead scan and the latency of a
+   held block both keep growing. */
+#define NGX_HTTP_PACK_BROTLI_FLUSH_AFTER (32 * 1024)
+
 /* The header spells this out in full; inside the encoder the short
    name is the one the code was written against. */
 typedef ngx_http_pack_brotli_encoder_t      encoder_t;
@@ -34,12 +57,6 @@ typedef struct {
        FLUSH when nothing new is arriving, and to know the stream may
        be closed once Brotli says it is finished. */
     unsigned end_of_input: 1;
-
-    /* 1 if input has been handed to Brotli that it has not been asked
-       to emit yet. BROTLI_OPERATION_PROCESS holds such data back
-       until a block fills, so it has to be flushed explicitly when
-       the caller wants output. */
-    unsigned unflushed_input: 1;
 
     /* 1 once BROTLI_OPERATION_FINISH has completed and Brotli reports
        the stream finished. */
@@ -76,6 +93,18 @@ struct ngx_http_pack_brotli_encoder_s {
        on demand, so a response that never needs a second never pays
        for it. */
     ngx_uint_t nbuffers;
+
+    /* Input taken under BROTLI_OPERATION_PROCESS since the last
+       meta-block ended - a folded flush included, that being a
+       process too. Reset when a flush or the stream completes, since
+       that starts the next block. Bounds both the fold and the flush
+       the encoder makes on its own; see
+       NGX_HTTP_PACK_BROTLI_FLUSH_AFTER.
+
+       A count rather than the flag it replaced: folding has to know
+       how much room is left in the block, not merely whether
+       anything is in it. */
+    size_t unflushed_bytes;
 
     /* Fed, holding, done; see encoder_state_t. */
     encoder_state_t state;
@@ -353,6 +382,70 @@ ngx_http_pack_brotli_discard_head_buf(
 
 
 typedef struct {
+    /* The chain after the flush-marked buffer being decided on. */
+    ngx_chain_t *rest;
+
+    /* What the block being built already holds. */
+    size_t unflushed;
+} may_fold_flush_args;
+
+typedef struct {
+    ngx_uint_t folded;
+} may_fold_flush_result;
+
+/* Whether the flush at the head of the chain may be folded into the
+   meta-block being built rather than ending one here.
+
+   Safe only because a later buffer in the chain already flushes or
+   ends the stream: a flush deferred past the input in hand would
+   leave bytes inside Brotli with nothing scheduled to push them out,
+   and a client waiting on them would wait for the next write rather
+   than this one. */
+static may_fold_flush_result
+ngx_http_pack_brotli_may_fold_flush(may_fold_flush_args *const args)
+{
+    size_t       budget;
+    ngx_chain_t *link;
+
+    /* The block already holds what it should; let this flush end it.
+     */
+    if (args->unflushed >= NGX_HTTP_PACK_BROTLI_FLUSH_AFTER) {
+        return (may_fold_flush_result) {
+            .folded = 0,
+        };
+    }
+
+    budget = NGX_HTTP_PACK_BROTLI_FLUSH_AFTER - args->unflushed;
+
+    /* Look ahead for the flush or the end that will push these bytes
+       out, no further than the room left in the block: the fold stops
+       there whatever is found, and that is what keeps this scan short
+       when the buffers are small. */
+    for (link = args->rest; link != NULL; link = link->next) {
+        size_t size;
+
+        if (link->buf->flush || link->buf->last_buf) {
+            return (may_fold_flush_result) {
+                .folded = 1,
+            };
+        }
+
+        size = (size_t) ngx_buf_size(link->buf);
+        if (size >= budget) {
+            break;
+        }
+
+        budget -= size;
+    }
+
+    /* Couldn't find any, so this flush ends a block here. */
+    return (may_fold_flush_result) {
+        .folded = 0,
+    };
+}
+
+
+typedef struct {
     encoder_t    *enc;
     ngx_chain_t **in;
     ngx_uint_t    wants_output;
@@ -410,6 +503,24 @@ ngx_http_pack_brotli_select_mode(select_mode_args *const args)
         }
 
         if (head->flush) {
+            /* Fold it into the block being built when something
+               later will push these bytes out anyway. Left alone,
+               every chunk of a chunked upstream ends a meta-block of
+               its own, and each of those carries its own Huffman
+               tables. */
+            if (ngx_http_pack_brotli_may_fold_flush(
+                    &(may_fold_flush_args) {
+                        .rest      = (*args->in)->next,
+                        .unflushed = enc->unflushed_bytes,
+                    })
+                    .folded) {
+
+                return (select_mode_result) {
+                    .operation = BROTLI_OPERATION_PROCESS,
+                    .from      = head,
+                };
+            }
+
             return (select_mode_result) {
                 .operation = BROTLI_OPERATION_FLUSH,
                 .from      = head,
@@ -431,7 +542,7 @@ ngx_http_pack_brotli_select_mode(select_mode_args *const args)
         };
     }
 
-    if (args->wants_output && enc->state.unflushed_input) {
+    if (args->wants_output && enc->unflushed_bytes > 0) {
         return (select_mode_result) {
             .operation = BROTLI_OPERATION_FLUSH,
         };
@@ -464,7 +575,7 @@ ngx_http_pack_brotli_advance_input(advance_input_args *const args)
        and FINISH both empty it, PROCESS cannot have added to it. */
     if (args->from == NULL) {
         if (args->operation != BROTLI_OPERATION_PROCESS) {
-            enc->state.unflushed_input = 0;
+            enc->unflushed_bytes = 0;
         }
         return;
     }
@@ -472,11 +583,13 @@ ngx_http_pack_brotli_advance_input(advance_input_args *const args)
     args->from->pos += args->consumed;
 
     if (args->operation == BROTLI_OPERATION_PROCESS) {
-        if (args->consumed > 0) {
-            enc->state.unflushed_input = 1;
-        }
+        /* Adds to the block being built, a folded flush included -
+           folding is what turns one of those into a process. */
+        enc->unflushed_bytes += args->consumed;
     } else {
-        enc->state.unflushed_input = 0;
+        /* A flush or a finish ends the block, so the next one starts
+           empty. */
+        enc->unflushed_bytes = 0;
     }
 
     if (args->consumed != args->input_size) {

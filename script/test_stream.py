@@ -541,6 +541,22 @@ def build_fixtures(work):
     with open(os.path.join(html, "include.shtml"), "w") as handle:
         handle.write('BEGIN<!--# include virtual="/subreq/multi.html" -->END')
 
+    # Exactly the bytes the /burst endpoint streams, as a plain file.
+    # Serving the same content both ways is what makes flush folding
+    # measurable without reading the compressed format: the file is the
+    # floor an encoder reaches when nothing interrupts it, and the burst
+    # is what a chain of flush-marked buffers costs against that. zstd
+    # can be checked by counting blocks in its frame header instead, but
+    # Brotli states nothing of the sort, so this is the observable the
+    # two have in common.
+    burst = b"".join(
+        b"%d %s" % (i, Upstream.BURST_TEXT)
+        for i in range(Upstream.BURST_CHUNKS)
+    )
+    with open(os.path.join(html, "burst.html"), "wb") as handle:
+        handle.write(burst)
+    fixtures["burst.html"] = burst
+
     for name, blob in load_corpus().items():
         with open(os.path.join(html, name), "wb") as handle:
             handle.write(blob)
@@ -2580,6 +2596,60 @@ def test_buffer_size_is_honoured(ctx):
 # module/filter/zstd/ngx_http_pack_zstd_encoder.c, the bound on both the fold
 # and the flush the filter makes on its own.
 FLUSH_AFTER = 32 * 1024
+
+
+# What a burst may cost against the same bytes uninterrupted.
+# Deliberately loose: measured, folding brings zstd to +2.0% and Brotli
+# to +0.0%, while Brotli without folding was +123.6%. So this catches
+# folding being lost outright, which is the thing worth catching,
+# without pinning a ratio that moves whenever either library is bumped.
+FOLD_COST_LIMIT = 1.25
+
+
+@test("a burst of flush-marked chunks costs little against the same bytes",
+      needs_decoder=True, codecs=CODECS)
+def test_flush_folding_cost(ctx, codec):
+    """Flush folding, measured the one way both encoders allow.
+
+    nginx's chunked proxy filter marks every upstream chunk with
+    "flush", so a burst arrives as a chain of flush-marked buffers.
+    Taken literally each one ends a block, and the per-block overhead is
+    paid over and over - for Brotli that means a set of Huffman tables
+    apiece, which is why it suffered more than zstd here.
+
+    The zstd tests below count blocks in the frame header, which is
+    exact but has no Brotli equivalent. This compares the burst against
+    a file of identical bytes instead: same content, no flush markers,
+    so the file is the floor and the gap is what folding failed to
+    recover.
+    """
+    _, flat_headers, flat = fetch(
+        ctx.port, codec.file("burst.html"), codec.token
+    )
+    check(
+        flat_headers.get("content-encoding") == codec.token,
+        "the static burst fixture was not compressed",
+    )
+
+    _, headers, body = fetch(ctx.port, codec.path("burst", ""), codec.token)
+    check(
+        headers.get("content-encoding") == codec.token,
+        f"burst was not compressed, got "
+        f"{headers.get('content-encoding')!r}",
+    )
+
+    check(
+        codec.decode(body) == ctx.fixtures["burst.html"],
+        "the burst did not decode to the same bytes as the file",
+    )
+    check(
+        len(body) <= len(flat) * FOLD_COST_LIMIT,
+        f"the burst compressed to {len(body)} bytes against {len(flat)} "
+        f"for the same bytes uninterrupted "
+        f"({100.0 * (len(body) - len(flat)) / len(flat):+.1f}%): the "
+        f"flush-marked chunks are ending a block each instead of being "
+        f"folded into one",
+    )
 
 
 @test("a burst of flush-marked chunks folds into fewer blocks", needs_decoder=True)
