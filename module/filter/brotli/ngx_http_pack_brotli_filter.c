@@ -21,14 +21,14 @@ static ngx_str_t const ENCODING = ngx_string("br");
    This is why it's safe to re-use the constant here. */
 #define MASK_BUFFERED NGX_HTTP_GZIP_BUFFERED
 
-/* The most input held back while learning the response size. Matches
-   Brotli's own input block size at the qualities that use one: the
-   encoder would have buffered that much internally without emitting
-   anything, so holding it here is not observable. Below quality 4
-   Brotli's block is 16k, smaller than this, which costs nothing
-   today because the holding almost always ends earlier - when the
-   caller asks for progress with a NULL chain - but it is why this is
-   a ceiling rather than a target. */
+/* The most input held back while learning the response size. A
+   ceiling rather than a target: at the default quality Brotli's own
+   input block is the window, so 16k, and the encoder would have
+   buffered only that much before emitting anything. Holding more
+   here is not observable because the wait almost always ends earlier
+   - when the caller asks for progress with a NULL chain - and it
+   only ever delays a response whose length is still unknown, which
+   is the case this exists to learn. */
 #define NGX_HTTP_PACK_BROTLI_HELD_INPUT (64 * 1024)
 
 /* Compression level, spelled out rather than taken from
@@ -39,21 +39,20 @@ static ngx_str_t const ENCODING = ngx_string("br");
 #define NGX_HTTP_PACK_BROTLI_LEVEL_MIN 0
 #define NGX_HTTP_PACK_BROTLI_LEVEL_MAX 11
 
-/* 4 rather than the 6 this module used to default to. Measured
-   against script/corpus with a release build: the corpus compresses
-   to 228,062 bytes at quality 4 against 212,327 at 6 - 7.4% larger -
-   for 10.0 ms of encoder time against 18.6, a little over half.
-   Unlike the window below this buys nothing in memory: peak live
-   encoder bytes are flat across the range, 1.94 MB at 4 against 1.93
-   MB at 6. It trades ratio for CPU, and only that.
+/* 1, matching pack_zstd_level's default so the two encoders are
+   configured alike out of the box. Quality is the CPU axis, as the
+   window below is the memory one.
 
-   Worth knowing before moving it again: 4 is not the knee of the
-   curve. Quality 5 costs 0.8% in ratio against 6 and saves 20% of the
-   time, where the further step down to 4 costs another 6.6% in ratio
-   to save another 33%. Most of the CPU is available at 5 for almost
-   none of the bytes; going to 4 is a deliberate choice to spend bytes
-   on latency. */
-#define NGX_HTTP_PACK_BROTLI_LEVEL_DEFAULT 4
+   It costs real ratio, and not a token amount - read this as a floor
+   an operator raises rather than as a free saving. What it buys is
+   time.
+
+   Worth knowing before moving it: quality 0 and 1 are Brotli's
+   "fast" path, a different algorithm rather than a slower walk of
+   the same one, so the step from 1 to 4 is not the same kind of move
+   as the step from 4 to 6. Anyone spending CPU for bytes should
+   measure both. script/bench_corpus.py is what measures them. */
+#define NGX_HTTP_PACK_BROTLI_LEVEL_DEFAULT 1
 
 /* Window, in bits: 16k to 1m, the same range pack_zstd_window takes.
    Both ends stop short of what Brotli itself allows - its own bounds
@@ -81,21 +80,19 @@ static ngx_str_t const ENCODING = ngx_string("br");
 #define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MIN 14
 #define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MAX 20
 
-/* 16 bits (64k) rather than the 19 (512k) this module used to default
-   to. Brotli picks a much cheaper hasher at lg_win <= 16, so 64k is
-   the largest window before encoder memory jumps: measured against
-   script/corpus, a streamed response peaks near 0.99 MB here against
-   4.0 MB at 512k. What that costs in ratio depends on the content,
-   since it only bites where a match would have reached back beyond
-   64 KB - +0.04% on CSS, +0.4% on JS, +1.0% on minified JS, +2.2% on
-   prose, +2.7% on HTML, +1.6% over the corpus as a whole. Those are
-   at quality 6, which was the default when they were taken; at the
-   current default of 4 the same change costs +1.1% over the corpus
-   and +2.4% at its worst, a lower quality having fewer long-range
-   matches to give up. 32k and 16k cost the same memory as 64k while
-   compressing worse, so 64k is the useful floor rather than the
-   smallest possible value. */
-#define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_DEFAULT 16
+/* 14 bits (16k), the floor the directive allows, and the same default
+   pack_zstd_window carries.
+
+   Chosen for memory, which is what the window buys, for a modest
+   cost in ratio.
+
+   Measure it at the quality you run, not at another one: a note here
+   once recorded that the smaller windows cost the same memory as
+   64k, which held at quality 6, where Brotli's hasher choice
+   dominates the allocation, and does not hold at the fast path this
+   now defaults to, where memory tracks the window directly.
+   script/bench_memory.py takes the figure for a given pair. */
+#define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_DEFAULT 14
 
 /* 20 is the gzip module's default, but Brotli is a far worse deal on
    tiny responses: an encoder instance costs ~560 KB regardless of how

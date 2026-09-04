@@ -46,7 +46,7 @@ UPSTREAM_PORT = 8901
 
 # The compiled-in pack_zstd_window default, which test_stream.conf deliberately
 # does not override.
-FULL_WINDOW = 64 * 1024
+FULL_WINDOW = 16 * 1024
 
 # Little-endian 0xFD2FB528, the magic a zstd frame opens with.
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
@@ -3110,14 +3110,14 @@ def test_stream_memory_ceiling(ctx):
 
 @test("pack_zstd_hint reaches the encoder", needs_debug=True)
 def test_hint_directive_reaches_encoder(ctx):
-    """/small-hint/ is /stream/ with pack_zstd_hint pulled to its floor.
+    """/small-hint/ is /big-hint/ with pack_zstd_hint pulled to its floor.
 
     Both take the same unknown-length path through the same upstream, so a
     difference between them can only be the directive - unlike
     test_stream_memory_ceiling, which shows the hint exists at all but not
     that it is configurable.
     """
-    default_peak, default_body = peak_encoder_bytes(ctx, "/stream/big.html")
+    default_peak, default_body = peak_encoder_bytes(ctx, "/big-hint/big.html")
     small_peak, small_body = peak_encoder_bytes(ctx, "/small-hint/big.html")
 
     check(

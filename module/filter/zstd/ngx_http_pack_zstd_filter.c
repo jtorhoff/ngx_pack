@@ -54,12 +54,26 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    with the window, paid per request in flight. */
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 14
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MAX 20
-#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT 16
+
+/* The floor, chosen for memory rather than ratio. The window is the
+   parameter that decides what an encoder costs per request in
+   flight, and very nearly the only one - moving it barely shifts CPU
+   at all. Compression is what pays: a smaller window finds fewer
+   matches. An operator who would rather spend the memory raises the
+   directive; this is the setting that costs the least to run.
+   script/bench_corpus.py and script/bench_memory.py are what measure
+   the trade for a given corpus. */
+#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT 14
 
 /* Compression level. */
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MIN 1
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MAX 6
-#define NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT 3
+
+/* The floor here too, and for the other axis: level is what trades
+   CPU for size, where the window trades memory for it. Raising it
+   buys ratio and costs time, at the same memory.
+   script/bench_corpus.py measures both halves. */
+#define NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT 1
 
 /* Bounds on pack_zstd_buffers' count. One buffer is enough to be
    correct - the filter simply stalls until the filters below have
@@ -1064,9 +1078,10 @@ ngx_http_pack_zstd_merge_conf(
 
     ngx_conf_merge_value(conf->enable, prev->enable, 0);
 
-    /* zstd's own documented default (ZSTD_CLEVEL_DEFAULT). Kept
-       rather than chosen: script/bench_corpus.py is what would
-       justify moving it for a given corpus. */
+    /* Not zstd's own default, which is 3 (ZSTD_CLEVEL_DEFAULT):
+       chosen rather than kept, see the constant.
+       script/bench_corpus.py is what would justify moving it for a
+       given corpus. */
     ngx_conf_merge_value(
         conf->level, prev->level, NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT);
 
@@ -1086,8 +1101,12 @@ ngx_http_pack_zstd_merge_conf(
     ngx_conf_merge_size_value(
         conf->hint, prev->hint, NGX_HTTP_PACK_ZSTD_HINT_DEFAULT);
 
-    /* Four 16 KB buffers already cover a whole block at the
-       pack_zstd_window default, past which more stop buying anything.
+    /* At the pack_zstd_window default one 16 KB buffer already spans
+       a whole block, a block being MIN(windowSize, 128 KB); the other
+       three are run-ahead, so a stalled write costs the remaining
+       buffers rather than the next byte. Four rather than one for
+       that reason alone, and still enough to cover a block at any
+       window the directive accepts up to 64k.
        A fixed pair rather than gzip's, which derives both from
        ngx_pagesize and so differs between hosts. Both halves move
        together, so a count inherited from an unrelated size cannot

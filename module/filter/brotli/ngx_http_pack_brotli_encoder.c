@@ -32,6 +32,17 @@ static ngx_int_t encoder_tag;
    cost +123.6% against the same bytes uninterrupted, and 128 KB in
    1 KB chunks +2.4%.
 
+   None of which applies at quality 0 or 1. Those take Brotli's
+   "fast" path, which compresses whatever input a call brings into a
+   meta-block of its own rather than accumulating across calls, so
+   folding a flush into a PROCESS merges nothing there - measured,
+   and at either window, so it is the quality that decides and not
+   the window. Since pack_brotli_level defaults to 1 this buys
+   nothing by default, and a great deal from quality 4 up. It is left
+   in rather than made conditional because it costs a chain walk
+   bounded by the budget below, and because the quality is the
+   operator's to raise.
+
    32 KB, the same bound the zstd encoder uses, and checked here
    rather than assumed to carry over: folding the 12-chunk burst at
    this bound reaches 72 bytes, which is exactly what the same bytes
