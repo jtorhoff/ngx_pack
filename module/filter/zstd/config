@@ -12,15 +12,17 @@
 # either way, since the zstd submodule lives there rather than beside
 # the sources.
 #
-# The sources sit one level below this file, in a directory named for
-# the encoding they wrap, so that a second encoding can be added
-# beside them without either set of sources moving.
+# The sources are in this same directory: the encoding's name is
+# already on the directory, so there is nothing for a further level to
+# distinguish. Each encoding is one directory carrying its own config
+# and its own sources, which is what lets the two be added
+# independently as well as together.
 if [ "$ngx_addon_name" = "ngx_pack" ]; then
 	PACK_MODULE_SRC_DIR="$ngx_addon_dir/module/filter/zstd"
 	PACK_ROOT_DIR="$ngx_addon_dir"
 else
-	PACK_MODULE_SRC_DIR="$ngx_addon_dir/zstd"
-	PACK_ROOT_DIR="$ngx_addon_dir/../.."
+	PACK_MODULE_SRC_DIR="$ngx_addon_dir"
+	PACK_ROOT_DIR="$ngx_addon_dir/../../.."
 fi
 
 ngx_addon_name=ngx_pack_filter
