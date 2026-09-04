@@ -129,7 +129,8 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
        and may not decode. Nothing standard begins with "zstd" or
        "gzip", so their substring cases are invented; this one is
        not. */
-    for (idx = 0; idx < sizeof(encodings) / sizeof(encodings[0]); idx++) {
+    for (idx = 0; idx < sizeof(encodings) / sizeof(encodings[0]);
+         idx++) {
         encoding = encodings[idx];
         ngx_http_pack_claim_request(&r, &encoding);
     }
