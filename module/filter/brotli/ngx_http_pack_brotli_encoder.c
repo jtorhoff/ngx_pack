@@ -196,8 +196,13 @@ ngx_http_pack_brotli_get_buf(get_buf_args *const args)
        it - load-bearing here rather than merely tidy: without it the
        write filter holds a block shorter than postpone_output while
        the encoder waits for that same buffer, and the response
-       deadlocks. See the header, and the smallest-window test in
-       script/test_stream.py. */
+       deadlocks. See the header.
+
+       Reaching that condition needs a committed buffer under 1460
+       bytes, which no configuration can ask for since
+       pack_brotli_window's floor rose to 16k, so the only cover for
+       it is script/test-small-buffer.sh: at a 64-byte buffer,
+       dropping this line hangs a plain static response. */
     buf->tag      = (ngx_buf_tag_t) &encoder_tag;
     buf->recycled = 1;
 
@@ -374,6 +379,26 @@ ngx_http_pack_brotli_select_mode(select_mode_args *const args)
     encoder_t *enc = args->enc;
     ngx_buf_t *head;
 
+    /* Nothing may be fed while Brotli is still holding output.
+       BrotliEncoderCompressStream refuses any call carrying input
+       unless the stream is back in its PROCESSING state, and a flush
+       that has not finished draining is not: it sits in
+       FLUSH_REQUESTED until the last of its output has been taken.
+       So drain first, with no input, which is always accepted.
+
+       This is what the zstd encoder's repeat_mode does for the same
+       reason. It only shows up when a flush cannot drain in one
+       round, which needs an output buffer far smaller than the 16k
+       default - script/test-small-buffer.sh is what reaches it, and
+       what caught this. */
+    if (BrotliEncoderHasMoreOutput(enc->brotli)) {
+        return (select_mode_result) {
+            .operation = enc->state.end_of_input
+                             ? BROTLI_OPERATION_FINISH
+                             : BROTLI_OPERATION_PROCESS,
+        };
+    }
+
     if (*args->in != NULL && !enc->state.end_of_input) {
         head = (*args->in)->buf;
 
@@ -409,15 +434,6 @@ ngx_http_pack_brotli_select_mode(select_mode_args *const args)
     if (args->wants_output && enc->state.unflushed_input) {
         return (select_mode_result) {
             .operation = BROTLI_OPERATION_FLUSH,
-        };
-    }
-
-    /* Output Brotli is still holding from a round whose buffer filled
-       up. PROCESS with no input emits nothing new, but it does copy
-       out what is already there. */
-    if (BrotliEncoderHasMoreOutput(enc->brotli)) {
-        return (select_mode_result) {
-            .operation = BROTLI_OPERATION_PROCESS,
         };
     }
 

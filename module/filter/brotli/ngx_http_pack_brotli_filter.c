@@ -55,13 +55,31 @@ static ngx_str_t const ENCODING = ngx_string("br");
    on latency. */
 #define NGX_HTTP_PACK_BROTLI_LEVEL_DEFAULT 4
 
-/* Window, in bits. The ceiling is memory - encoder memory scales with
-   the window, paid per request in flight - and stops at Brotli's own
-   BROTLI_MAX_WINDOW_BITS; the larger windows behind
-   BROTLI_PARAM_LARGE_WINDOW are deliberately not offered, since a
-   decoder has to opt into them. */
-#define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MIN 10
-#define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MAX 24
+/* Window, in bits: 16k to 1m, the same range pack_zstd_window takes.
+   Both ends stop short of what Brotli itself allows - its own bounds
+   are 1k and 16m - and both are this module's choice rather than the
+   library's.
+
+   The ceiling is memory, which scales with the window and is paid per
+   request in flight. It also stays well clear of the larger windows
+   behind BROTLI_PARAM_LARGE_WINDOW, which are not offered at all
+   since a decoder has to opt into those.
+
+   The floor is where a smaller window stops being worth having.
+   Brotli will go down to 1k, but the blocks it emits there are a few
+   hundred bytes - below nginx's postpone_output, which is the
+   condition the output buffers have to be marked "recycled" to
+   survive - and the ratio collapses: measured over script/corpus at
+   quality 1, 2.08x at 1k against 2.97x at 16k. Matching zstd's floor
+   keeps the two directives interchangeable and keeps the module out
+   of a range where it compresses badly.
+
+   Note this bounds the directive, not the encoder: a response whose
+   length is known still has its window shrunk to fit the body, and
+   that shrinking starts from Brotli's own minimum. A 4 KB response
+   gets a 4 KB window however this is set. */
+#define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MIN 14
+#define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MAX 20
 
 /* 16 bits (64k) rather than the 19 (512k) this module used to default
    to. Brotli picks a much cheaper hasher at lg_win <= 16, so 64k is
@@ -965,8 +983,7 @@ ngx_http_pack_brotli_parse_window(
         }
     }
 
-    return "must be 1k, 2k, 4k, 8k, 16k, 32k, 64k, 128k, 256k, 512k, "
-           "1m, 2m, 4m, 8m or 16m";
+    return "must be 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
 }
 
 

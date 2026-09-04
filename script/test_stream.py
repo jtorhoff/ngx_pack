@@ -2811,20 +2811,34 @@ def test_small_window_does_not_deadlock(ctx, codec):
     CPU and the client timed out. Every corpus file hung at 1k and four
     of five at 4k.
 
-    What actually keeps it away is the "recycled" flag on the output
-    buffers, which tells the write filter the memory has to come back
-    rather than be sat on. That was measured rather than assumed:
-    dropping the flag alone, with everything else in place, brings the
-    deadlock straight back here while zstd carries on unaffected. The
-    encoder owning its buffers is what makes the flag honest - nothing
-    can promise to reuse Brotli's own storage - so the two go together.
+    What keeps it away is the "recycled" flag on the output buffers,
+    which tells the write filter the memory has to come back rather
+    than be sat on.
 
-    This fails by timing out, and the timeout is deliberately short.
+    Be clear about what this test does and does not prove. Since
+    pack_brotli_window's floor rose to 16k, no configuration can
+    produce a block short enough to reach the condition - dropping
+    "recycled" was measured here and every response still completed.
+    So this is a smallest-window smoke test, and the real cover for
+    the deadlock is script/test-small-buffer.sh, where a 64-byte
+    buffer does reach it: dropping the flag there hangs a plain static
+    response while zstd carries on unaffected.
+
+    Still worth running for both codecs. An encoder that cannot finish
+    a response at its own smallest window is a bug whichever library
+    is underneath, and this fails by timing out - hence the
+    deliberately short timeout.
 
     The whole body is checked, not just the arrival of a response: a
     deadlock that merely truncated would otherwise read as a pass.
+
+    The fixture is load-bearing. What has to be true is that a block's
+    worth of output lands under postpone_output, and since the window
+    floor rose to 16k that only holds for a body which compresses
+    hard - big.html manages about 130x, where dense.html would come
+    out far too big to reach the condition at all.
     """
-    path = codec.path("tiny-window", "dense.html")
+    path = codec.path("tiny-window", "big.html")
     try:
         _, headers, body = fetch(
             ctx.port, path, codec.token, timeout=DEADLOCK_TIMEOUT
@@ -2844,7 +2858,7 @@ def test_small_window_does_not_deadlock(ctx, codec):
         f"and the deadlock could not have been reached either way",
     )
     check(
-        codec.decode(body) == ctx.fixtures["dense.html"],
+        codec.decode(body) == ctx.fixtures["big.html"],
         f"{path}: decoded body differs from the original",
     )
 
@@ -3216,9 +3230,10 @@ def test_table_sizing(ctx):
         )
 
 
-@test("committed output rounds account for every byte of the body", needs_debug=True)
-def test_output_rounds_account_for_the_body(ctx):
-    """The filter owns one output buffer and refills it round after round.
+@test("committed output rounds account for every byte of the body",
+      needs_debug=True, codecs=CODECS)
+def test_output_rounds_account_for_the_body(ctx, codec):
+    """The filter refills its output buffers round after round.
 
     Every refill is logged with the size committed, so the trace says exactly
     how the body was cut up on the way out. Summing it is the accounting
@@ -3229,14 +3244,24 @@ def test_output_rounds_account_for_the_body(ctx):
     16 KB, so that the same test tightens rather than breaks under
     script/test-small-buffer.sh, where a 64-byte buffer makes almost every
     round a partial one and this count goes from single digits to ~1500.
+
+    Under that script this is also the only thing standing between a real
+    stress run and a silent second run of the ordinary suite, for either
+    encoder: the buffer size is checked below against what the caller said
+    the build was limited to.
     """
     ctx.nginx.mark_log()
-    status, headers, body = fetch(ctx.port, "/big.html")
+    status, headers, body = fetch(
+        ctx.port, codec.file("big.html"), codec.token
+    )
     check(status == 200, f"expected 200, got {status}")
-    check(headers.get("content-encoding") == "zstd", "response was not compressed")
+    check(
+        headers.get("content-encoding") == codec.token,
+        "response was not compressed",
+    )
 
     rounds = {}
-    for conn, size in OUT_RE.findall(ctx.nginx.read_log()):
+    for conn, size in codec.out_re.findall(ctx.nginx.read_log()):
         rounds.setdefault(conn, []).append(int(size))
     check(len(rounds) == 1, f"expected one traced request, saw {len(rounds)}")
     sizes = next(iter(rounds.values()))
@@ -3253,15 +3278,18 @@ def test_output_rounds_account_for_the_body(ctx):
     )
 
     # Only meaningful when the caller has said what the build should have.
-    # It is what stops the small-buffer run from passing as a plain re-run of the
-    # suite if -DNGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT stops reaching the compiler.
+    # It is what stops the small-buffer run from passing as a plain re-run
+    # of the suite if the -D for this codec stops reaching the compiler.
+    # Checked once per codec, so one flag arriving and the other not is a
+    # failure rather than a half-covered run.
     cap = max(sizes)
     if ctx.max_out_size is not None:
+        macro = f"NGX_HTTP_PACK_{codec.name.upper()}_BUFFER_SIZE_DEFAULT"
         check(
             cap <= ctx.max_out_size,
             f"largest committed round was {cap} bytes, above the "
             f"{ctx.max_out_size} this build was meant to be limited to: "
-            f"NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT did not reach the compiler",
+            f"{macro} did not reach the compiler",
         )
 
 
