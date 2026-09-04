@@ -517,11 +517,10 @@ typedef struct {
 
 /* Tries one encoding: writes its suffix into the room reserved after
    the path and opens what that names. Only ever called for an
-   encoding this client would take, so a hit is a response.
-
-   Three outcomes so the caller can stay a loop. NGX_DECLINED means
-   only that this candidate is out and the next is worth a look;
-   anything but that or NGX_OK finishes the request. */
+   encoding this client would take, so a hit is a response. Three
+   outcomes so the caller can stay a loop - NGX_DECLINED means only
+   that the next candidate is worth a look, anything else finishes the
+   request. */
 static try_sibling_result
 ngx_http_pack_static_try_sibling(try_sibling_args *const args)
 {
@@ -774,14 +773,11 @@ ngx_http_pack_static_handler(ngx_http_request_t *const r)
         r, ngx_http_pack_static_module);
 
     /* Said for every response this location serves, before anything
-       is known about what is on disk: "on" is the setting that makes
-       the body depend on Accept-Encoding, and that is true of the
-       location rather than of the file. A cache that stored the plain
-       response without this could hand it to a client that would have
-       been served a sibling.
-
-       "always" is left out because nothing varies under it: the
-       encoded file goes to every client, whatever they asked for. */
+       is known about what is on disk: "on" is what makes the body
+       depend on Accept-Encoding, and that is true of the location,
+       not the file. A cache storing the plain response without this
+       could hand it to a client that would have been served a
+       sibling. Under "always" nothing varies, so it is left out. */
     if (conf->enable == NGX_HTTP_PACK_STATIC_ON &&
         ngx_http_pack_set_vary(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;

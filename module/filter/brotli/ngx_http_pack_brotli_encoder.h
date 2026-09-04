@@ -13,27 +13,11 @@
 #include <ngx_http.h>
 
 
-/* A streaming Brotli encoder and the output buffer it hands back.
- *
- * Opaque on purpose: the filter hands it input and takes finished
- * buffers back, so the rules about which chain a buffer may be on,
- * when the encoder has to be asked to release what it holds, and when
- * the stream is closed stay on this side of the line.
- *
- * The output buffers are the encoder's own, filled by Brotli writing
- * straight into them, and marked "recycled" so the filters below know
- * the memory is coming back. That flag is what stops the deadlock
- * this design was built for: a block smaller than postpone_output
- * (1460 bytes by default) is otherwise held by the write filter until
- * more arrives, while the encoder waits for the same buffer before it
- * can produce any. Measured both ways - dropping "recycled" alone
- * brings the deadlock straight back at a 1k window.
- *
- * Owning the memory is what makes that flag honest, since nothing can
- * promise to reuse storage belonging to Brotli, and it is also what
- * lets more than one buffer be in flight at once.
- * BrotliEncoderTakeOutput hands back a pointer into the library's own
- * storage and would allow neither.
+/* A streaming Brotli encoder and the buffers it hands back, opaque so
+ * the chain rules stay on this side of the line. The buffers are its
+ * own and marked "recycled", which stops a deadlock: a block under
+ * postpone_output would otherwise sit in the write filter while the
+ * encoder waits for it. BrotliEncoderTakeOutput would not allow that.
  */
 typedef struct ngx_http_pack_brotli_encoder_s
     ngx_http_pack_brotli_encoder_t;
@@ -62,14 +46,8 @@ typedef enum {
 /* What the directives settle before an encoder can exist. Passed in
  * rather than read from the location configuration, so nothing here
  * has to know nginx has directives at all. "window_bits" is an
- * lg_win, not a size; "content_length" -1 when the size is unknown,
- * which is what decides whether the window is sized to the body or
- * left at the configured ceiling.
- *
- * There is no size hint beside it, as there is for zstd. Brotli takes
- * one - BROTLI_PARAM_SIZE_HINT - but it does not shrink the window to
- * fit, so on an unknown length there is nothing useful to say and the
- * ceiling stands.
+ * lg_win, not a size; "content_length" -1 when unknown, which decides
+ * whether the window fits the body or stays at the ceiling.
  */
 typedef struct {
     ngx_int_t quality;
@@ -98,10 +76,8 @@ ngx_http_pack_brotli_encoder_t *ngx_http_pack_brotli_encoder_create(
 /* Runs one round: takes what it can from "*in", compresses it, and
  * makes whatever came out available through pending(). "*in" is
  * advanced as buffers are consumed, so the caller's chain head moves.
- * "wants_output" says this call brought no new data - it belongs to
- * the call, not the response, which is why it is not state. It is
- * what turns a part-filled block into output rather than leaving it
- * to wait for the rest of one.
+ * "wants_output" turns a part-filled block into output rather than
+ * leaving it to wait; it belongs to the call, not the response.
  */
 ngx_http_pack_brotli_step_e ngx_http_pack_brotli_encoder_step(
     ngx_http_pack_brotli_encoder_t *enc,

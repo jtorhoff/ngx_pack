@@ -97,15 +97,12 @@ ngx_http_pack_is_zero_weighted(
     return 1;
 }
 
-/* Decides whether the client will accept a given "encoding".
-   Accept-Encoding is read as a comma-separated list of tokens with
-   optional whitespace and optional weights. In contrast to RFC 9110
-   the weight is ignored unless it is an explicit zero, which RFC
-   9110 defines as "not acceptable" - so "gzip;q=1.0, zstd;q=0.1"
-   still matches "zstd", but "zstd;q=0" does not. A wildcard "*" is
-   ignored.
-   Returns NGX_OK on a match, NGX_DECLINED otherwise.
-*/
+/* Decides whether the client will accept a given "encoding", reading
+   Accept-Encoding as a comma-separated token list. Against RFC 9110
+   the weight is ignored unless it is an explicit zero, which that RFC
+   defines as "not acceptable": "zstd;q=0.1" still matches, "zstd;q=0"
+   does not, and "*" is ignored. NGX_OK on a match, else NGX_DECLINED.
+ */
 static ngx_int_t
 ngx_http_pack_check_encoding(
     ngx_http_request_t *const r, ngx_str_t const *const encoding)

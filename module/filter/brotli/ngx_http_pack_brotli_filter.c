@@ -22,13 +22,10 @@ static ngx_str_t const ENCODING = ngx_string("br");
 #define MASK_BUFFERED NGX_HTTP_GZIP_BUFFERED
 
 /* The most input held back while learning the response size. A
-   ceiling rather than a target: at the default quality Brotli's own
-   input block is the window, so 16k, and the encoder would have
-   buffered only that much before emitting anything. Holding more
-   here is not observable because the wait almost always ends earlier
-   - when the caller asks for progress with a NULL chain - and it
-   only ever delays a response whose length is still unknown, which
-   is the case this exists to learn. */
+   ceiling rather than a target: the wait almost always ends earlier,
+   when the caller asks for progress with a NULL chain, and it only
+   ever delays a response whose length is still unknown - which is the
+   case this exists to learn. */
 #define NGX_HTTP_PACK_BROTLI_HELD_INPUT (32 * 1024)
 
 /* Compression level, spelled out rather than taken from
@@ -40,81 +37,39 @@ static ngx_str_t const ENCODING = ngx_string("br");
 #define NGX_HTTP_PACK_BROTLI_LEVEL_MAX 5
 
 /* The floor, and deliberately not the 1 that would match
-   pack_zstd_level's default. Quality is the CPU axis, as the window
-   below is the memory one.
-
-   0 rather than 1 because 1 is not on the curve at all: measured over
-   script/corpus the two reach the same ratio and 1 takes longer for
-   it, so nothing recommends paying for it. That is not a rounding
-   artefact - quality 0 and 1 are both Brotli's "fast" path, a
-   different algorithm rather than a slower walk of the same one, so
-   the two differ in cost without differing in kind.
-
-   The same boundary is why the step from 1 to 2 is the largest in the
-   range: 2 is where the real algorithm starts, and the levels above
-   it behave like a dial where these two do not.
-
-   It costs real ratio against those levels - read this as a floor an
-   operator raises rather than as a free saving. What it buys is
-   time. */
+   pack_zstd_level. Quality is the CPU axis, as the window below is
+   the memory one. 0 rather than 1 because 1 reaches the same ratio
+   for more time: both are Brotli's "fast" path, a different algorithm
+   rather than a slower walk of the same one, so they differ in cost
+   without differing in kind. A floor an operator raises. */
 #define NGX_HTTP_PACK_BROTLI_LEVEL_DEFAULT 0
 
-/* Window, in bits: 16k to 1m, the same range pack_zstd_window takes.
-   Both ends stop short of what Brotli itself allows - its own bounds
-   are 1k and 16m - and both are this module's choice rather than the
-   library's.
-
-   The ceiling is memory, which scales with the window and is paid per
-   request in flight. It also stays well clear of the larger windows
-   behind BROTLI_PARAM_LARGE_WINDOW, which are not offered at all
-   since a decoder has to opt into those.
-
-   The floor is where a smaller window stops being worth having.
-   Brotli will go down to 1k, but the blocks it emits there are a few
-   hundred bytes - below nginx's postpone_output, which is the
-   condition the output buffers have to be marked "recycled" to
-   survive - and the ratio collapses: measured over script/corpus at
-   quality 1, 2.08x at 1k against 2.97x at 16k. Matching zstd's floor
-   keeps the two directives interchangeable and keeps the module out
-   of a range where it compresses badly.
-
-   Note this bounds the directive, not the encoder: a response whose
-   length is known still has its window shrunk to fit the body, and
-   that shrinking starts from Brotli's own minimum. A 4 KB response
-   gets a 4 KB window however this is set. */
+/* Window, in bits: the same range pack_zstd_window takes, narrower
+   than Brotli's own. The ceiling is memory, paid per request in
+   flight; the floor is where ratio collapses. This bounds the
+   directive and not the encoder - a known length still shrinks the
+   window to fit. */
 #define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MIN 14
 #define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MAX 20
 
-/* 14 bits (16k), the floor the directive allows, and the same default
-   pack_zstd_window carries.
-
-   Chosen for memory, which is what the window buys, for a modest
-   cost in ratio.
-
-   Measure it at the quality you run, not at another one: a note here
-   once recorded that the smaller windows cost the same memory as
-   64k, which held at quality 6, where Brotli's hasher choice
-   dominates the allocation, and does not hold at the fast path this
-   now defaults to, where memory tracks the window directly.
-   script/bench_memory.py takes the figure for a given pair. */
+/* The floor the directive allows, and the same default
+   pack_zstd_window carries. Chosen for memory, which is what the
+   window buys, for a modest cost in ratio. Measure it at the quality
+   you run: how much the window costs depends on which hasher that
+   quality picks, so a figure from one does not carry to another. */
 #define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_DEFAULT 14
 
-/* 20 is the gzip module's default, but Brotli is a far worse deal on
-   tiny responses: an encoder instance costs ~560 KB regardless of how
-   little it is asked to compress, and measured against realistic JSON
-   the compressed body only starts beating the original around 96
-   bytes - closer to 128 once the "Content-Encoding" header is paid
-   for. 256 clears that with room to spare. */
+/* Well above gzip's 20: Brotli is a far worse deal on tiny responses,
+   since an encoder instance costs the same whatever it is asked to
+   compress, and a small body only starts beating the original once
+   the "Content-Encoding" header is paid for too. */
 #define NGX_HTTP_PACK_BROTLI_MIN_LENGTH_DEFAULT 256
 
 /* Bounds on pack_brotli_buffers' count, and its default. One buffer
-   is enough to be correct - the filter simply stalls until the
-   filters below have taken it - so the floor is 1. The ceiling is
-   where more stop helping: at the default size, 8 buffers already
-   cover the largest block Brotli hands back at any window. The same
-   three numbers as pack_zstd_buffers, deliberately: the two encoders
-   differ in what they cost per buffer, not in how many a response
-   can usefully keep moving. */
+   is enough to be correct - the filter stalls until the filters below
+   take it - and the ceiling is where more stop helping. The same
+   three numbers as pack_zstd_buffers: the encoders differ in what a
+   buffer costs, not in how many keep a response moving. */
 #define NGX_HTTP_PACK_BROTLI_BUFFER_NUM_MIN 1
 #define NGX_HTTP_PACK_BROTLI_BUFFER_NUM_MAX 8
 #define NGX_HTTP_PACK_BROTLI_BUFFER_NUM_DEFAULT 4
@@ -259,7 +214,8 @@ ngx_http_pack_brotli_human_size(ngx_pool_t *pool, size_t bytes);
 static ngx_conf_num_bounds_t ngx_http_pack_brotli_level_bounds = {
     ngx_conf_check_num_bounds,
     NGX_HTTP_PACK_BROTLI_LEVEL_MIN,
-    NGX_HTTP_PACK_BROTLI_LEVEL_MAX};
+    NGX_HTTP_PACK_BROTLI_LEVEL_MAX,
+};
 
 static ngx_conf_post_handler_pt ngx_http_pack_brotli_parse_window_p =
     ngx_http_pack_brotli_parse_window;
@@ -325,7 +281,8 @@ static ngx_command_t ngx_http_pack_brotli_commands[] = {
         NULL,
     },
 
-    ngx_null_command};
+    ngx_null_command,
+};
 
 /* Module context hooks. */
 static ngx_http_module_t ngx_http_pack_brotli_module_ctx = {
@@ -379,11 +336,11 @@ ngx_http_pack_brotli_close(ctx_t *const ctx)
 
 
 /* Commits headers that the header filter held back. If the response
-   was accepted it is labelled and the encoder will run; if not it
-   passes through untouched, leaving no "Content-Encoding" for the
-   filters below to defer to, so gzip may still take it. The caller
-   sets state.accepted_for_compression before calling, since it is the
-   decision these headers announce. */
+   was accepted it is labelled and the encoder runs; if not it passes
+   through untouched, leaving no "Content-Encoding" for the filters
+   below to defer to, so gzip may still take it. The caller sets
+   state.accepted_for_compression first - that is what this announces.
+ */
 static ngx_int_t
 ngx_http_pack_brotli_send_headers(ctx_t *const ctx)
 {
@@ -431,16 +388,11 @@ ngx_http_pack_brotli_preflight(ngx_http_request_t *const r)
         return NGX_DECLINED;
     }
 
-    /* Bypass statuses that either carry no body, or carry one that
-       must not be re-encoded. 1xx/204/304 have no body to compress,
-       so all they would get is a "Content-Encoding" describing
-       nothing - which a client is entitled to apply to the next body
-       it associates with the response. A 206 body is a byte range,
-       and the "Content-Range" beside it still describes the original
-       entity, so compressing it corrupts the response.
-
-       This is deliberately a deny list: an allow list also excludes
-       perfectly compressible responses such as 201, 422 and 500. */
+    /* Bypass statuses that carry no body, or one that must not be
+       re-encoded: 1xx/204/304 would get a "Content-Encoding"
+       describing nothing, and a 206 body is a range whose
+       "Content-Range" still describes the original entity. A deny
+       list, since an allow list would exclude 201, 422 and 500. */
     if (r->headers_out.status < NGX_HTTP_OK ||
         r->headers_out.status == NGX_HTTP_NO_CONTENT ||
         r->headers_out.status == NGX_HTTP_PARTIAL_CONTENT ||
@@ -503,11 +455,10 @@ ngx_http_pack_brotli_header_filter(ngx_http_request_t *const r)
 
     r->main_filter_need_in_memory = 1;
 
-    /* When the length is unknown there is nothing yet to compare
-       against pack_brotli_min_length, and committing the headers here
-       would settle the question for good. Hold them instead: the body
-       filter sends them as soon as it has seen enough of the body to
-       decide, which takes only min_length bytes rather than the whole
+    /* Nothing yet to compare against pack_brotli_min_length, and
+       committing the headers here would settle the question for good.
+       Hold them: the body filter sends them once it has seen enough
+       to decide, which takes min_length bytes, not the whole
        response. */
     if (ctx->content_length < 0) {
         return NGX_OK;
@@ -600,11 +551,10 @@ ngx_http_pack_brotli_prepare(prepare_args *const args)
     input = ngx_http_pack_brotli_pending_input(ctx->in);
 
     /* Headers held back because the length was unknown. Decide as
-       soon as the body answers the only question min_length asks -
-       is it at least that big - which needs min_length bytes, not the
-       whole response, so this costs no meaningful latency. A flush
-       marker means something downstream is waiting, so decide
-       immediately and compress, since the total is still unknown. */
+       soon as the body answers the only question min_length asks - is
+       it at least that big - which costs min_length bytes, not the
+       whole response. A flush marker means something downstream is
+       waiting, so decide immediately and compress. */
     if (!ctx->state.headers_sent) {
         conf = ngx_http_get_module_loc_conf(
             r, ngx_http_pack_brotli_module);

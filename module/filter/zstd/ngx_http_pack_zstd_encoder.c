@@ -35,11 +35,9 @@ static void ngx_http_pack_zstd_cleanup(void *data);
 
 /* How much input a block may hold - how far ZSTD_e_continue runs, and
    how far flush-marked buffers fold into one. Left alone a block ends
-   only when it fills, up to 128 KB, and nothing asks the filter to do
-   better: ngx_event_pipe passes a NULL chain only once its own
-   unconsumed buffers reach proxy_busy_buffers_size, which a filter
-   that takes everything it is handed never causes. 32 KB is measured
-   over script/corpus, not randomly picked. */
+   only when it fills, and nothing asks the filter to do better:
+   ngx_event_pipe passes a NULL chain only once its own buffers reach
+   proxy_busy_buffers_size, which this filter never causes. */
 #define NGX_HTTP_PACK_ZSTD_FLUSH_AFTER (32 * 1024)
 
 /* What libzstd owns on this response's behalf. A struct of its own so
@@ -53,10 +51,9 @@ typedef struct {
 
     /* The directive a round with no input left has to repeat, or
        ZSTD_e_continue for "nothing owed". A flush or an end returning
-       nonzero has to be called again until it returns 0, whether or
-       not the caller asked for output, or the bytes it owes
-       downstream stay stuck inside the encoder. ZSTD_e_continue is 0,
-       so ngx_pcalloc starts this right. */
+       nonzero must be called again until it returns 0, or the bytes
+       it owes downstream stay stuck inside the encoder.
+       ZSTD_e_continue is 0, so ngx_pcalloc starts this right. */
     ZSTD_EndDirective repeat_mode;
 } zctx_t;
 
@@ -200,13 +197,11 @@ typedef struct {
     ngx_int_t status;
 } commit_buf_result;
 
-/* Hands the round's output buffer to enc->out.
-
-   Reached even when nothing was written: the last_buf marker still
-   has to land on some buffer or nginx never learns the response
-   ended. An empty one must claim no memory either, since
-   ngx_http_write_filter rejects a zero-size non-special buffer and
-   truncates. */
+/* Hands the round's output buffer to enc->out. Reached even when
+   nothing was written: the last_buf marker still has to land on some
+   buffer or nginx never learns the response ended. An empty one must
+   claim no memory either - ngx_http_write_filter rejects a zero-size
+   non-special buffer and truncates. */
 static commit_buf_result
 ngx_http_pack_zstd_commit_buf(commit_buf_args *const args)
 {
@@ -322,12 +317,10 @@ typedef struct {
 } may_fold_flush_result;
 
 /* Whether the flush at the head of the chain may be folded into the
-   block being built rather than cutting one here.
-
-   Safe only because a later buffer in the chain already flushes or
-   ends the stream: a flush deferred past the input in hand would
-   leave bytes in the encoder with nothing scheduled to push them out.
- */
+   block being built rather than cutting one here. Safe only because a
+   later buffer already flushes or ends the stream: a flush deferred
+   past the input in hand would leave bytes in the encoder with
+   nothing scheduled to push them out. */
 static may_fold_flush_result
 ngx_http_pack_zstd_may_fold_flush(may_fold_flush_args *const args)
 {
@@ -381,12 +374,10 @@ typedef struct {
 } select_mode_result;
 
 /* Which directive the head buffer calls for, and whether its flush is
-   being folded into the block being built.
-
-   Both answers come from what the block already holds, which
-   record_round only counts once the encoder has actually taken the
-   bytes - so a round that gives up before reaching it spends none of
-   the allowance. */
+   folded into the block being built. Both answers come from what the
+   block already holds, which record_round counts only once the
+   encoder has taken the bytes - so a round that gives up early spends
+   none of the allowance. */
 static select_mode_result
 ngx_http_pack_zstd_select_mode(select_mode_args *const args)
 {
@@ -502,12 +493,11 @@ ngx_http_pack_zstd_next_input(next_input_args *const args)
 
     buf = args->chain->buf;
 
-    /* The length has to come from the same place as the source, the
-       memory pointer: ngx_buf_size() reports the file range for a
+    /* The length has to come from the same place as the source
+       pointer: ngx_buf_size() reports the file range for a
        file-backed buffer, which paired with buf->pos describes
        nothing. One with no memory at all should never arrive - the
-       header filter sets main_filter_need_in_memory - and there is
-       nothing here that could encode it. */
+       header filter sets main_filter_need_in_memory. */
     if (buf->in_file && !ngx_buf_in_memory(buf)) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -780,10 +770,8 @@ typedef struct {
 } dispose_buf_result;
 
 /* What becomes of the round's output buffer: handed back to be filled
-   again, or committed to enc->out.
-
-   Nothing produced with the frame still open is the first - the
-   buffer goes back unused, or the round would spend one of the
+   again, or committed to enc->out. Nothing produced with the frame
+   still open is the first, or the round would spend one of the
    response's few buffers on nothing. Anything else is the second,
    empty included. */
 static dispose_buf_result
@@ -863,11 +851,10 @@ ngx_http_pack_zstd_compress(compress_args *const args)
     enc = args->enc;
 
     /* Tested ahead of the input: a closed frame means the response is
-       over whatever is still queued, and anything after the buffer
-       carrying last_buf would be compressed into a second frame and
-       committed with last_buf set again. Closing the encoder is the
-       loop's job - that buffer may still be in enc->out or
-       enc->busy. */
+       over whatever is still queued, and anything after last_buf
+       would be compressed into a second frame and committed with
+       last_buf set again. Closing the encoder is the loop's job -
+       that buffer may still be in enc->out or enc->busy. */
     if (enc->state.frame_closed) {
         return (compress_result) {
             .step  = NGX_HTTP_PACK_ZSTD_STEP_DONE,
@@ -1140,11 +1127,10 @@ typedef struct {
 } derive_tables_result;
 
 /* How big the match finder's tables should be. zstd derives them from
-   the level alone, which says nothing about the window: at
-   pack_zstd_window's floor it asks for a hash table several times the
-   window it indexes, memory no response can fill. Capping both at the
-   window returns a fifth to a third of the footprint for at worst
-   0.54% of compressed size, measured. */
+   the level alone, which says nothing about the window: at the window
+   floor it asks for a hash table several times the window it indexes,
+   memory no response can fill. Capping both at the window returns
+   most of that for almost no ratio. */
 static derive_tables_result
 ngx_http_pack_zstd_derive_tables(derive_tables_args *const args)
 {
@@ -1243,15 +1229,10 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
     };
 
     /* No trailing content checksum. HTTP has already framed and
-       verified the body by the time a decoder sees it - a
-       Content-Length or the chunked terminator, over TCP's own
-       checksums, and TLS where it is in use - so the four bytes buy
-       nothing here and every response pays them. Corruption this
-       would catch is corruption the transfer already failed to
-       deliver intact.
-       0 is the library default, set explicitly for the same reason
-       nbWorkers above is: so a vendored update cannot change it under
-       us. */
+       verified the body by the time a decoder sees it, so the four
+       bytes buy nothing and every response pays them. Set explicitly
+       rather than left at the library default, for the same reason
+       nbWorkers is: a vendored update cannot change it under us. */
     params[5] = (set_param_args) {
         .enc   = enc,
         .param = ZSTD_c_checksumFlag,
@@ -1268,13 +1249,12 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
         }
     }
 
-    /* Writes the size into the frame header for the decoder, and
-       sizes zstd's match-finder tables to the body rather than to the
-       window, which is what bounds per-request memory at a high
-       pack_zstd_level. Nothing may narrow content_length on the way:
-       a body over 4 GiB through 32 bits becomes a pledge zstd rejects
-       at the end of the frame, having compressed the response first.
-     */
+    /* Writes the size into the frame header and sizes the
+       match-finder tables to the body rather than the window, which
+       is what bounds per-request memory at a high level. Nothing may
+       narrow content_length on the way: a body over 4 GiB through 32
+       bits becomes a pledge zstd rejects after compressing the
+       response. */
     if (enc->conf.content_length >= 0) {
         rc = ngx_http_pack_zstd_set_pledged_size(
                  &(set_pledged_size_args) {
@@ -1289,19 +1269,11 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
             };
         }
     } else {
-        /* No length to pledge, so give the guess instead - the
-           difference between tables sized to the body and tables
-           sized to the worst case the window allows. A guess is all
-           an unknown length can offer: a pledge is "controlled at end
-           of frame" (zstd.h) and would fail every response that did
-           not happen to be exactly that long.
-
-           pack_zstd_hint sets it, and defaults to none - which is 0,
-           the value libzstd reads as no hint at all. That travels the
-           same path rather than skipping it: ZSTD_CCtx_setParameter
-           takes 0 without a bounds check, and derive_tables above
-           already treats it as an unknown size, so neither call here
-           needs to know which of the two it is holding. */
+        /* No length to pledge, so give the guess instead: a pledge is
+           "controlled at end of frame" (zstd.h) and would fail every
+           response not exactly that long. pack_zstd_hint defaults to
+           none, which is 0 - what libzstd reads as no hint - so this
+           path serves both without a branch. */
         rc = ngx_http_pack_zstd_set_src_hint(
                  &(set_src_hint_args) {
                      .enc  = enc,
@@ -1368,16 +1340,11 @@ ngx_http_pack_zstd_ensure_stream(encoder_t *const enc)
 
 #if (NGX_HTTP_PACK_ZSTD_FAULT_INJECT)
 /* Test-only, and never in a shipping binary: script/build.sh does not
-   define NGX_HTTP_PACK_ZSTD_FAULT_INJECT. Refuses the Nth allocation
-   libzstd asks for and every one after it, so the out-of-memory
-   branches can be reached on demand - the only allocations this
-   module makes that a test can single out, the rest coming from the
-   request pool.
-
-   N is read from the environment rather than built in, so one binary
-   covers every case script/test_oom.py drives: refusing the first
-   allocation fails the context outright, refusing a later one fails a
-   context that already exists. Absent or zero refuses nothing. */
+   define NGX_HTTP_PACK_ZSTD_FAULT_INJECT. Refuses the Nth libzstd
+   allocation and every one after, so the out-of-memory branches can
+   be reached on demand. N comes from the environment so one binary
+   covers every case script/test_oom.py drives; absent or zero refuses
+   none. */
 static ngx_uint_t ngx_http_pack_zstd_fault_read;
 static ngx_uint_t ngx_http_pack_zstd_fault_after;
 static ngx_uint_t ngx_http_pack_zstd_fault_seen;

@@ -22,38 +22,24 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 #define MASK_BUFFERED NGX_HTTP_GZIP_BUFFERED
 
 /* The most input held back while learning the response size. Arriving
-   inside it earns an exact pledge, sizing zstd's tables to the body:
-   99 KB of encoder memory for a 4 KB body against 969 KB for one that
-   falls back to pack_zstd_hint. Fixed, not page-derived, because
-   proxy_buffer_size is ngx_pagesize too - matching it, the first
-   delivery fills the allowance and nothing is ever held. */
+   inside it earns an exact pledge, which sizes zstd's tables to the
+   body rather than the window. Fixed rather than page-derived: at
+   ngx_pagesize it would equal proxy_buffer_size, and the first
+   delivery would fill it. */
 #define NGX_HTTP_PACK_ZSTD_HELD_INPUT (32 * 1024)
 
-/* Floor on pack_zstd_hint: what ZSTD_c_srcSizeHint is set to for a
-   response the held-input threshold above gave up waiting on. Fixed
-   rather than page-derived - a hint is a compression parameter, not
-   an allocation, so a config naming one should not become invalid on
-   a host with larger pages. No ceiling of this module's own; the one
-   that remains is ZSTD_SRCSIZEHINT_MAX (zstd.h), refused here at
-   config time rather than by libzstd at request time.
-
-   The floor binds sizes only. "pack_zstd_hint none" asks for no hint
-   at all, which is a different thing from a small one and reaches the
-   encoder as the value below. */
+/* Floor on pack_zstd_hint. Fixed rather than page-derived: a hint is
+   a compression parameter, not an allocation, so a config naming one
+   should not become invalid on a host with larger pages. It binds
+   sizes only - "none" asks for no hint at all, which is a different
+   thing from a small one. */
 #define NGX_HTTP_PACK_ZSTD_HINT_MIN (16 * 1024)
 
-/* No hint unless one is asked for. What a hint can do is shrink
-   windowLog to fit the size it names, and at the pack_zstd_window
-   default there is nothing left to shrink - the window is already at
-   its floor, and the match-finder tables are capped to the window
-   either way. A hint there buys no memory at all; what it still moves
-   is zstd's choice of compression parameters, which is not what a
-   directive describing the body's size should be steering.
-
-   It remains worth setting where the window is configured wide: a
-   hint below that window does lower it, and that is memory paid per
-   request in flight. script/bench_memory.py is what shows the
-   difference at a given window. */
+/* No hint unless one is asked for. A hint only shrinks windowLog to
+   fit, and at the window default there is nothing left to shrink, so
+   all it still moves is zstd's choice of compression parameters -
+   which a directive describing the body's size has no business
+   steering. Worth setting where the window is configured wide. */
 #define NGX_HTTP_PACK_ZSTD_HINT_DEFAULT 0
 
 /* Applies to a response of unknown length too, once its end is in
@@ -66,14 +52,11 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 14
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MAX 20
 
-/* The floor, chosen for memory rather than ratio. The window is the
-   parameter that decides what an encoder costs per request in
-   flight, and very nearly the only one - moving it barely shifts CPU
-   at all. Compression is what pays: a smaller window finds fewer
-   matches. An operator who would rather spend the memory raises the
-   directive; this is the setting that costs the least to run.
-   script/bench_corpus.py and script/bench_memory.py are what measure
-   the trade for a given corpus. */
+/* The floor, chosen for memory rather than ratio: the window is very
+   nearly the only parameter deciding what an encoder costs per
+   request in flight, and moving it barely shifts CPU. Compression is
+   what pays - a smaller window finds fewer matches - so an operator
+   who would rather spend the memory raises the directive. */
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT 14
 
 /* Compression level. */
@@ -573,17 +556,10 @@ typedef struct {
 } pending_input_result;
 
 /* Totals the unconsumed input, reporting whether the chain closes the
-   response ("complete") and whether anything in it demands to be
-   pushed out now ("urgent").
-
-   Only what is in memory is counted, which is what the encoder will
-   take - see the same test in ngx_http_pack_zstd_next_input. Not
-   ngx_buf_size: for a file-backed buffer that reports the file range,
-   and this total decides whether pack_zstd_min_length is met and
-   becomes the size pledged to zstd, which is checked at the end of
-   the frame. main_filter_need_in_memory should keep such a buffer
-   away, so this is the count agreeing with the encoder about what it
-   is counting rather than a case either expects. */
+   response and whether anything in it demands to be pushed out now.
+   Counts only what is in memory, which is what the encoder will take:
+   ngx_buf_size would report a file range instead, and this total both
+   answers pack_zstd_min_length and becomes the pledge. */
 static pending_input_result
 ngx_http_pack_zstd_pending_input(pending_input_args *const args)
 {
@@ -961,10 +937,9 @@ ngx_http_pack_zstd_pump(ctx_t *const ctx)
         busy    = ngx_http_pack_zstd_encoder_busy(ctx->encoder);
         /* Nothing new to send and nothing outstanding: the
            encoder waits for input, not the filters below. A
-           closed frame is excluded on purpose - this is the one
-           path past finish(), which closes the encoder once the
-           last buffer is taken, or it would strand until the pool
-           is destroyed. */
+           closed frame is excluded because this is the one path
+           past finish(), which closes the encoder once the last
+           buffer is taken. */
         if (!frame_closed && pending == NULL && !busy) {
             return (pump_result) {
                 .status = NGX_OK,
@@ -1115,16 +1090,11 @@ ngx_http_pack_zstd_merge_conf(
     ngx_conf_merge_size_value(
         conf->hint, prev->hint, NGX_HTTP_PACK_ZSTD_HINT_DEFAULT);
 
-    /* At the pack_zstd_window default one 16 KB buffer already spans
-       a whole block, a block being MIN(windowSize, 128 KB); the other
-       three are run-ahead, so a stalled write costs the remaining
-       buffers rather than the next byte. Four rather than one for
-       that reason alone, and still enough to cover a block at any
-       window the directive accepts up to 64k.
-       A fixed pair rather than gzip's, which derives both from
-       ngx_pagesize and so differs between hosts. Both halves move
-       together, so a count inherited from an unrelated size cannot
-       arise. */
+    /* One buffer already spans a whole block at the window default;
+       the other three are run-ahead, so a stalled write costs the
+       remaining buffers rather than the next byte. A fixed pair
+       rather than gzip's page-derived one, so a count cannot be
+       inherited from a size chosen for another reason. */
     ngx_conf_merge_bufs_value(
         conf->bufs,
         prev->bufs,
@@ -1237,11 +1207,9 @@ ngx_http_pack_zstd_check_hint(
 
 /* Parses pack_zstd_hint, which takes a size or the word "none".
    ngx_conf_set_size_slot cannot spell the second, so the word is
-   handled here and everything else is handed to it unchanged - the
-   post handler above still runs, and still holds sizes to their
-   floor. "none" deliberately does not go through that floor: it asks
-   for no hint rather than for a small one, and clamping it up to 16k
-   would silently grant the opposite of what was written. */
+   handled here and everything else handed to it unchanged. "none"
+   deliberately skips the floor: clamping it up would grant the
+   opposite of what was written. */
 static char *
 ngx_http_pack_zstd_set_hint(
     ngx_conf_t *const cf, ngx_command_t *const cmd, void *const conf)

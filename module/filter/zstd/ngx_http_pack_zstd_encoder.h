@@ -11,11 +11,9 @@
 
 
 /* A streaming Zstandard encoder and the output buffers it fills.
- *
  * Opaque on purpose: the filter hands it input and takes finished
- * buffers back, so the rules about which chain a buffer may be on,
- * when a directive has to be repeated, and when the frame is closed
- * stay on this side of the line.
+ * buffers back, so the rules about which chain a buffer may be on and
+ * when the frame is closed stay on this side of the line.
  */
 typedef struct ngx_http_pack_zstd_encoder_s
     ngx_http_pack_zstd_encoder_t;
@@ -51,10 +49,7 @@ typedef enum {
  * rather than read from the location configuration, so nothing here
  * has to know nginx has directives at all. "window_bits" is a
  * windowLog, not a size; "nbuffers" a ceiling, not an allocation;
- * "content_length" -1 when the size is unknown, which is what decides
- * between a pledge and "src_size_hint"; that hint is 0 when there is
- * none to give, which libzstd reads as the parameter never having
- * been set.
+ * "content_length" -1 when unknown, which chooses pledge or hint.
  */
 typedef struct {
     ngx_int_t level;
@@ -78,8 +73,8 @@ ngx_http_pack_zstd_encoder_t *ngx_http_pack_zstd_encoder_create(
 /* Runs one round: takes what it can from "*in", compresses it, and
  * appends whatever came out to the pending chain. "*in" is advanced
  * as buffers are consumed, so the caller's chain head moves.
- * "wants_output" says this call brought no new data - it belongs to
- * the call, not the response, which is why it is not state.
+ * "wants_output" belongs to the call, not the response, so it is an
+ * argument rather than state.
  */
 ngx_http_pack_zstd_step_e ngx_http_pack_zstd_encoder_step(
     ngx_http_pack_zstd_encoder_t *enc,

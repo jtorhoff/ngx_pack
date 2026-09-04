@@ -19,38 +19,11 @@
  */
 static ngx_int_t encoder_tag;
 
-/* How much input a meta-block may hold - how far
-   BROTLI_OPERATION_PROCESS runs, and how far flush-marked buffers
-   fold into one.
-
-   nginx's chunked proxy filter marks every upstream chunk with
-   "flush", so a burst of small chunks arrives as a chain of
-   flush-marked buffers. Taken literally that ends a meta-block per
-   chunk, and a Brotli meta-block carries its own Huffman tables, so
-   the overhead is heavier than the block header zstd pays for the
-   same shape: measured against the burst upstream, 12 small chunks
-   cost +123.6% against the same bytes uninterrupted, and 128 KB in
-   1 KB chunks +2.4%.
-
-   None of which applies at quality 0 or 1. Those take Brotli's
-   "fast" path, which compresses whatever input a call brings into a
-   meta-block of its own rather than accumulating across calls, so
-   folding a flush into a PROCESS merges nothing there - measured,
-   and at either window, so it is the quality that decides and not
-   the window. Since pack_brotli_level defaults to 1 this buys
-   nothing by default, and a great deal from quality 4 up. It is left
-   in rather than made conditional because it costs a chain walk
-   bounded by the budget below, and because the quality is the
-   operator's to raise.
-
-   32 KB, the same bound the zstd encoder uses, and checked here
-   rather than assumed to carry over: folding the 12-chunk burst at
-   this bound reaches 72 bytes, which is exactly what the same bytes
-   cost uninterrupted, so there is nothing left to recover. On the
-   128 KB burst it gives 97,960 against 97,899 uninterrupted, and
-   raising the bound to 128 KB recovers 23 of those 61 bytes - 0.02%,
-   inside the noise - while the look-ahead scan and the latency of a
-   held block both keep growing. */
+/* How much input a meta-block may hold, and how far flush-marked
+   buffers fold into one. nginx's chunked proxy filter flushes every
+   upstream chunk, which taken literally ends a meta-block per chunk,
+   each carrying its own Huffman tables. Past this bound there is
+   nothing left to recover, and a held block only costs latency. */
 #define NGX_HTTP_PACK_BROTLI_FLUSH_AFTER (32 * 1024)
 
 /* The header spells this out in full; inside the encoder the short
@@ -106,15 +79,10 @@ struct ngx_http_pack_brotli_encoder_s {
     ngx_uint_t nbuffers;
 
     /* Input taken under BROTLI_OPERATION_PROCESS since the last
-       meta-block ended - a folded flush included, that being a
-       process too. Reset when a flush or the stream completes, since
-       that starts the next block. Bounds both the fold and the flush
-       the encoder makes on its own; see
-       NGX_HTTP_PACK_BROTLI_FLUSH_AFTER.
-
-       A count rather than the flag it replaced: folding has to know
-       how much room is left in the block, not merely whether
-       anything is in it. */
+       meta-block ended, a folded flush included. Reset when a flush
+       or the stream completes, since that starts the next block. A
+       count rather than a flag: folding has to know how much room is
+       left in the block, not merely whether anything is in it. */
     size_t unflushed_bytes;
 
     /* Fed, holding, done; see encoder_state_t. */
@@ -230,19 +198,12 @@ ngx_http_pack_brotli_get_buf(get_buf_args *const args)
         };
     }
 
-    /* The tag is what lets ngx_chain_update_chains tell our buffers
-       apart on the busy list and hand them back. "recycled" tells the
-       filters below this memory is reused, so they must not sit on
-       it - load-bearing here rather than merely tidy: without it the
-       write filter holds a block shorter than postpone_output while
-       the encoder waits for that same buffer, and the response
-       deadlocks. See the header.
-
-       Reaching that condition needs a committed buffer under 1460
-       bytes, which no configuration can ask for since
-       pack_brotli_window's floor rose to 16k, so the only cover for
-       it is script/test-small-buffer.sh: at a 64-byte buffer,
-       dropping this line hangs a plain static response. */
+    /* The tag lets ngx_chain_update_chains tell our buffers apart on
+       the busy list. "recycled" is load-bearing: without it the write
+       filter holds a block shorter than postpone_output while the
+       encoder waits for that same buffer, and the response
+       deadlocks. Only script/test-small-buffer.sh still reaches it.
+     */
     buf->tag      = (ngx_buf_tag_t) &encoder_tag;
     buf->recycled = 1;
 
@@ -277,13 +238,11 @@ typedef struct {
     ngx_int_t status;
 } commit_buf_result;
 
-/* Hands the round's output buffer to enc->out.
-
-   Reached even when nothing was written: the last_buf marker still
-   has to land on some buffer or nginx never learns the response
-   ended. An empty one must claim no memory either, since
-   ngx_http_write_filter rejects a zero-size non-special buffer and
-   truncates. */
+/* Hands the round's output buffer to enc->out. Reached even when
+   nothing was written: the last_buf marker still has to land on some
+   buffer or nginx never learns the response ended. An empty one must
+   claim no memory either - ngx_http_write_filter rejects a zero-size
+   non-special buffer and truncates. */
 static commit_buf_result
 ngx_http_pack_brotli_commit_buf(commit_buf_args *const args)
 {
@@ -405,13 +364,10 @@ typedef struct {
 } may_fold_flush_result;
 
 /* Whether the flush at the head of the chain may be folded into the
-   meta-block being built rather than ending one here.
-
-   Safe only because a later buffer in the chain already flushes or
-   ends the stream: a flush deferred past the input in hand would
-   leave bytes inside Brotli with nothing scheduled to push them out,
-   and a client waiting on them would wait for the next write rather
-   than this one. */
+   meta-block being built rather than ending one here. Safe only
+   because a later buffer already flushes or ends the stream: a flush
+   deferred past the input in hand would leave bytes inside Brotli
+   with nothing scheduled to push them out. */
 static may_fold_flush_result
 ngx_http_pack_brotli_may_fold_flush(may_fold_flush_args *const args)
 {
@@ -485,16 +441,10 @@ ngx_http_pack_brotli_select_mode(select_mode_args *const args)
 
     /* Nothing may be fed while Brotli is still holding output.
        BrotliEncoderCompressStream refuses any call carrying input
-       unless the stream is back in its PROCESSING state, and a flush
-       that has not finished draining is not: it sits in
-       FLUSH_REQUESTED until the last of its output has been taken.
-       So drain first, with no input, which is always accepted.
-
-       This is what the zstd encoder's repeat_mode does for the same
-       reason. It only shows up when a flush cannot drain in one
-       round, which needs an output buffer far smaller than the 16k
-       default - script/test-small-buffer.sh is what reaches it, and
-       what caught this. */
+       unless the stream is back in PROCESSING, and a flush that has
+       not drained sits in FLUSH_REQUESTED until its output is taken.
+       So drain first, with no input, which is always accepted. The
+       zstd encoder's repeat_mode answers the same problem. */
     if (BrotliEncoderHasMoreOutput(enc->brotli)) {
         return (select_mode_result) {
             .operation = enc->state.end_of_input
@@ -657,12 +607,10 @@ ngx_http_pack_brotli_deliver_buf(deliver_buf_args *const args)
 
 
 /* The window this response should actually use. Brotli's window costs
-   memory whether or not the body is big enough to fill it, so a known
-   length is worth spending: the smallest window that still spans the
-   whole body compresses it exactly as well as the configured ceiling
-   would, for less. An unknown length has nothing to narrow it with -
-   BROTLI_PARAM_SIZE_HINT does not shrink the window - so the ceiling
-   stands. */
+   memory whether or not the body fills it, so the smallest window
+   spanning a known body compresses exactly as well as the ceiling for
+   less. An unknown length has nothing to narrow it with -
+   BROTLI_PARAM_SIZE_HINT does not shrink the window. */
 static size_t
 ngx_http_pack_brotli_window_bits(conf_t *const conf)
 {
@@ -830,13 +778,11 @@ ngx_http_pack_brotli_encoder_step(
     available_out = enc->conf.buffer_size;
     next_out      = buf->start;
 
-    /* Brotli writes straight into our buffer rather than into storage
-       of its own. That is what BrotliEncoderTakeOutput would hand
-       back instead, and taking it would pin the encoder until the
-       filters below released that memory - one buffer in flight at
-       most, and a deadlock whenever a block came out smaller than
-       postpone_output. Owning the memory is what lets several rounds
-       be outstanding at once. */
+    /* Brotli writes straight into our buffer rather than storage of
+       its own, which BrotliEncoderTakeOutput would hand back instead.
+       Taking that would pin the encoder until the filters below
+       released the memory: one buffer in flight at most, and a
+       deadlock below postpone_output. */
     ok = BrotliEncoderCompressStream(
         enc->brotli,
         mode.operation,
