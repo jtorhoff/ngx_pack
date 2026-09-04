@@ -75,13 +75,25 @@ class Codec:
     codec support it" flag per assertion.
     """
 
-    def __init__(self, name, token, ext, directive, prefix, log_tag):
+    def __init__(
+        self, name, token, ext, directive, prefix, log_tag, superstrings
+    ):
         self.name = name
         self.token = token
         self.ext = ext
         self.directive = directive
         self.prefix = prefix
         self.log_tag = log_tag
+
+        # Tokens that contain this one but are not it, and that a
+        # client might really send. The negotiation tests below build
+        # the rest of their near-miss list from the token itself, but
+        # these cannot be derived: "brotli" is a word, not a pattern.
+        # It is also the case that matters most - "br" is two
+        # characters and a prefix of it, so the boundary check is the
+        # only thing keeping "Accept-Encoding: brotli" from selecting
+        # Brotli.
+        self.superstrings = superstrings
 
         # Filled in by main(). None when no decoder for this codec is
         # installed, which is what makes needs_decoder skip rather than
@@ -128,8 +140,12 @@ class Codec:
         return self.name
 
 
-ZSTD = Codec("zstd", "zstd", ".zst", "pack_zstd", "", "zstd")
-BROTLI = Codec("brotli", "br", ".br", "pack_brotli", "br-", "brotli")
+ZSTD = Codec(
+    "zstd", "zstd", ".zst", "pack_zstd", "", "zstd", ("zstdlib",)
+)
+BROTLI = Codec(
+    "brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",)
+)
 
 CODECS = [ZSTD, BROTLI]
 
@@ -1240,16 +1256,16 @@ def test_static_roundtrip(ctx):
     check(ctx.decode(body) == original, "decoded body differs from the original")
 
 
-def check_corpus_roundtrip(ctx, name, path=None):
+def check_corpus_roundtrip(ctx, name, path=None, codec=ZSTD):
     """Fetches one corpus file, and checks it compressed and decodes back."""
-    path = path or f"/{name}"
+    path = path or codec.file(name)
     original = ctx.fixtures[name]
 
-    status, headers, body = fetch(ctx.port, path)
+    status, headers, body = fetch(ctx.port, path, codec.token)
     check(status == 200, f"{path}: expected 200, got {status}")
     check(
-        headers.get("content-encoding") == "zstd",
-        f"{path}: expected Content-Encoding: zstd, got "
+        headers.get("content-encoding") == codec.token,
+        f"{path}: expected Content-Encoding: {codec.token}, got "
         f"{headers.get('content-encoding')!r}",
     )
     check(
@@ -1257,7 +1273,7 @@ def check_corpus_roundtrip(ctx, name, path=None):
         f"{path}: compressed body ({len(body)}) is not smaller than the "
         f"original ({len(original)})",
     )
-    check(ctx.decode(body) == original, f"{path}: decoded body differs")
+    check(codec.decode(body) == original, f"{path}: decoded body differs")
 
 
 @test("pack_static serves a pre-compressed sibling", needs_decoder=True)
@@ -1815,29 +1831,34 @@ def test_vary_added_when_absent(ctx):
     check_vary_dedupe(ctx, "none", 1)
 
 
-@test("real HTML round-trips", needs_decoder=True, needs_corpus=True)
-def test_corpus_html(ctx):
-    check_corpus_roundtrip(ctx, "wiki.html")
+@test("real HTML round-trips", needs_decoder=True, needs_corpus=True,
+      codecs=CODECS)
+def test_corpus_html(ctx, codec):
+    check_corpus_roundtrip(ctx, "wiki.html", codec=codec)
 
 
-@test("real CSS round-trips", needs_decoder=True, needs_corpus=True)
-def test_corpus_css(ctx):
-    check_corpus_roundtrip(ctx, "site.css")
+@test("real CSS round-trips", needs_decoder=True, needs_corpus=True,
+      codecs=CODECS)
+def test_corpus_css(ctx, codec):
+    check_corpus_roundtrip(ctx, "site.css", codec=codec)
 
 
-@test("real JavaScript round-trips", needs_decoder=True, needs_corpus=True)
-def test_corpus_js(ctx):
-    check_corpus_roundtrip(ctx, "app.js")
+@test("real JavaScript round-trips", needs_decoder=True, needs_corpus=True,
+      codecs=CODECS)
+def test_corpus_js(ctx, codec):
+    check_corpus_roundtrip(ctx, "app.js", codec=codec)
 
 
-@test("real minified JavaScript round-trips", needs_decoder=True, needs_corpus=True)
-def test_corpus_min_js(ctx):
-    check_corpus_roundtrip(ctx, "app.min.js")
+@test("real minified JavaScript round-trips", needs_decoder=True,
+      needs_corpus=True, codecs=CODECS)
+def test_corpus_min_js(ctx, codec):
+    check_corpus_roundtrip(ctx, "app.min.js", codec=codec)
 
 
-@test("real prose round-trips", needs_decoder=True, needs_corpus=True)
-def test_corpus_prose(ctx):
-    check_corpus_roundtrip(ctx, "prose.txt")
+@test("real prose round-trips", needs_decoder=True, needs_corpus=True,
+      codecs=CODECS)
+def test_corpus_prose(ctx, codec):
+    check_corpus_roundtrip(ctx, "prose.txt", codec=codec)
 
 
 @test(
@@ -1853,37 +1874,45 @@ def test_corpus_streamed(ctx):
         check_corpus_roundtrip(ctx, name, path=f"/stream/{name}")
 
 
-@test("streamed response of unknown length round-trips", needs_decoder=True)
-def test_stream_roundtrip(ctx):
-    status, headers, body = fetch(ctx.port, "/stream/big.html")
+@test("streamed response of unknown length round-trips",
+      needs_decoder=True, codecs=CODECS)
+def test_stream_roundtrip(ctx, codec):
+    path = codec.path("stream", "big.html")
+    status, headers, body = fetch(ctx.port, path, codec.token)
     check(status == 200, f"expected 200, got {status}")
     check(
-        headers.get("content-encoding") == "zstd",
-        f"expected Content-Encoding: zstd, got {headers.get('content-encoding')!r}",
+        headers.get("content-encoding") == codec.token,
+        f"expected Content-Encoding: {codec.token}, got "
+        f"{headers.get('content-encoding')!r}",
     )
     check(
         "content-length" not in headers,
         "a streamed response should not carry a Content-Length",
     )
     check(
-        ctx.decode(body) == ctx.fixtures["big.html"],
+        codec.decode(body) == ctx.fixtures["big.html"],
         "decoded stream differs from the original",
     )
 
 
-@test("small-but-eligible response round-trips", needs_decoder=True)
-def test_small_roundtrip(ctx):
-    _, headers, body = fetch(ctx.port, "/small.html")
-    check(headers.get("content-encoding") == "zstd", "small.html was not compressed")
+@test("small-but-eligible response round-trips", needs_decoder=True,
+      codecs=CODECS)
+def test_small_roundtrip(ctx, codec):
+    _, headers, body = fetch(ctx.port, codec.file("small.html"), codec.token)
     check(
-        ctx.decode(body) == ctx.fixtures["small.html"],
+        headers.get("content-encoding") == codec.token,
+        "small.html was not compressed",
+    )
+    check(
+        codec.decode(body) == ctx.fixtures["small.html"],
         "decoded small.html differs from the original",
     )
 
 
-@test("response below pack_zstd_min_length is left alone")
-def test_min_length(ctx):
-    _, headers, body = fetch(ctx.port, "/tiny.html")
+@test("a response below the min_length default is left alone",
+      codecs=CODECS)
+def test_min_length(ctx, codec):
+    _, headers, body = fetch(ctx.port, codec.file("tiny.html"), codec.token)
     check(
         "content-encoding" not in headers,
         f"tiny.html should not be compressed, got Content-Encoding: "
@@ -1892,16 +1921,19 @@ def test_min_length(ctx):
     check(body == ctx.fixtures["tiny.html"], "tiny.html body was altered")
 
 
-@test("default pack_zstd_min_length leaves a 200 byte response alone")
-def test_min_length_default_lower(ctx):
+@test("the min_length default leaves a 200 byte response alone",
+      codecs=CODECS)
+def test_min_length_default_lower(ctx, codec):
     """Guards the compiled-in default, which the test config deliberately does
     not override. A response this small costs more to compress than it saves."""
     body_len = len(ctx.fixtures["under_min.html"])
-    _, headers, body = fetch(ctx.port, "/under_min.html")
+    _, headers, body = fetch(
+        ctx.port, codec.file("under_min.html"), codec.token
+    )
     check(
         "content-encoding" not in headers,
-        f"a {body_len} byte response was compressed; pack_zstd_min_length has "
-        f"dropped below it",
+        f"a {body_len} byte response was compressed; "
+        f"{codec.directive}_min_length has dropped below it",
     )
     check(body == ctx.fixtures["under_min.html"], "under_min.html was altered")
 
@@ -2043,13 +2075,16 @@ def test_min_length_on_stream_upper(ctx):
     )
 
 
-@test("bodyless and ranged statuses are not given a Content-Encoding")
-def test_status_guard(ctx):
+@test("bodyless and ranged statuses are not given a Content-Encoding",
+      codecs=CODECS)
+def test_status_guard(ctx, codec):
     """204 and 304 have no body to encode, and a 206 body is a byte range whose
     Content-Range still describes the uncompressed entity. Labelling any of
-    them "zstd" corrupts the response."""
+    them corrupts the response."""
     for code in (204, 304, 206):
-        status, headers, _ = fetch(ctx.port, f"/status/{code}")
+        status, headers, _ = fetch(
+            ctx.port, codec.path("status", str(code)), codec.token
+        )
         check(status == code, f"expected {code} to reach the client, got {status}")
         check(
             "content-encoding" not in headers,
@@ -2058,37 +2093,43 @@ def test_status_guard(ctx):
         )
 
 
-@test("other statuses are still compressed", needs_decoder=True)
-def test_status_guard_not_too_broad(ctx):
+@test("other statuses are still compressed", needs_decoder=True,
+      codecs=CODECS)
+def test_status_guard_not_too_broad(ctx, codec):
     """The guard replaced an allow list that also excluded these. They are
     ordinary compressible responses and must stay compressed."""
     for code in (200, 201, 403, 404, 422, 500):
-        status, headers, body = fetch(ctx.port, f"/status/{code}")
+        status, headers, body = fetch(
+            ctx.port, codec.path("status", str(code)), codec.token
+        )
         check(status == code, f"expected {code} to reach the client, got {status}")
         check(
-            headers.get("content-encoding") == "zstd",
+            headers.get("content-encoding") == codec.token,
             f"a {code} response should still be compressed, got "
             f"{headers.get('content-encoding')!r}",
         )
         check(
-            ctx.decode(body) == STATUS_BODY,
+            codec.decode(body) == STATUS_BODY,
             f"the {code} body did not decode back to the original",
         )
 
 
-@test("MIME type outside pack_zstd_types is left alone")
-def test_mime_filtering(ctx):
-    _, headers, body = fetch(ctx.port, "/data.bin")
+@test("a MIME type outside the types directive is left alone",
+      codecs=CODECS)
+def test_mime_filtering(ctx, codec):
+    _, headers, body = fetch(ctx.port, codec.file("data.bin"), codec.token)
     check(
         "content-encoding" not in headers,
-        "data.bin is not in pack_zstd_types but was compressed",
+        f"data.bin is not in {codec.directive}_types but was compressed",
     )
     check(body == ctx.fixtures["data.bin"], "data.bin body was altered")
 
 
-@test("client without Accept-Encoding gets plain bytes")
-def test_no_accept_encoding(ctx):
-    _, headers, body = fetch(ctx.port, "/big.html", accept_encoding=None)
+@test("client without Accept-Encoding gets plain bytes", codecs=CODECS)
+def test_no_accept_encoding(ctx, codec):
+    _, headers, body = fetch(
+        ctx.port, codec.file("big.html"), accept_encoding=None
+    )
     check(
         "content-encoding" not in headers,
         "compressed for a client that did not ask for it",
@@ -2096,68 +2137,86 @@ def test_no_accept_encoding(ctx):
     check(body == ctx.fixtures["big.html"], "uncompressed body was altered")
 
 
-@test("Accept-Encoding: zstd;q=0 is honoured")
-def test_q_zero(ctx):
+@test("a zero weight on the token is honoured", codecs=CODECS)
+def test_q_zero(ctx, codec):
+    tok = codec.token
     for value in [
-        "zstd;q=0",
-        "zstd;q=0.0",
-        "zstd;q=0.00",
-        "zstd;q=0.000",
-        "zstd ; q = 0.00",
-        "zstd\t;\tq\t=\t0",
-        "gzip, zstd;q=0",
+        f"{tok};q=0",
+        f"{tok};q=0.0",
+        f"{tok};q=0.00",
+        f"{tok};q=0.000",
+        f"{tok} ; q = 0.00",
+        f"{tok}\t;\tq\t=\t0",
+        f"gzip, {tok};q=0",
     ]:
-        _, headers, _ = fetch(ctx.port, "/big.html", accept_encoding=value)
+        _, headers, _ = fetch(
+            ctx.port, codec.file("big.html"), accept_encoding=value
+        )
         check(
             "content-encoding" not in headers,
-            f"{value!r} should decline zstd, but the response was compressed",
+            f"{value!r} should decline {tok}, but the response was compressed",
         )
 
 
-@test("tokens that merely contain 'zstd' do not select zstd")
-def test_partial_token(ctx):
-    for value in ["zstdx", "zstdlib", "bar", "b", "gzip, deflate", "x-zstd", "zstd-x"]:
-        _, headers, _ = fetch(ctx.port, "/big.html", accept_encoding=value)
+@test("tokens that merely contain the token do not select it",
+      codecs=CODECS)
+def test_partial_token(ctx, codec):
+    """The near misses are built from the token, except the superstrings,
+    which cannot be derived - see Codec. "brotli" is the one that matters:
+    it is a word a client may really send, and "br" is a prefix of it."""
+    tok = codec.token
+    values = [f"{tok}x", f"x-{tok}", f"{tok}-x", "bar", "b", "gzip, deflate"]
+    values.extend(codec.superstrings)
+    for value in values:
+        _, headers, _ = fetch(
+            ctx.port, codec.file("big.html"), accept_encoding=value
+        )
         check(
             "content-encoding" not in headers,
-            f"{value!r} should not select zstd, but the response was compressed",
+            f"{value!r} should not select {tok}, but the response was "
+            f"compressed",
         )
 
 
-@test("Accept-Encoding lists that do select zstd", needs_decoder=True)
-def test_encoding_lists(ctx):
+@test("Accept-Encoding lists that do select the token",
+      needs_decoder=True, codecs=CODECS)
+def test_encoding_lists(ctx, codec):
+    tok = codec.token
     for value in [
-        "zstd",
-        "gzip, zstd",
-        "gzip, zstd, deflate",
-        "gzip, zstd;q=1, deflate",
-        "zstd;q=0.001",
-        "identity, zstd",
-        # Relative weights are ignored: naming zstd at all is enough, even
-        # when something else is weighted higher.
-        "gzip;q=1.0, zstd;q=0.1",
-        "gzip;q=0.9, zstd;q=0.2, deflate",
+        tok,
+        f"gzip, {tok}",
+        f"gzip, {tok}, deflate",
+        f"gzip, {tok};q=1, deflate",
+        f"{tok};q=0.001",
+        f"identity, {tok}",
+        # Relative weights are ignored: naming the token at all is enough,
+        # even when something else is weighted higher.
+        f"gzip;q=1.0, {tok};q=0.1",
+        f"gzip;q=0.9, {tok};q=0.2, deflate",
         # Tab is valid optional whitespace around a list separator.
-        "zstd\t,gzip",
-        "gzip,\tzstd",
-        "gzip, zstd ",
+        f"{tok}\t,gzip",
+        f"gzip,\t{tok}",
+        f"gzip, {tok} ",
         # Token matching is case-insensitive.
-        "ZSTD",
-        "Zstd",
+        tok.upper(),
+        tok.capitalize(),
     ]:
-        _, headers, body = fetch(ctx.port, "/small.html", accept_encoding=value)
-        check(
-            headers.get("content-encoding") == "zstd",
-            f"{value!r} should select zstd, got {headers.get('content-encoding')!r}",
+        _, headers, body = fetch(
+            ctx.port, codec.file("small.html"), accept_encoding=value
         )
         check(
-            ctx.decode(body) == ctx.fixtures["small.html"],
+            headers.get("content-encoding") == tok,
+            f"{value!r} should select {tok}, got "
+            f"{headers.get('content-encoding')!r}",
+        )
+        check(
+            codec.decode(body) == ctx.fixtures["small.html"],
             f"{value!r} produced a body that does not decode to the original",
         )
 
 
-@test("HTTP/1.0 clients are not served Zstandard")
-def test_http_version_gate(ctx):
+@test("HTTP/1.0 clients are not served a compressed body", codecs=CODECS)
+def test_http_version_gate(ctx, codec):
     """Mirrors gzip_http_version, whose default is 1.1. Declining still leaves
     Vary advertised, as the gzip filter does, so a cache in front keeps the
     responses apart."""
@@ -2166,8 +2225,10 @@ def test_http_version_gate(ctx):
         sock = socket.create_connection(("127.0.0.1", ctx.port), timeout=30)
         try:
             sock.sendall(
-                f"GET /big.html HTTP/{version}\r\nHost: localhost\r\n"
-                f"Accept-Encoding: zstd\r\nConnection: close\r\n\r\n".encode()
+                f"GET {codec.file('big.html')} HTTP/{version}\r\n"
+                f"Host: localhost\r\n"
+                f"Accept-Encoding: {codec.token}\r\n"
+                f"Connection: close\r\n\r\n".encode()
             )
             data = b""
             while True:
@@ -2180,22 +2241,33 @@ def test_http_version_gate(ctx):
         head = data.split(b"\r\n\r\n", 1)[0].decode("latin-1")
         lower = [line.lower() for line in head.split("\r\n")]
         return (
-            any(line.startswith("content-encoding: zstd") for line in lower),
+            any(
+                line.startswith(f"content-encoding: {codec.token}")
+                for line in lower
+            ),
             any(line.startswith("vary:") for line in lower),
         )
 
     compressed, vary = raw("1.0")
-    check(not compressed, "an HTTP/1.0 request was served Zstandard")
+    check(
+        not compressed,
+        f"an HTTP/1.0 request was served {codec.token}",
+    )
     check(vary, "Vary was dropped for the declined HTTP/1.0 request")
 
     compressed, _ = raw("1.1")
-    check(compressed, "an HTTP/1.1 request was not served Zstandard")
+    check(
+        compressed,
+        f"an HTTP/1.1 request was not served {codec.token}",
+    )
 
 
-@test("Vary: Accept-Encoding is advertised to every client")
-def test_vary(ctx):
-    for accept in ["zstd", "gzip", None]:
-        _, headers, _ = fetch(ctx.port, "/big.html", accept_encoding=accept)
+@test("Vary: Accept-Encoding is advertised to every client", codecs=CODECS)
+def test_vary(ctx, codec):
+    for accept in [codec.token, "gzip", None]:
+        _, headers, _ = fetch(
+            ctx.port, codec.file("big.html"), accept_encoding=accept
+        )
         vary = headers.get("vary", "")
         check(
             "accept-encoding" in vary.lower(),
@@ -2204,9 +2276,11 @@ def test_vary(ctx):
         )
 
 
-@test("HEAD request produces headers and no body")
-def test_head(ctx):
-    status, _, body = fetch(ctx.port, "/big.html", method="HEAD")
+@test("HEAD request produces headers and no body", codecs=CODECS)
+def test_head(ctx, codec):
+    status, _, body = fetch(
+        ctx.port, codec.file("big.html"), codec.token, method="HEAD"
+    )
     check(status == 200, f"expected 200, got {status}")
     check(body == b"", f"HEAD returned a {len(body)} byte body")
 
