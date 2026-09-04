@@ -872,7 +872,7 @@ def fetch_repeated(port, path, name, accept_encoding="zstd", timeout=30):
         conn.close()
 
 
-def fetch_and_abort(port, path, settle=1.5):
+def fetch_and_abort(port, path, accept_encoding="zstd", settle=1.5):
     """Starts a request, reads a little, then resets the connection.
 
     SO_LINGER with a zero timeout makes close() emit an RST rather than a FIN,
@@ -883,7 +883,8 @@ def fetch_and_abort(port, path, settle=1.5):
     try:
         sock.sendall(
             (
-                f"GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: zstd\r\n\r\n"
+                f"GET {path} HTTP/1.1\r\nHost: localhost\r\n"
+                f"Accept-Encoding: {accept_encoding}\r\n\r\n"
             ).encode()
         )
         time.sleep(settle)
@@ -1906,8 +1907,11 @@ def test_min_length_default_upper(ctx):
     )
 
 
-@test("a slowly-produced response starts arriving before it finishes")
-def test_ttfb_on_buffered_stream(ctx):
+@test(
+    "a slowly-produced response starts arriving before it finishes",
+    codecs=CODECS,
+)
+def test_ttfb_on_buffered_stream(ctx, codec):
     """With proxy_buffering on nothing sets a flush marker, so left alone the
     encoder holds everything until a 64 KB block fills - which for a trickling
     upstream means the client waits. The filter asks the encoder to flush when
@@ -1921,8 +1925,11 @@ def test_ttfb_on_buffered_stream(ctx):
     try:
         started = time.perf_counter()
         sock.sendall(
-            b"GET /dribble HTTP/1.1\r\nHost: localhost\r\n"
-            b"Connection: close\r\nAccept-Encoding: zstd\r\n\r\n"
+            (
+                f"GET {codec.path('dribble', '')} HTTP/1.1\r\n"
+                f"Host: localhost\r\nConnection: close\r\n"
+                f"Accept-Encoding: {codec.token}\r\n\r\n"
+            ).encode()
         )
         head, first_body, total = b"", None, 0
         while True:
@@ -2969,13 +2976,19 @@ def test_hint_directive_reaches_encoder(ctx):
     )
 
 
-@test("repeated requests neither leak nor drift", needs_debug=True)
-def test_alloc_soak(ctx):
+@test(
+    "repeated requests neither leak nor drift",
+    needs_debug=True,
+    codecs=CODECS,
+)
+def test_alloc_soak(ctx, codec):
     rounds = 25
     ctx.nginx.mark_log()
     for _ in range(rounds):
-        fetch(ctx.port, "/big.html")
-    active = assert_balanced(wait_for_encoder_release(ctx.nginx), "soak")
+        fetch(ctx.port, codec.file("big.html"), codec.token)
+    active = assert_balanced(
+        wait_for_encoder_release(ctx.nginx, codec=codec), "soak"
+    )
 
     check(
         len(active) == rounds, f"expected {rounds} traced requests, saw {len(active)}"
@@ -2987,7 +3000,7 @@ def test_alloc_soak(ctx):
     )
 
 
-def keepalive_soak(ctx, paths, rounds):
+def keepalive_soak(ctx, paths, rounds, codec=ZSTD):
     """Drives `rounds` passes over `paths` down one connection."""
     conn = http.client.HTTPConnection("127.0.0.1", ctx.port, timeout=60)
     try:
@@ -2996,20 +3009,23 @@ def keepalive_soak(ctx, paths, rounds):
                 conn.request(
                     "GET",
                     path,
-                    headers={"Host": "localhost", "Accept-Encoding": "zstd"},
+                    headers={
+                        "Host": "localhost",
+                        "Accept-Encoding": codec.token,
+                    },
                 )
                 response = conn.getresponse()
                 response.read()
                 check(response.status == 200, f"{path} -> {response.status}")
     finally:
         conn.close()
-    wait_for_encoder_release(ctx.nginx)
-    return allocator_timeline(ctx.nginx.read_log())
+    wait_for_encoder_release(ctx.nginx, codec=codec)
+    return allocator_timeline(ctx.nginx.read_log(), codec)
 
 
 @test("one connection serving many requests holds nothing between them",
-      needs_debug=True)
-def test_keepalive_allocation_balance(ctx):
+      needs_debug=True, codecs=CODECS)
+def test_keepalive_allocation_balance(ctx, codec):
     """The encoder's lifetime is the request, not the connection.
 
     Every other memory test here opens a fresh connection per request,
@@ -3027,16 +3043,21 @@ def test_keepalive_allocation_balance(ctx):
     expensive kind rather than a fixed figure, so it stays honest if
     the vendored zstd changes what an encoder costs.
     """
-    paths = ["/big.html", "/buffered/big.html", "/under_min.html"]
+    buffered = codec.path("buffered", "big.html")
+    paths = [
+        codec.file("big.html"),
+        buffered,
+        codec.file("under_min.html"),
+    ]
 
     # what a single streamed response costs, as the yardstick
     ctx.nginx.mark_log()
-    alone = keepalive_soak(ctx, ["/buffered/big.html"], 1)
+    alone = keepalive_soak(ctx, [buffered], 1, codec)
     check(alone["peak"] > 0, "no encoder allocation traced for one request")
 
     rounds = 10
     ctx.nginx.mark_log()
-    soak = keepalive_soak(ctx, paths, rounds)
+    soak = keepalive_soak(ctx, paths, rounds, codec)
 
     check(
         len(soak["connections"]) == 1,
@@ -3071,13 +3092,19 @@ def test_keepalive_allocation_balance(ctx):
     )
 
 
-@test("aborted request still releases the encoder", needs_debug=True)
-def test_cleanup_handler_on_abort(ctx):
+@test(
+    "aborted request still releases the encoder",
+    needs_debug=True,
+    codecs=CODECS,
+)
+def test_cleanup_handler_on_abort(ctx, codec):
     ctx.nginx.mark_log()
-    fetch_and_abort(ctx.port, "/slow")
+    fetch_and_abort(ctx.port, codec.path("slow", ""), codec.token)
     # Polls rather than sleeping a fixed 2.5s for nginx to notice the reset:
     # faster here, and it does not give up early on a loaded runner.
-    active = assert_balanced(wait_for_encoder_release(ctx.nginx), "abort")
+    active = assert_balanced(
+        wait_for_encoder_release(ctx.nginx, codec=codec), "abort"
+    )
 
     # The point of this test. The encoder must be released by the pool cleanup
     # handler, which runs inside ngx_destroy_pool - after nginx has logged
@@ -3094,12 +3121,13 @@ def test_cleanup_handler_on_abort(ctx):
 
 # One of each shape the encoder can be built on: a length known when the
 # headers were written, and one the filter had to wait for.
-RELEASED_EARLY_PATHS = ("/big.html", "/stream/big.html")
+def released_early_paths(codec):
+    return (codec.file("big.html"), codec.path("stream", "big.html"))
 
 
 @test("a finished response releases the encoder before the request closes",
-      needs_debug=True)
-def test_encoder_released_before_close(ctx):
+      needs_debug=True, codecs=CODECS)
+def test_encoder_released_before_close(ctx, codec):
     """The mirror of the abort test above, and the only cover for the close
     in ngx_http_pack_zstd_finish.
 
@@ -3112,16 +3140,18 @@ def test_encoder_released_before_close(ctx):
     encoder's memory from outliving the response, which is the whole reason
     finish() closes rather than leaving it to the pool.
     """
-    for path in RELEASED_EARLY_PATHS:
+    for path in released_early_paths(codec):
         ctx.nginx.mark_log()
-        _, headers, _ = fetch(ctx.port, path)
+        _, headers, _ = fetch(ctx.port, path, codec.token)
         check(
-            headers.get("content-encoding") == "zstd",
+            headers.get("content-encoding") == codec.token,
             f"{path} was not compressed, so no encoder was built to release",
         )
 
         active = assert_balanced(
-            wait_for_encoder_release(ctx.nginx), f"finished {path}")
+            wait_for_encoder_release(ctx.nginx, codec=codec),
+            f"finished {path}",
+        )
 
         late = sum(entry["frees_after_close"] for entry in active.values())
         check(
