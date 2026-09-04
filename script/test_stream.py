@@ -3246,10 +3246,34 @@ def test_keepalive_allocation_balance(ctx, codec):
         codec.file("under_min.html"),
     ]
 
-    # what a single streamed response costs, as the yardstick
-    ctx.nginx.mark_log()
-    alone = keepalive_soak(ctx, [buffered], 1, codec)
-    check(alone["peak"] > 0, "no encoder allocation traced for one request")
+    # The dearest single request, measured rather than assumed.
+    #
+    # This used to take the buffered path alone, on the reasoning that a
+    # response of unknown length is the expensive kind. That holds for
+    # zstd and does not hold for Brotli, whose one-pass hash table is
+    # sized from how much input a single call brings - "use smaller hash
+    # table when input.size() is smaller", GetHashTable in
+    # deps/brotli/c/enc/encode.c. A static file arrives in one large
+    # piece and takes the full table; a proxied one arrives in pieces
+    # the size of a proxy buffer, which derive from the page size, so
+    # the same request is dearer on a 16k-page host than a 4k one. On
+    # Linux the yardstick came in at a third of the static path and this
+    # test reported accumulation that was not there.
+    #
+    # Taking the maximum keeps what the test is for - the soak must not
+    # exceed the dearest thing in it - without needing to know which of
+    # the paths that is on the platform underneath.
+    singles = {}
+    for path in paths:
+        ctx.nginx.mark_log()
+        singles[path] = keepalive_soak(ctx, [path], 1, codec)["peak"]
+
+    dearest = max(singles, key=singles.get)
+    alone_peak = singles[dearest]
+    check(
+        alone_peak > 0,
+        f"no encoder allocation traced for any of {', '.join(paths)}",
+    )
 
     rounds = 10
     ctx.nginx.mark_log()
@@ -3281,10 +3305,12 @@ def test_keepalive_allocation_balance(ctx, codec):
         f"the connection rather than the request",
     )
     check(
-        soak["peak"] <= alone["peak"] * 1.25,
+        soak["peak"] <= alone_peak * 1.25,
         f"peak live memory over {rounds * len(paths)} requests was "
-        f"{soak['peak'] / 1024:.0f} KB against {alone['peak'] / 1024:.0f} KB "
-        f"for a single one, so cost is accumulating across the connection",
+        f"{soak['peak'] / 1024:.0f} KB against {alone_peak / 1024:.0f} KB "
+        f"for the dearest single request ({dearest}), so cost is "
+        f"accumulating across the connection. Single-request peaks were "
+        + ", ".join(f"{p} {n:,}" for p, n in singles.items()),
     )
 
 
