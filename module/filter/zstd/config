@@ -64,6 +64,7 @@ ZSTD_H="$PACK_ZSTD_DIR/lib/zstd.h"
 # branches above.
 PACK_COMMON_DIR="$PACK_ROOT_DIR/module/common"
 PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
+PACK_HELPERS_H="$PACK_COMMON_DIR/ngx_http_pack_helpers.h"
 
 # The encoder is a translation unit of its own so that the filter
 # cannot see inside it: the header declares an incomplete type, and
@@ -71,7 +72,7 @@ PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
 PACK_ENCODER_H="$PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_encoder.h"
 
 ngx_module_incs="$PACK_ZSTD_DIR/lib"
-ngx_module_deps="$ZSTD_H $PACK_COMMON_H $PACK_ENCODER_H"
+ngx_module_deps="$ZSTD_H $PACK_COMMON_H $PACK_HELPERS_H $PACK_ENCODER_H"
 ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_filter.c \
                  $PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_encoder.c"
 # The archive by full path rather than -L plus -l: nginx puts

@@ -63,6 +63,7 @@ BROTLI_ENC_H="$PACK_BROTLI_DIR/include/brotli/encode.h \
 # that the path does not have to change if these sources move.
 PACK_COMMON_DIR="$PACK_ROOT_DIR/module/common"
 PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
+PACK_HELPERS_H="$PACK_COMMON_DIR/ngx_http_pack_helpers.h"
 
 # The encoder is a translation unit of its own so that the filter
 # cannot see inside it: the header declares an incomplete type, and
@@ -70,7 +71,7 @@ PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
 PACK_ENCODER_H="$PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_encoder.h"
 
 ngx_module_incs="$PACK_BROTLI_DIR/include"
-ngx_module_deps="$BROTLI_ENC_H $PACK_COMMON_H $PACK_ENCODER_H"
+ngx_module_deps="$BROTLI_ENC_H $PACK_COMMON_H $PACK_HELPERS_H $PACK_ENCODER_H"
 ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_filter.c \
                  $PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_encoder.c"
 # The archives by full path rather than -L plus -l. nginx puts

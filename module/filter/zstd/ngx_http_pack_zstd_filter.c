@@ -10,6 +10,7 @@
 #include <ngx_http.h>
 
 #include "../../common/ngx_http_pack_headers.h"
+#include "../../common/ngx_http_pack_helpers.h"
 #include "ngx_http_pack_zstd_encoder.h"
 
 
@@ -225,9 +226,6 @@ static char *ngx_http_pack_zstd_set_hint(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pack_zstd_set_buffers(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-
-static ngx_str_t
-ngx_http_pack_zstd_human_size(ngx_pool_t *pool, size_t bytes);
 
 
 /* Narrower than zstd's own stable range (1 to 22, plus negatives,
@@ -1175,7 +1173,7 @@ ngx_http_pack_zstd_check_hint(
     hint = data;
 
     if (*hint < NGX_HTTP_PACK_ZSTD_HINT_MIN) {
-        limit = ngx_http_pack_zstd_human_size(
+        limit = ngx_http_pack_format_size(
             cf->pool, NGX_HTTP_PACK_ZSTD_HINT_MIN);
 
         /* Naming the word here as well: an operator who wrote a size
@@ -1193,7 +1191,7 @@ ngx_http_pack_zstd_check_hint(
     }
 
     if (*hint > NGX_MAX_INT32_VALUE) {
-        limit = ngx_http_pack_zstd_human_size(
+        limit = ngx_http_pack_format_size(
             cf->pool, NGX_MAX_INT32_VALUE);
 
         ngx_conf_log_error(
@@ -1282,9 +1280,9 @@ ngx_http_pack_zstd_set_buffers(
     if (bufs->size < NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN ||
         bufs->size > NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX) {
 
-        min = ngx_http_pack_zstd_human_size(
+        min = ngx_http_pack_format_size(
             cf->pool, NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MIN);
-        max = ngx_http_pack_zstd_human_size(
+        max = ngx_http_pack_format_size(
             cf->pool, NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_MAX);
 
         ngx_conf_log_error(
@@ -1312,49 +1310,4 @@ ngx_http_pack_zstd_set_buffers(
     }
 
     return NGX_CONF_OK;
-}
-
-/* The inverse of ngx_parse_size: 4096 back to "4k". Exact rather than
-   rounded: a size this module ever prints is one of its own byte
-   constants, so it either divides evenly by 1k/1m or it does not, and
-   only those two are worth answering since that is all
-   ngx_parse_size itself accepts back. */
-static ngx_str_t
-ngx_http_pack_zstd_human_size(
-    ngx_pool_t *const pool, size_t const bytes)
-{
-    /* nginx's own bound on how many characters a size_t can need. */
-    enum { max_str_len = NGX_SIZE_T_LEN + sizeof("k") - 1 };
-
-    size_t  value;
-    u_char  unit;
-    u_char *data;
-    size_t  end;
-
-    data = ngx_pnalloc(pool, max_str_len);
-    if (data == NULL) {
-        return (ngx_str_t) ngx_null_string;
-    }
-
-    if (bytes != 0 && bytes % (1024 * 1024) == 0) {
-        value = bytes / (1024 * 1024);
-        unit  = 'm';
-    } else if (bytes != 0 && bytes % 1024 == 0) {
-        value = bytes / 1024;
-        unit  = 'k';
-    } else {
-        value = bytes;
-        unit  = 0;
-    }
-
-    end = (size_t) (ngx_sprintf(data, "%uz", value) - data);
-    if (unit) {
-        data[end]  = unit;
-        end       += 1;
-    }
-
-    return (ngx_str_t) {
-        .data = data,
-        .len  = end,
-    };
 }
