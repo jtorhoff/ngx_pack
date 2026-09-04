@@ -2009,21 +2009,26 @@ def test_ttfb_on_buffered_stream(ctx, codec):
     )
 
 
-@test("pack_zstd_min_length applies to a buffered stream of unknown length")
-def test_min_length_on_stream(ctx):
+@test("min_length applies to a buffered stream of unknown length",
+      codecs=CODECS)
+def test_min_length_on_stream(ctx, codec):
     """The header filter cannot compare against min_length when it has no
-    Content-Length, so it holds the headers until the body has answered the
-    question. Without that, a tiny chunked response still built a full
-    encoder - about 575 KB to compress 200 bytes.
+    Content-Length, so it holds the headers until the body has answered
+    the question. Without that, a tiny chunked response still builds a
+    full encoder.
 
     Buffered specifically: see the unbuffered case below, where the answer
-    is the opposite.
+    is the opposite. Each filter carries its own copy of this deferral,
+    and committing headers is a decision neither can take back.
     """
-    _, headers, body = fetch(ctx.port, "/buffered/under_min.html")
+    _, headers, body = fetch(
+        ctx.port, codec.path("buffered", "under_min.html"), codec.token
+    )
     check(
         "content-encoding" not in headers,
         f"a {len(ctx.fixtures['under_min.html'])} byte streamed response was "
-        f"compressed; min_length is not being applied without a Content-Length",
+        f"compressed; {codec.directive}_min_length is not being applied "
+        f"without a Content-Length",
     )
     check(
         body == ctx.fixtures["under_min.html"],
@@ -2031,46 +2036,54 @@ def test_min_length_on_stream(ctx):
     )
 
 
-@test("pack_zstd_min_length is bypassed when a buffer asks to be flushed")
-def test_min_length_not_applied_when_urgent(ctx):
+@test("min_length is bypassed when a buffer asks to be flushed",
+      codecs=CODECS)
+def test_min_length_not_applied_when_urgent(ctx, codec):
     """The same body as the buffered case above, and the opposite outcome.
 
-    With proxy_buffering off every buffer carries a flush marker, and the
-    filter treats one as "something downstream is waiting": it decides
-    immediately rather than holding the headers any longer, and deciding
-    immediately means compressing. So pack_zstd_min_length does not hold for an
-    unbuffered proxied response - a 200 byte body is compressed even though
-    the setting is 256.
+    With proxy_buffering off every buffer carries a flush marker, which
+    the filter reads as "something downstream is waiting": it decides
+    immediately rather than holding the headers, and deciding immediately
+    means compressing. So min_length does not hold for an unbuffered
+    proxied response.
 
-    That is deliberate, but it is the kind of thing a configuration is
-    written against, so it is asserted rather than left to be discovered.
-    Change this test only alongside the "urgent" branch in
-    ngx_http_zstd_filter_prepare.
+    Deliberate, but the kind of thing a configuration is written against,
+    so it is asserted rather than left to be discovered. Change this only
+    alongside the "urgent" branch in either filter's prepare.
     """
     body = ctx.fixtures["under_min.html"]
     check(
         len(body) < 256,
         f"fixture is {len(body)} bytes, which no longer sits under the "
-        f"compiled-in pack_zstd_min_length of 256 this test depends on",
+        f"compiled-in {codec.directive}_min_length of 256 this test "
+        f"depends on",
     )
-    _, headers, _ = fetch(ctx.port, "/stream/under_min.html")
+    _, headers, _ = fetch(
+        ctx.port, codec.path("stream", "under_min.html"), codec.token
+    )
     check(
-        headers.get("content-encoding") == "zstd",
+        headers.get("content-encoding") == codec.token,
         f"a {len(body)} byte unbuffered response was not compressed; the "
-        f"flush marker should have short-circuited pack_zstd_min_length",
+        f"flush marker should have short-circuited "
+        f"{codec.directive}_min_length",
     )
 
 
-@test("a streamed response over min_length is still compressed", needs_decoder=True)
-def test_min_length_on_stream_upper(ctx):
-    _, headers, body = fetch(ctx.port, "/buffered/over_min.html")
+@test("a streamed response over min_length is still compressed",
+      needs_decoder=True, codecs=CODECS)
+def test_min_length_on_stream_upper(ctx, codec):
+    """The counterweight to the two above: the deferral has to release the
+    response as well as hold it back."""
+    _, headers, body = fetch(
+        ctx.port, codec.path("buffered", "over_min.html"), codec.token
+    )
     check(
-        headers.get("content-encoding") == "zstd",
+        headers.get("content-encoding") == codec.token,
         f"a {len(ctx.fixtures['over_min.html'])} byte streamed response should "
         f"be compressed, got {headers.get('content-encoding')!r}",
     )
     check(
-        ctx.decode(body) == ctx.fixtures["over_min.html"],
+        codec.decode(body) == ctx.fixtures["over_min.html"],
         "decoded streamed body differs from the original",
     )
 
@@ -2838,17 +2851,28 @@ def test_flush_folding_bounded(ctx):
     )
 
 
-@test("a folded flush still delivers every byte", needs_decoder=True)
-def test_flush_folding_roundtrip(ctx):
+@test("a folded flush still delivers every byte",
+      needs_decoder=True, codecs=CODECS)
+def test_flush_folding_roundtrip(ctx, codec):
     """Folding may not lose or reorder anything: the point is that only the
-    framing changes."""
+    framing changes. Both encoders fold, each with its own chain walk, and
+    dropping bytes is exactly what that operation can do wrong.
+
+    Brotli's location asks for a quality where folding is not inert -
+    quality 0 and 1 give every call a meta-block of its own, so there is
+    nothing to merge and the assertion would pass vacuously."""
     expected = b"".join(
         b"%d %s" % (i, Upstream.BURST_TEXT) for i in range(Upstream.BURST_CHUNKS)
     )
-    _, _, body = fetch(ctx.port, "/burst")
+    _, headers, body = fetch(ctx.port, codec.path("burst", ""), codec.token)
 
     check(
-        ctx.decode(body) == expected,
+        headers.get("content-encoding") == codec.token,
+        f"the burst came back {headers.get('content-encoding')!r}, so this "
+        f"decoded nothing the encoder produced",
+    )
+    check(
+        codec.decode(body) == expected,
         "decoded burst differs from what the upstream sent",
     )
 
