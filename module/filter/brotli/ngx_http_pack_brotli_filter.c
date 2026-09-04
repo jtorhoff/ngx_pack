@@ -37,22 +37,27 @@ static ngx_str_t const ENCODING = ngx_string("br");
    The encoder rejects anything the library will not take, so these
    only have to be no wider than Brotli's own range. */
 #define NGX_HTTP_PACK_BROTLI_LEVEL_MIN 0
-#define NGX_HTTP_PACK_BROTLI_LEVEL_MAX 6
+#define NGX_HTTP_PACK_BROTLI_LEVEL_MAX 5
 
-/* 1, matching pack_zstd_level's default so the two encoders are
-   configured alike out of the box. Quality is the CPU axis, as the
-   window below is the memory one.
+/* The floor, and deliberately not the 1 that would match
+   pack_zstd_level's default. Quality is the CPU axis, as the window
+   below is the memory one.
 
-   It costs real ratio, and not a token amount - read this as a floor
-   an operator raises rather than as a free saving. What it buys is
-   time.
+   0 rather than 1 because 1 is not on the curve at all: measured over
+   script/corpus the two reach the same ratio and 1 takes longer for
+   it, so nothing recommends paying for it. That is not a rounding
+   artefact - quality 0 and 1 are both Brotli's "fast" path, a
+   different algorithm rather than a slower walk of the same one, so
+   the two differ in cost without differing in kind.
 
-   Worth knowing before moving it: quality 0 and 1 are Brotli's
-   "fast" path, a different algorithm rather than a slower walk of
-   the same one, so the step from 1 to 4 is not the same kind of move
-   as the step from 4 to 6. Anyone spending CPU for bytes should
-   measure both. script/bench_corpus.py is what measures them. */
-#define NGX_HTTP_PACK_BROTLI_LEVEL_DEFAULT 1
+   The same boundary is why the step from 1 to 2 is the largest in the
+   range: 2 is where the real algorithm starts, and the levels above
+   it behave like a dial where these two do not.
+
+   It costs real ratio against those levels - read this as a floor an
+   operator raises rather than as a free saving. What it buys is
+   time. */
+#define NGX_HTTP_PACK_BROTLI_LEVEL_DEFAULT 0
 
 /* Window, in bits: 16k to 1m, the same range pack_zstd_window takes.
    Both ends stop short of what Brotli itself allows - its own bounds
