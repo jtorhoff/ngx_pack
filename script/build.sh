@@ -41,6 +41,18 @@ cmake -S "$ROOT/deps/zstd/build/cmake" -B "$ROOT/deps/zstd/out" \
 	-DZSTD_LEGACY_SUPPORT=OFF
 cmake --build "$ROOT/deps/zstd/out" --target zstd -j "$JOBS"
 
+# Brotli, on the same terms as zstd above: static, release, and no
+# command line tools, since nothing here shells out to one. Building
+# "brotlienc" pulls in brotlicommon, which is the other half of what
+# the filter links; the decoder is not built because this module only
+# ever compresses.
+cmake -S "$ROOT/deps/brotli" -B "$ROOT/deps/brotli/out" \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DBUILD_SHARED_LIBS=OFF \
+	-DBROTLI_BUILD_TOOLS=OFF \
+	-DBROTLI_DISABLE_TESTS=ON
+cmake --build "$ROOT/deps/brotli/out" --target brotlienc -j "$JOBS"
+
 if [ ! -d "$ROOT/nginx" ]; then
 	git clone --depth 1 --branch "$NGINX_REF" \
 		https://github.com/nginx/nginx.git "$ROOT/nginx"

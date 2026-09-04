@@ -2,3 +2,7 @@
 	path = deps/zstd
 	url = https://github.com/facebook/zstd
 	ignore = untracked
+[submodule "deps/brotli"]
+	path = deps/brotli
+	url = https://github.com/google/brotli
+	ignore = untracked
