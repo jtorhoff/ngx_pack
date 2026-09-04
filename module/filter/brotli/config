@@ -71,9 +71,20 @@ ngx_module_incs="$PACK_BROTLI_DIR/include"
 ngx_module_deps="$BROTLI_ENC_H $PACK_COMMON_H $PACK_ENCODER_H"
 ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_filter.c \
                  $PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_encoder.c"
+# The archives by full path rather than -L plus -l. nginx puts
+# --with-ld-opt ahead of a module's own libraries, so on a machine
+# whose -L there holds a system Brotli - Homebrew's, say - the linker
+# resolves against that and the vendored one is never reached. That
+# defeats the whole point of pinning the submodule, and it fails
+# silently: the build succeeds, and only otool or ldd shows which copy
+# was taken. Naming the files leaves nothing to search for.
+#
+# Encoder before common: the encoder refers to the common symbols, and
+# a static archive only satisfies what is already outstanding.
+#
 # -lm because Brotli's encoder uses log2() in its cost model.
-ngx_module_libs="-L$BROTLI_OUTPUT_DIRECTORY \
--lbrotlienc -lbrotlicommon -lm"
+ngx_module_libs="$BROTLI_OUTPUT_DIRECTORY/libbrotlienc.a \
+$BROTLI_OUTPUT_DIRECTORY/libbrotlicommon.a -lm"
 ngx_module_order="$ngx_module_name \
                   ngx_pagespeed \
                   ngx_http_postpone_filter_module \

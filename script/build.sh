@@ -25,6 +25,19 @@ if [ -z "${NGINX_REF:-}" ]; then
 fi
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 
+# Both libraries below are built by cmake, and on macOS cmake itself
+# may be an Intel binary - Homebrew installs one under /usr/local on
+# an Apple Silicon machine. Running under Rosetta it hands that same
+# x86_64 personality to the compiler it spawns, so an unqualified
+# build produces an Intel library on an arm64 host, and nginx then
+# silently links whatever the system happens to provide instead. Ask
+# the compiler nginx will use rather than the kernel: uname reports
+# the personality, cc -dumpmachine reports the truth.
+CMAKE_ARCH=()
+if [ "$(uname -s)" = "Darwin" ]; then
+	CMAKE_ARCH=(-DCMAKE_OSX_ARCHITECTURES="$(cc -dumpmachine | cut -d- -f1)")
+fi
+
 # zstd first: nginx links -lzstd out of deps/zstd/out, so the
 # library has to exist before nginx is built. Static, to keep the
 # test runs free of LD_LIBRARY_PATH handling; multithreading and
@@ -34,6 +47,7 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 # the library and adds the command line tool, which the shell suite
 # decompresses responses with.
 cmake -S "$ROOT/deps/zstd/build/cmake" -B "$ROOT/deps/zstd/out" \
+	"${CMAKE_ARCH[@]}" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_SHARED=OFF \
 	-DZSTD_BUILD_PROGRAMS=ON \
@@ -47,6 +61,7 @@ cmake --build "$ROOT/deps/zstd/out" --target zstd -j "$JOBS"
 # the filter links; the decoder is not built because this module only
 # ever compresses.
 cmake -S "$ROOT/deps/brotli" -B "$ROOT/deps/brotli/out" \
+	"${CMAKE_ARCH[@]}" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DBUILD_SHARED_LIBS=OFF \
 	-DBROTLI_BUILD_TOOLS=OFF \
