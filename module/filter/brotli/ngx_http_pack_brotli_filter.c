@@ -265,53 +265,65 @@ static ngx_conf_post_handler_pt ngx_http_pack_brotli_parse_window_p =
     ngx_http_pack_brotli_parse_window;
 
 static ngx_command_t ngx_http_pack_brotli_commands[] = {
-    {ngx_string("pack_brotli"),
-     NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-         NGX_HTTP_LIF_CONF | NGX_CONF_FLAG,
-     ngx_conf_set_flag_slot,
-     NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(conf_t, enable),
-     NULL},
+    {
+        ngx_string("pack_brotli"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_HTTP_LIF_CONF | NGX_CONF_FLAG,
+        ngx_conf_set_flag_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, enable),
+        NULL,
+    },
 
-    {ngx_string("pack_brotli_types"),
-     NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-         NGX_CONF_1MORE,
-     ngx_http_types_slot,
-     NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(conf_t, types_keys),
-     &ngx_http_html_default_types[0]},
+    {
+        ngx_string("pack_brotli_types"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_1MORE,
+        ngx_http_types_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, types_keys),
+        &ngx_http_html_default_types[0],
+    },
 
-    {ngx_string("pack_brotli_level"),
-     NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-         NGX_CONF_TAKE1,
-     ngx_conf_set_num_slot,
-     NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(conf_t, level),
-     &ngx_http_pack_brotli_level_bounds},
+    {
+        ngx_string("pack_brotli_level"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE1,
+        ngx_conf_set_num_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, level),
+        &ngx_http_pack_brotli_level_bounds,
+    },
 
-    {ngx_string("pack_brotli_window"),
-     NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-         NGX_CONF_TAKE1,
-     ngx_conf_set_size_slot,
-     NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(conf_t, window_bits),
-     &ngx_http_pack_brotli_parse_window_p},
+    {
+        ngx_string("pack_brotli_window"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE1,
+        ngx_conf_set_size_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, window_bits),
+        &ngx_http_pack_brotli_parse_window_p,
+    },
 
-    {ngx_string("pack_brotli_min_length"),
-     NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-         NGX_CONF_TAKE1,
-     ngx_conf_set_size_slot,
-     NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(conf_t, min_length),
-     NULL},
+    {
+        ngx_string("pack_brotli_min_length"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE1,
+        ngx_conf_set_size_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, min_length),
+        NULL,
+    },
 
-    {ngx_string("pack_brotli_buffers"),
-     NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-         NGX_CONF_TAKE2,
-     ngx_http_pack_brotli_set_buffers,
-     NGX_HTTP_LOC_CONF_OFFSET,
-     offsetof(conf_t, bufs),
-     NULL},
+    {
+        ngx_string("pack_brotli_buffers"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE2,
+        ngx_http_pack_brotli_set_buffers,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, bufs),
+        NULL,
+    },
 
     ngx_null_command};
 
@@ -327,7 +339,7 @@ static ngx_http_module_t ngx_http_pack_brotli_module_ctx = {
     NULL,                      /* merge server configuration */
 
     ngx_http_pack_brotli_create_conf, /* create location conf */
-    ngx_http_pack_brotli_merge_conf   /* merge location conf */
+    ngx_http_pack_brotli_merge_conf,  /* merge location conf */
 };
 
 /* Module descriptor. */
@@ -343,7 +355,8 @@ ngx_module_t ngx_http_pack_brotli_module = {
     NULL,                             /* exit thread */
     NULL,                             /* exit process */
     NULL,                             /* exit master */
-    NGX_MODULE_V1_PADDING};
+    NGX_MODULE_V1_PADDING,
+};
 
 /* Next filter in the filter chain. */
 static ngx_http_output_header_filter_pt ngx_http_next_header_filter;
@@ -528,7 +541,11 @@ ngx_http_pack_brotli_pending_input(ngx_chain_t *in)
         .urgent   = 0,
     };
 
-    for (; in != NULL; in = in->next) {
+    for (;;) {
+        if (in == NULL) {
+            break;
+        }
+
         result.pending += ngx_buf_size(in->buf);
 
         if (in->buf->last_buf) {
@@ -538,6 +555,8 @@ ngx_http_pack_brotli_pending_input(ngx_chain_t *in)
         if (in->buf->flush) {
             result.urgent = 1;
         }
+
+        in = in->next;
     }
 
     return result;
