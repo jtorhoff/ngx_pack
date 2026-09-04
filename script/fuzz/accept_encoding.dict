@@ -21,6 +21,20 @@
 ";q=0"
 " "
 "\x09"
+# One case variant, one superstring and one prefixed form per token
+# the target searches for. The superstrings are what the boundary
+# check exists to reject, so they are worth splicing rather than
+# leaving the fuzzer to assemble a letter at a time.
+#
+# "brotli" is the only one of these that people actually write - the
+# zstd and gzip forms below are invented for the same purpose. It is
+# also the hardest case, "br" being two characters and a prefix of it.
 "ZSTD"
 "zstdlib"
 "x-zstd"
+"BR"
+"brotli"
+"x-br"
+"GZIP"
+"gzipped"
+"x-gzip"

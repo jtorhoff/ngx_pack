@@ -63,6 +63,15 @@ ngx_pnalloc(ngx_pool_t *pool, size_t size)
     return malloc(size);
 }
 
+/* Every token this parser is ever handed: the zstd filter passes
+   "zstd", the Brotli filter "br", and the static module all three as
+   it walks pack_static_encodings. */
+static ngx_str_t const encodings[] = {
+    ngx_string("br"),
+    ngx_string("gzip"),
+    ngx_string("zstd"),
+};
+
 int
 LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 {
@@ -70,6 +79,7 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     ngx_table_elt_t    accept_encoding;
     ngx_str_t          encoding;
     u_char            *value;
+    size_t             idx;
 
     /* An nginx header value is a length and a pointer, with no
        terminator. Copy into a block of exactly "size" bytes so that
@@ -96,11 +106,33 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     r.http_version               = NGX_HTTP_VERSION_11;
     r.headers_in.accept_encoding = &accept_encoding;
 
-    /* The parser is generic over the encoding now; "zstd" is what
-       the filter and the static module both pass. */
-    ngx_str_set(&encoding, "zstd");
+    /* Every token the parser is ever asked for, against the same
+       input. The needle is not part of the input format on purpose:
+       spending an input byte to choose one would reinterpret the
+       first character of every seed already in corpus/, and the
+       parser is cheap enough that running it three times costs less
+       than losing them.
 
-    ngx_http_pack_claim_request(&r, &encoding);
+       "br" is the one that matters most here, and it is not the
+       obvious one. The boundary check only runs where
+       ngx_strlcasestrn finds the needle, so a four-character token
+       leaves most inputs returning NULL without reaching the guard
+       at all, while a two-character one reaches it constantly - and
+       the reject path, which steps the cursor past a match and
+       searches again, is only stressed when matches cluster the way
+       short needles make them.
+
+       It is also the only token with a superstring anyone writes:
+       "brotli" starts with "br", and the "after" test is the sole
+       thing keeping "Accept-Encoding: brotli" from selecting it.
+       Getting that wrong sends a client a coding it never asked for
+       and may not decode. Nothing standard begins with "zstd" or
+       "gzip", so their substring cases are invented; this one is
+       not. */
+    for (idx = 0; idx < sizeof(encodings) / sizeof(encodings[0]); idx++) {
+        encoding = encodings[idx];
+        ngx_http_pack_claim_request(&r, &encoding);
+    }
 
     free(value);
 
