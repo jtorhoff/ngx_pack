@@ -81,6 +81,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             cmake libpcre3-dev zlib1g-dev
 
+      # This job and the other sanitizer one build the libraries
+      # themselves rather than running script/build.sh, because that
+      # script builds nginx too and these need it configured with
+      # sanitizer flags. Both libraries are built plain: the sanitizer
+      # is here for this module's code, and instrumenting a vendored
+      # dependency only adds noise to look past.
+      #
+      # Kept as two steps so a failure names the library that failed.
       - name: Build zstd
         run: |
           cmake -S deps/zstd/build/cmake -B deps/zstd/out \
@@ -90,6 +98,15 @@ jobs:
                 -DZSTD_MULTITHREAD_SUPPORT=OFF \
                 -DZSTD_LEGACY_SUPPORT=OFF
           cmake --build deps/zstd/out --target libzstd_static -j "$(nproc)"
+
+      - name: Build Brotli
+        run: |
+          cmake -S deps/brotli -B deps/brotli/out \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DBROTLI_BUILD_TOOLS=OFF \
+                -DBROTLI_DISABLE_TESTS=ON
+          cmake --build deps/brotli/out --target brotlienc -j "$(nproc)"
 
       - name: Build nginx with AddressSanitizer
         run: |
@@ -128,6 +145,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             cmake libpcre3-dev zlib1g-dev
 
+      # This job and the other sanitizer one build the libraries
+      # themselves rather than running script/build.sh, because that
+      # script builds nginx too and these need it configured with
+      # sanitizer flags. Both libraries are built plain: the sanitizer
+      # is here for this module's code, and instrumenting a vendored
+      # dependency only adds noise to look past.
+      #
+      # Kept as two steps so a failure names the library that failed.
       - name: Build zstd
         run: |
           cmake -S deps/zstd/build/cmake -B deps/zstd/out \
@@ -137,6 +162,15 @@ jobs:
                 -DZSTD_MULTITHREAD_SUPPORT=OFF \
                 -DZSTD_LEGACY_SUPPORT=OFF
           cmake --build deps/zstd/out --target libzstd_static -j "$(nproc)"
+
+      - name: Build Brotli
+        run: |
+          cmake -S deps/brotli -B deps/brotli/out \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DBROTLI_BUILD_TOOLS=OFF \
+                -DBROTLI_DISABLE_TESTS=ON
+          cmake --build deps/brotli/out --target brotlienc -j "$(nproc)"
 
       - name: Build nginx with UndefinedBehaviorSanitizer
         run: |
