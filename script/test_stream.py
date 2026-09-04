@@ -2421,6 +2421,44 @@ def test_level_bounds(ctx):
         )
 
 
+HINT_CASES = [
+    ("none", True),  # the word: no hint at all
+    ("16k", True),  # the floor itself
+    ("1m", True),
+    ("8k", False),  # under the floor
+    ("0", False),  # a size of zero is not the word, and is held to the floor
+]
+
+
+@test("pack_zstd_hint takes a size at or above its floor, or \"none\"")
+def test_hint_bounds(ctx):
+    """The word and the floor are separate rules, and the point is that
+    they stay separate.
+
+    "none" means no hint rather than a small one, so it deliberately
+    does not pass through the floor - while "0", which is a size and not
+    the word, still does. Those two lines are one "else" apart in
+    ngx_http_pack_zstd_set_hint, and swapping them would be invisible
+    without this: a "none" clamped up to 16k and a "0" quietly accepted
+    both leave a server that runs."""
+    for size, want in HINT_CASES:
+        got, text = config_accepted(ctx, f"pack_zstd_hint {size};")
+        check(
+            got == want,
+            f"pack_zstd_hint {size}: expected "
+            f"{'accepted' if want else 'refused'}, got the opposite"
+            f"{'' if want else chr(10) + text}",
+        )
+
+    # The refusal is the only place an operator who wanted no hint
+    # finds out the word exists.
+    _, text = config_accepted(ctx, "pack_zstd_hint 8k;")
+    check(
+        "none" in text,
+        f"a refused size did not mention the word:\n{text}",
+    )
+
+
 def parse_size(text):
     """"16k" to 16384, the units ngx_parse_size accepts."""
     if text.endswith("k"):

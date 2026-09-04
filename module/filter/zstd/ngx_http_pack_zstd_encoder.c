@@ -1294,8 +1294,14 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
            sized to the worst case the window allows. A guess is all
            an unknown length can offer: a pledge is "controlled at end
            of frame" (zstd.h) and would fail every response that did
-           not happen to be exactly that long. pack_zstd_hint sets it.
-         */
+           not happen to be exactly that long.
+
+           pack_zstd_hint sets it, and defaults to none - which is 0,
+           the value libzstd reads as no hint at all. That travels the
+           same path rather than skipping it: ZSTD_CCtx_setParameter
+           takes 0 without a bounds check, and derive_tables above
+           already treats it as an unknown size, so neither call here
+           needs to know which of the two it is holding. */
         rc = ngx_http_pack_zstd_set_src_hint(
                  &(set_src_hint_args) {
                      .enc  = enc,

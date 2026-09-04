@@ -52,7 +52,9 @@ typedef enum {
  * has to know nginx has directives at all. "window_bits" is a
  * windowLog, not a size; "nbuffers" a ceiling, not an allocation;
  * "content_length" -1 when the size is unknown, which is what decides
- * between a pledge and "src_size_hint".
+ * between a pledge and "src_size_hint"; that hint is 0 when there is
+ * none to give, which libzstd reads as the parameter never having
+ * been set.
  */
 typedef struct {
     ngx_int_t level;
