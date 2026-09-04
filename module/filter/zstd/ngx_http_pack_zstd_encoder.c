@@ -1171,13 +1171,14 @@ ngx_http_pack_zstd_derive_tables(derive_tables_args *const args)
 static configure_encoder_result
 ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
 {
-    static ngx_str_t const level   = ngx_string("compressionLevel");
-    static ngx_str_t const window  = ngx_string("windowLog");
-    static ngx_str_t const workers = ngx_string("nbWorkers");
-    static ngx_str_t const hash    = ngx_string("hashLog");
-    static ngx_str_t const chain   = ngx_string("chainLog");
+    static ngx_str_t const level    = ngx_string("compressionLevel");
+    static ngx_str_t const window   = ngx_string("windowLog");
+    static ngx_str_t const workers  = ngx_string("nbWorkers");
+    static ngx_str_t const hash     = ngx_string("hashLog");
+    static ngx_str_t const chain    = ngx_string("chainLog");
+    static ngx_str_t const checksum = ngx_string("checksumFlag");
 
-    enum { nparams = 5 };
+    enum { nparams = 6 };
 
     set_param_args       params[nparams];
     ngx_uint_t           idx;
@@ -1239,6 +1240,23 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
         .param = ZSTD_c_chainLog,
         .value = tables.chain_log,
         .name  = &chain,
+    };
+
+    /* No trailing content checksum. HTTP has already framed and
+       verified the body by the time a decoder sees it - a
+       Content-Length or the chunked terminator, over TCP's own
+       checksums, and TLS where it is in use - so the four bytes buy
+       nothing here and every response pays them. Corruption this
+       would catch is corruption the transfer already failed to
+       deliver intact.
+       0 is the library default, set explicitly for the same reason
+       nbWorkers above is: so a vendored update cannot change it under
+       us. */
+    params[5] = (set_param_args) {
+        .enc   = enc,
+        .param = ZSTD_c_checksumFlag,
+        .value = 0,
+        .name  = &checksum,
     };
 
     for (idx = 0; idx < nparams; idx++) {
