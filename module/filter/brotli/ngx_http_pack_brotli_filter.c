@@ -29,7 +29,7 @@ static ngx_str_t const ENCODING = ngx_string("br");
    - when the caller asks for progress with a NULL chain - and it
    only ever delays a response whose length is still unknown, which
    is the case this exists to learn. */
-#define NGX_HTTP_PACK_BROTLI_HELD_INPUT (64 * 1024)
+#define NGX_HTTP_PACK_BROTLI_HELD_INPUT (32 * 1024)
 
 /* Compression level, spelled out rather than taken from
    BROTLI_MIN_QUALITY and BROTLI_MAX_QUALITY so that this file needs
@@ -37,7 +37,7 @@ static ngx_str_t const ENCODING = ngx_string("br");
    The encoder rejects anything the library will not take, so these
    only have to be no wider than Brotli's own range. */
 #define NGX_HTTP_PACK_BROTLI_LEVEL_MIN 0
-#define NGX_HTTP_PACK_BROTLI_LEVEL_MAX 11
+#define NGX_HTTP_PACK_BROTLI_LEVEL_MAX 6
 
 /* 1, matching pack_zstd_level's default so the two encoders are
    configured alike out of the box. Quality is the CPU axis, as the
