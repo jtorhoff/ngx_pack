@@ -857,6 +857,26 @@ class Nginx:
         except FileNotFoundError:
             return ""
 
+    def read_log_from(self, offset):
+        """(text, next offset) for whole lines logged after "offset".
+
+        For a caller reading the same growing log repeatedly. The tail is
+        cut at the last newline and left for the next call, so a line
+        caught half-written is never handed out in two pieces - which
+        would lose whichever field the split fell inside.
+        """
+        try:
+            with open(self.error_log, "rb") as handle:
+                handle.seek(offset)
+                raw = handle.read()
+        except FileNotFoundError:
+            return "", offset
+
+        cut = raw.rfind(b"\n") + 1
+        if not cut:
+            return "", offset
+        return raw[:cut].decode(errors="replace"), offset + cut
+
 
 # ---------------------------------------------------------------------------
 # HTTP helpers
@@ -1052,15 +1072,22 @@ def _frame_header(data):
     return window, pos
 
 
-def allocator_events(log, codec=ZSTD):
+def allocator_events(log, codec=ZSTD, into=None):
     """Replays the encoder's allocator trace, per connection.
 
     Tracks whether every pointer came back exactly once, the peak
     simultaneously-live byte count, and where frees sit relative to
     "http close request" - which nginx logs on entry to ngx_http_free_request,
     before the pool cleanup handlers run inside ngx_destroy_pool.
+
+    "into" continues an earlier call rather than starting over. Every
+    branch below only ever adds to a connection's slot, so replaying the
+    log in successive pieces gives what one pass over the whole of it
+    would - as long as the pieces break on line boundaries, which is
+    what Nginx.read_log_from guarantees. wait_for_encoder_release uses
+    it to avoid re-reading megabytes on every poll.
     """
-    stats = {}
+    stats = {} if into is None else into
 
     def slot(conn):
         return stats.setdefault(
@@ -1216,8 +1243,20 @@ def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
     # before any of the body reaches the client, so a short grace is
     # enough to tell "declined" from "the log has not caught up".
     empty_deadline = time.time() + 0.5
+
+    # Read the log forward rather than from the mark each time. A debug
+    # build writes megabytes for a soak of any size, and re-reading and
+    # re-parsing all of it on every poll costs more than the wait it is
+    # measuring - the reason this loop showed up as minutes on a slower
+    # runner while taking a second here.
+    offset = nginx.log_mark
+    stats = {}
+    delay = 0.02
     while True:
-        stats = allocator_events(nginx.read_log(), codec)
+        chunk, offset = nginx.read_log_from(offset)
+        if chunk:
+            allocator_events(chunk, codec, into=stats)
+
         active = [entry for entry in stats.values() if entry["allocs"]]
         settled = active and all(
             entry["closed"] and entry["allocs"] == entry["frees"] and not entry["live"]
@@ -1230,7 +1269,12 @@ def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
         if time.time() >= deadline:
             TEARDOWN_TIMEOUTS.append((codec.name, timeout))
             return stats
-        time.sleep(0.05)
+
+        # Backs off so a long wait costs a handful of polls rather than
+        # one every 50ms, while a teardown that lands immediately is
+        # still noticed within a couple of hundredths.
+        time.sleep(delay)
+        delay = min(delay * 1.5, 0.25)
 
 
 def assert_balanced(stats, label):
@@ -3279,7 +3323,13 @@ def test_hint_directive_reaches_encoder(ctx):
     codecs=CODECS,
 )
 def test_alloc_soak(ctx, codec):
-    rounds = 25
+    # What this asks is whether identical requests allocate identically
+    # and give it all back, which any repetition answers - drift shows
+    # between the first two that differ. The count is a cost, not a
+    # confidence level: at the 64-byte output buffer
+    # script/test-small-buffer.sh builds, one big.html response takes
+    # thousands of encoder rounds and every one is logged.
+    rounds = 8
     ctx.nginx.mark_log()
     for _ in range(rounds):
         fetch(ctx.port, codec.file("big.html"), codec.token)
@@ -3376,7 +3426,16 @@ def test_keepalive_allocation_balance(ctx, codec):
         f"no encoder allocation traced for any of {', '.join(paths)}",
     )
 
-    rounds = 10
+    # Enough repetition to make accumulation unmistakable and no more.
+    # An encoder held for the connection rather than the request shows
+    # up on the second one - at_request_start below reports every
+    # request that began with live memory - and by the twelfth the peak
+    # would be an order of magnitude past the 1.25x this allows. The
+    # count is not free: script/test-small-buffer.sh drives the same
+    # test at a 64-byte output buffer, where one big.html response
+    # takes thousands of encoder rounds and each is logged, so ten
+    # rounds wrote tens of megabytes of debug log per codec.
+    rounds = 4
     ctx.nginx.mark_log()
     soak = keepalive_soak(ctx, paths, rounds, codec)
 
