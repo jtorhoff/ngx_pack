@@ -20,8 +20,6 @@ script/build.sh puts it). Exits with the number of failed tests, so
 it can be chained after the existing suite.
 """
 
-from __future__ import annotations  # so "str | None" parses before Python 3.10
-
 import argparse
 import contextlib
 import gzip
@@ -37,6 +35,17 @@ import sys
 import tempfile
 import threading
 import time
+
+# One floor for every script here, stated once: the four others in
+# this directory import this module, so they inherit it. The runners
+# carry 3.12 and no job pins a version, so without this a script that
+# happened to work on something older locally would be running
+# somewhere CI never goes.
+if sys.version_info < (3, 12):
+    raise SystemExit(
+        f"python 3.12 or newer is required, this is "
+        f"{sys.version_info.major}.{sys.version_info.minor}"
+    )
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONF = os.path.join(ROOT, "script", "test_stream.conf")
