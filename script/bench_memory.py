@@ -112,6 +112,7 @@ http {{
     text/css css;
     application/javascript js;
     text/plain txt;
+    application/json json;
   }}
   default_type application/octet-stream;
 
@@ -119,7 +120,8 @@ http {{
   # text/html is deliberately absent: it is always compressed, and naming
   # it draws a "duplicate MIME type" warning into output meant for a
   # commit message.
-  {codec.directive}_types text/css application/javascript text/plain;
+  {codec.directive}_types text/css application/javascript text/plain
+                        application/json;
   {others}
 
   server {{

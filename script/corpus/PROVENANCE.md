@@ -18,8 +18,28 @@ at a clean boundary (a paragraph break, a CSS rule) rather than mid-token.
 | `app.js` | unminified UMD library build | [React 18.3.1 development build](https://unpkg.com/react@18.3.1/umd/react.development.js) | MIT |
 | `app.min.js` | minified UMD library build | [React DOM 18.3.1 production build](https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js) | MIT |
 | `prose.txt` | English prose, first ~256 KB | Tolstoy, *War and Peace* (Maude translation), via Project Gutenberg ebook 2600 | public domain (US) |
+| `api.json` | JSON API response, first 280 records | [USGS earthquake feed, all earthquakes past month](https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.geojson) | public domain (US) |
 
-Retrieved 2026-08-19.
+`wiki.html`, `site.css`, `app.js`, `app.min.js` and `prose.txt` retrieved
+2026-08-19; `api.json` 2026-09-05.
+
+## Notes on `api.json`
+
+Kept as the wire form: minified, UTF-8 rather than `\u` escapes, exactly as
+USGS serves it. Pretty-printed JSON is largely indentation and compresses
+spectacularly, which would flatter every codec and measure nothing anyone
+serves.
+
+Trimmed to the first 280 features - a whole-record boundary, the JSON
+equivalent of the paragraph break above, and the same slice a `limit`ed query
+would return. `metadata.count` and `bbox` were recomputed for the records that
+remain, so the envelope still describes its own contents rather than the 11,291
+it was cut from; nothing else was altered.
+
+The USGS is a US federal agency, so its authored data carries no copyright in
+the US (17 U.S.C. 105) and USGS publishes it as public domain. This is the only
+file here that is not `text/*`, which is why `test_stream.conf` names
+`application/json` in its `types` block as well as in `pack_*_types`.
 
 ## Notes on the two that are not MIT
 

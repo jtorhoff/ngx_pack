@@ -482,7 +482,14 @@ def make_dense_text(length, seed):
 # from a small list repeat at long range, so they compress far better and far
 # more predictably than real markup or code. See corpus/PROVENANCE.md.
 CORPUS = os.path.join(ROOT, "script", "corpus")
-CORPUS_FILES = ("wiki.html", "site.css", "app.js", "app.min.js", "prose.txt")
+CORPUS_FILES = (
+    "wiki.html",
+    "site.css",
+    "app.js",
+    "app.min.js",
+    "prose.txt",
+    "api.json",
+)
 
 
 def load_corpus():
@@ -1990,6 +1997,14 @@ def test_corpus_min_js(ctx, codec):
 @test("real prose round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
 def test_corpus_prose(ctx, codec):
     check_corpus_roundtrip(ctx, "prose.txt", codec=codec)
+
+
+# The only corpus file that is not text/*, so it is also what checks that a
+# type reaches the filter through pack_*_types rather than through the
+# always-compressed text/html the other five lean on.
+@test("real JSON round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
+def test_corpus_json(ctx, codec):
+    check_corpus_roundtrip(ctx, "api.json", codec=codec)
 
 
 @test(
