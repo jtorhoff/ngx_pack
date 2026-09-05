@@ -54,6 +54,83 @@ prefix of the entities is a valid `FeedMessage` as it stands and nothing needed
 recomputing; the trim was made by walking top-level fields and cutting on a
 field boundary, so no record is truncated mid-varint.
 
+### What is in it
+
+The schema, so a ratio measured on this file can be read against the types that
+produced it. Excerpted from
+[`gtfs-realtime.proto`](https://github.com/google/transit/blob/master/gtfs-realtime/proto/gtfs-realtime.proto)
+- copyright The GTFS Specifications Authors, Apache License 2.0 - and reduced
+to the messages and fields this particular file contains, which is 23 of the
+1,268 lines the full definition runs to. Field numbers are as declared there;
+nothing was renamed or renumbered.
+
+```proto
+message FeedMessage {
+  required FeedHeader header = 1;
+  repeated FeedEntity entity = 2;
+}
+
+message FeedHeader {
+  required string gtfs_realtime_version = 1;
+  optional Incrementality incrementality = 2;   // enum
+  optional uint64 timestamp = 3;
+}
+
+message FeedEntity {
+  required string id = 1;
+  optional TripUpdate trip_update = 3;
+}
+
+message TripDescriptor {
+  optional string start_time = 2;
+  optional string start_date = 3;
+  optional ScheduleRelationship schedule_relationship = 4;   // enum
+  optional string route_id = 5;
+  optional uint32 direction_id = 6;
+}
+
+message TripUpdate {
+  required TripDescriptor trip = 1;
+  repeated StopTimeUpdate stop_time_update = 2;
+  optional uint64 timestamp = 4;
+}
+
+message StopTimeUpdate {
+  optional StopTimeEvent arrival = 2;
+  optional StopTimeEvent departure = 3;
+  optional string stop_id = 4;
+  optional ScheduleRelationship schedule_relationship = 5;   // enum
+}
+
+message StopTimeEvent {
+  optional int64 time = 2;
+  optional int32 uncertainty = 3;
+}
+```
+
+Counted by walking the file against that schema:
+
+| proto type | fields present |
+|------------|---------------|
+| nested message | 18,748 |
+| `int64` | 12,136 |
+| `string` | 6,793 |
+| enum | 6,250 |
+| `int32` | 6,088 |
+| `uint64` | 182 |
+| `uint32` | 181 |
+
+That is 31,630 scalar fields inside 18,748 nested messages.
+
+Worth knowing before reading a ratio off it: there is **no floating point
+here at all**, no `float` and no `double`. `TripUpdate` has no such field to
+carry. Times are `int64` epoch seconds and identifiers are strings, so what
+this measures is the integer-and-string API, which is the common shape but not
+the universal one. The sibling `vehicle-positions` feed is about 20 per cent
+`float` - latitude, longitude, bearing, speed - and would measure something
+different; it was not used because at the hour this was captured it was 32 KB,
+far under the sizes here. `api.json` carries plenty of floats, but as text.
+
 **Attribution, required by CC BY 4.0:** © Digitransit / HSL, GTFS-realtime trip
 updates, retrieved 2026-09-05.
 
