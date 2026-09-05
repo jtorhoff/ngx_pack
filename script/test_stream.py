@@ -164,6 +164,7 @@ def test(
     needs_corpus=False,
     codecs=None,
     only=None,
+    label=None,
 ):
     """Registers a test. The body raises Failure to report a failure.
 
@@ -181,16 +182,24 @@ def test(
     written: this covers the one filter and nothing equivalent covers
     the other. The name then carries "[zstd only]", so the gap is
     legible in a passing run instead of having to be worked out by
-    reading the file. A test that drives neither filter in particular -
-    the pack_static ones, which serve siblings for all three encodings -
-    takes no marker at all.
+    reading the file.
+
+    "label" marks a test that is not about either filter - "[static]"
+    for the pack_static ones, which serve pre-compressed siblings for
+    all three encodings and share no code with the encoders. Without it
+    they read as an absence of coverage rather than as coverage of
+    something else.
     """
+    if only and label:
+        raise ValueError("a test is marked by one of only= or label=")
+
+    suffix = f" [{only.name} only]" if only else f" [{label}]" if label else ""
 
     def register(fn):
         if codecs is None:
             REGISTRY.append(
                 {
-                    "name": f"{name} [{only.name} only]" if only else name,
+                    "name": name + suffix,
                     "fn": fn,
                     "codec": only or ZSTD,
                     "needs_decoder": needs_decoder,
@@ -1353,7 +1362,7 @@ def check_corpus_roundtrip(ctx, name, path=None, codec=ZSTD):
     check(codec.decode(body) == original, f"{path}: decoded body differs")
 
 
-@test("pack_static serves a pre-compressed sibling", needs_decoder=True)
+@test("pack_static serves a pre-compressed sibling", needs_decoder=True, label="static")
 def test_static_module_serves_zst(ctx):
     if "precompressed.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the .zst fixture")
@@ -1378,7 +1387,7 @@ def test_static_module_serves_zst(ctx):
     )
 
 
-@test("pack_static declines a client that will not take zstd")
+@test("pack_static declines a client that will not take zstd", label="static")
 def test_static_module_declines_plain_client(ctx):
     if "precompressed.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the .zst fixture")
@@ -1397,7 +1406,7 @@ def test_static_module_declines_plain_client(ctx):
     )
 
 
-@test("every response from a pack_static location says it varies")
+@test("every response from a pack_static location says it varies", label="static")
 def test_static_vary_is_unconditional(ctx):
     """"pack_static on" is what makes the body depend on Accept-Encoding,
     and that is a property of the location rather than of the file, so the
@@ -1483,7 +1492,7 @@ def check_sibling_served(ctx, stem, accept_encoding, encoding, prefix="static"):
 SIBLING_EXTS = {name: ext for name, ext, _ in SIBLING_ENCODINGS}
 
 
-@test("pack_static serves every encoding the default config allows")
+@test("pack_static serves every encoding the default config allows", label="static")
 def test_static_all_encodings(ctx):
     """The default pack_static_encodings is br, gzip and zstd together, and
     the /static/ location does not narrow it. A client naming exactly one of
@@ -1492,7 +1501,7 @@ def test_static_all_encodings(ctx):
         check_sibling_served(ctx, "multi.html", encoding, encoding)
 
 
-@test("pack_static probes in the order pack_static_encodings named")
+@test("pack_static probes in the order pack_static_encodings named", label="static")
 def test_static_directive_order(ctx):
     """Two locations list the same three encodings in opposite orders. A
     client offering all three gets the first one the directive named, so the
@@ -1508,7 +1517,7 @@ def test_static_directive_order(ctx):
             )
 
 
-@test("the client's own order does not override the directive's")
+@test("the client's own order does not override the directive's", label="static")
 def test_static_client_order_ignored(ctx):
     """Accept-Encoding is read as a set of what the client will take, not as
     a ranking. Whatever order it lists them in, the directive decides."""
@@ -1520,7 +1529,7 @@ def test_static_client_order_ignored(ctx):
         check_sibling_served(ctx, "multi.html", accept, "zstd", prefix="order-zgb")
 
 
-@test("pack_static serves only the encodings the directive named")
+@test("pack_static serves only the encodings the directive named", label="static")
 def test_static_directive_subset(ctx):
     """A narrowed list still keeps its order, and an encoding left out of it
     is not served even when the client asks for it and the sibling is on
@@ -1532,7 +1541,7 @@ def test_static_directive_subset(ctx):
     check_sibling_served(ctx, "multi.html", "br", None, prefix="order-zg")
 
 
-@test("pack_static defaults to every encoding it knows, in table order")
+@test("pack_static defaults to every encoding it knows, in table order", label="static")
 def test_static_default_order(ctx):
     """/static/ leaves pack_static_encodings unwritten, so the default
     stands: all three, in the order the module's table lists them."""
@@ -1548,7 +1557,7 @@ def test_static_default_order(ctx):
         check_sibling_served(ctx, "multi.html", accept, expected)
 
 
-@test("pack_static steps over the candidates that have no sibling")
+@test("pack_static steps over the candidates that have no sibling", label="static")
 def test_static_probe_fallthrough(ctx):
     """Only one sibling exists, and the client accepts all three, so the
     module has to miss on the candidates ahead of it and keep going rather
@@ -1561,7 +1570,7 @@ def test_static_probe_fallthrough(ctx):
     check_sibling_served(ctx, "zst_only.html", "br, gzip", None)
 
 
-@test("pack_static skips an encoding the client refused with q=0")
+@test("pack_static skips an encoding the client refused with q=0", label="static")
 def test_static_zero_weight(ctx):
     """A zero weight takes that encoding out of the running without taking
     the request with it: the probe carries on to the next candidate."""
@@ -1570,13 +1579,13 @@ def test_static_zero_weight(ctx):
     check_sibling_served(ctx, "multi.html", "br;q=0, zstd;q=0, gzip;q=0", None)
 
 
-@test("pack_static ignores encodings it does not know")
+@test("pack_static ignores encodings it does not know", label="static")
 def test_static_unknown_encodings(ctx):
     for accept in ["deflate", "compress", "identity", "*", "x-gzip", "brotli"]:
         check_sibling_served(ctx, "multi.html", accept, None)
 
 
-@test("every sibling is served byte for byte and cached by its own name")
+@test("every sibling is served byte for byte and cached by its own name", label="static")
 def test_static_siblings_distinct(ctx):
     """Each encoding names a different file, and the three differ in length,
     so this also covers the constructed path being hashed over the right
@@ -1596,7 +1605,7 @@ def test_static_siblings_distinct(ctx):
     )
 
 
-@test("a sibling that cannot be served is stepped over, not fatal")
+@test("a sibling that cannot be served is stepped over, not fatal", label="static")
 def test_static_odd_siblings(ctx):
     """A sibling is an optimization, so anything wrong with one means only
     that it is not taken. gzip_static answers 404 for a file that is not
@@ -1634,7 +1643,7 @@ def test_static_odd_siblings(ctx):
         )
 
 
-@test("a subrequest is never served a sibling")
+@test("a subrequest is never served a sibling", label="static")
 def test_static_subrequest_declined(ctx):
     """An SSI include splices the child's body into the parent, so a
     sibling served there would put compressed bytes mid-page under a
@@ -1771,7 +1780,7 @@ AMBIGUITY_CASES = [
 ]
 
 
-@test("the ambiguous combination is warned about exactly once")
+@test("the ambiguous combination is warned about exactly once", label="static")
 def test_static_ambiguity_warned_once(ctx):
     """merge_conf runs once per block, so an ambiguous setting written in
     an enclosing block is seen again by every block that inherits it. The
@@ -1786,7 +1795,7 @@ def test_static_ambiguity_warned_once(ctx):
         )
 
 
-@test("a block that re-creates the ambiguity is warned about again")
+@test("a block that re-creates the ambiguity is warned about again", label="static")
 def test_static_ambiguity_recreated(ctx):
     """Suppressing the repeat cannot be done by marking a block reported
     and trusting that mark further down: a location can turn the
@@ -1812,7 +1821,7 @@ def test_static_ambiguity_recreated(ctx):
     check(got == 1, f"the nested location alone: expected 1, got {got}")
 
 
-@test("pack_static falls through when there is no .zst sibling")
+@test("pack_static falls through when there is no .zst sibling", label="static")
 def test_static_module_without_sibling(ctx):
     if "plain_only.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the fixtures")
