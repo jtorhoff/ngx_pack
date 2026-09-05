@@ -12,14 +12,23 @@
 #   JOBS        parallelism (default: number of processors)
 #   WITH_DEBUG  1 (default) to configure --with-debug; 0 for a
 #               release build - see the configure call below
+#   DEPS_ONLY   1 to build the vendored libraries and stop, leaving
+#               nginx alone. For a caller that needs nginx configured
+#               its own way - the sanitizer jobs in
+#               .github/workflows/ci.yml - which would otherwise carry
+#               a second copy of how the libraries are built. That
+#               copy is what made a Brotli submodule invisible to
+#               those jobs once already. NGINX_REF is not required
+#               here, nothing being cloned.
 #
 set -eux
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPS_ONLY="${DEPS_ONLY:-0}"
 # Checked here rather than left to git, which reports an unset ref
 # as the baffling "fatal: Remote branch  not found in upstream
 # origin".
-if [ -z "${NGINX_REF:-}" ]; then
+if [ "$DEPS_ONLY" != 1 ] && [ -z "${NGINX_REF:-}" ]; then
 	echo "NGINX_REF must be set, e.g. NGINX_REF=stable-1.30 $0" >&2
 	exit 1
 fi
@@ -67,6 +76,10 @@ cmake -S "$ROOT/deps/brotli" -B "$ROOT/deps/brotli/out" \
 	-DBROTLI_BUILD_TOOLS=OFF \
 	-DBROTLI_DISABLE_TESTS=ON
 cmake --build "$ROOT/deps/brotli/out" --target brotlienc -j "$JOBS"
+
+if [ "$DEPS_ONLY" = 1 ]; then
+	exit 0
+fi
 
 if [ ! -d "$ROOT/nginx" ]; then
 	git clone --depth 1 --branch "$NGINX_REF" \

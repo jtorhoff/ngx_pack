@@ -37,7 +37,10 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/build-deps
 
-      - name: Build zstd and nginx
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
+
+      - name: Build nginx
         run: script/build.sh
 
       - name: Prepare fixtures
@@ -86,33 +89,8 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/build-deps
 
-      # This job and the other sanitizer one build the libraries
-      # themselves rather than running script/build.sh, because that
-      # script builds nginx too and these need it configured with
-      # sanitizer flags. Both libraries are built plain: the sanitizer
-      # is here for this module's code, and instrumenting a vendored
-      # dependency only adds noise to look past.
-      #
-      # Kept as two steps so a failure names the library that failed.
-      - name: Build zstd
-        run: |
-          cmake -S deps/zstd/build/cmake -B deps/zstd/out \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DZSTD_BUILD_STATIC=ON \
-                -DZSTD_BUILD_SHARED=OFF \
-                -DZSTD_BUILD_PROGRAMS=OFF \
-                -DZSTD_MULTITHREAD_SUPPORT=OFF \
-                -DZSTD_LEGACY_SUPPORT=OFF
-          cmake --build deps/zstd/out --target libzstd_static -j "$(nproc)"
-
-      - name: Build Brotli
-        run: |
-          cmake -S deps/brotli -B deps/brotli/out \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DBROTLI_BUILD_TOOLS=OFF \
-                -DBROTLI_DISABLE_TESTS=ON
-          cmake --build deps/brotli/out --target brotlienc -j "$(nproc)"
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
 
       - name: Build nginx with AddressSanitizer
         run: |
@@ -155,33 +133,8 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/build-deps
 
-      # This job and the other sanitizer one build the libraries
-      # themselves rather than running script/build.sh, because that
-      # script builds nginx too and these need it configured with
-      # sanitizer flags. Both libraries are built plain: the sanitizer
-      # is here for this module's code, and instrumenting a vendored
-      # dependency only adds noise to look past.
-      #
-      # Kept as two steps so a failure names the library that failed.
-      - name: Build zstd
-        run: |
-          cmake -S deps/zstd/build/cmake -B deps/zstd/out \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DZSTD_BUILD_STATIC=ON \
-                -DZSTD_BUILD_SHARED=OFF \
-                -DZSTD_BUILD_PROGRAMS=OFF \
-                -DZSTD_MULTITHREAD_SUPPORT=OFF \
-                -DZSTD_LEGACY_SUPPORT=OFF
-          cmake --build deps/zstd/out --target libzstd_static -j "$(nproc)"
-
-      - name: Build Brotli
-        run: |
-          cmake -S deps/brotli -B deps/brotli/out \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DBROTLI_BUILD_TOOLS=OFF \
-                -DBROTLI_DISABLE_TESTS=ON
-          cmake --build deps/brotli/out --target brotlienc -j "$(nproc)"
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
 
       - name: Build nginx with UndefinedBehaviorSanitizer
         run: |
@@ -251,7 +204,10 @@ jobs:
       # variable read only by a debug call is set-but-unused, and
       # -Werror rejects it. One such error reached the tree and every
       # existing job passed.
-      - name: Build zstd and nginx without --with-debug
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
+
+      - name: Build nginx without --with-debug
         env:
           WITH_DEBUG: "0"
         run: script/build.sh
@@ -298,7 +254,10 @@ jobs:
 
       # For libzstd and the zstd CLI the suites decompress with;
       # test-small-buffer.sh builds only its own nginx tree.
-      - name: Build zstd and nginx
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
+
+      - name: Build nginx
         run: script/build.sh
 
       - name: Prepare fixtures
@@ -344,7 +303,10 @@ jobs:
 
       # For libzstd; test-oom.sh builds its own nginx tree, with the
       # allocation-fault hook compiled in.
-      - name: Build zstd and nginx
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
+
+      - name: Build nginx
         run: script/build.sh
 
       - name: Prepare fixtures
@@ -396,7 +358,10 @@ jobs:
       # build.sh keeps this job on the same nginx as the rest of the
       # workflow, at the cost of also building zstd, which the
       # fuzzers do not link.
-      - name: Build zstd and nginx
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
+
+      - name: Build nginx
         run: script/build.sh
 
       - name: Build the fuzz targets

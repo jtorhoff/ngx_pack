@@ -1,0 +1,40 @@
+name: Build the vendored libraries
+description: >
+  zstd and Brotli, from a cache when the submodules have not moved.
+  They are the same libraries in every job - built plain, never with a
+  sanitizer, since the sanitizers are here for this module's code - so
+  one cache entry serves them all.
+
+  Jobs that go on to build nginx their own way call this and stop;
+  jobs that call script/build.sh afterwards find the libraries already
+  built and cmake skips them.
+
+runs:
+  using: composite
+  steps:
+    # The submodule commits, not the superproject's: the libraries
+    # change when those move and at no other time. rev-parse reads
+    # them from the index without needing the submodules checked out.
+    - id: key
+      shell: bash
+      run: |
+        printf 'v=%s-%s-%s\n' \
+          "$(git rev-parse HEAD:deps/zstd)" \
+          "$(git rev-parse HEAD:deps/brotli)" \
+          "${CC:-cc}" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@v4
+      with:
+        path: |
+          deps/zstd/out
+          deps/brotli/out
+        # Architecture is in the key because the artefacts are object
+        # code. No restore-keys: a near-miss would restore libraries
+        # built from a different submodule and link them silently.
+        key: libs-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.v }}
+
+    # Unconditional. On a hit cmake finds everything current and
+    # returns in about a second, which is cheaper than the "if" that
+    # would skip it and cannot go stale.
+    - shell: bash
+      run: DEPS_ONLY=1 script/build.sh
