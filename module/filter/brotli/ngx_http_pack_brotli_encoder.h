@@ -46,8 +46,10 @@ typedef enum {
 /* What the directives settle before an encoder can exist. Passed in
  * rather than read from the location configuration, so nothing here
  * has to know nginx has directives at all. "window_bits" is an
- * lg_win, not a size; "content_length" -1 when unknown, which decides
- * whether the window fits the body or stays at the ceiling.
+ * lg_win, not a size; "content_length" -1 when unknown, and used only
+ * to decide whether anything is pledged - Brotli sizes its own
+ * buffers from the input it is handed, so a known length does not
+ * narrow them.
  */
 typedef struct {
     ngx_int_t quality;

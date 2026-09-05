@@ -618,30 +618,6 @@ ngx_http_pack_brotli_deliver_buf(deliver_buf_args *const args)
 }
 
 
-/* The window this response should actually use. Brotli's window costs
-   memory whether or not the body fills it, so the smallest window
-   spanning a known body compresses exactly as well as the ceiling for
-   less. An unknown length has nothing to narrow it with -
-   BROTLI_PARAM_SIZE_HINT does not shrink the window. */
-static size_t
-ngx_http_pack_brotli_window_bits(conf_t *const conf)
-{
-    size_t bits;
-
-    if (conf->content_length <= 0) {
-        return conf->window_bits;
-    }
-
-    bits = BROTLI_MIN_WINDOW_BITS;
-    while (bits < conf->window_bits &&
-           conf->content_length > ((off_t) 1 << bits)) {
-        bits++;
-    }
-
-    return bits;
-}
-
-
 encoder_t *
 ngx_http_pack_brotli_encoder_create(
     ngx_http_request_t *const r, conf_t *const conf)
@@ -649,7 +625,6 @@ ngx_http_pack_brotli_encoder_create(
     encoder_t          *enc;
     ngx_pool_cleanup_t *cln;
     BROTLI_BOOL         ok;
-    size_t              window_bits;
 
     enc = ngx_pcalloc(r->pool, sizeof(*enc));
     if (enc == NULL) {
@@ -659,8 +634,6 @@ ngx_http_pack_brotli_encoder_create(
     enc->request  = r;
     enc->conf     = *conf;
     enc->last_out = &enc->out;
-
-    window_bits = ngx_http_pack_brotli_window_bits(conf);
 
     /* Brotli's memory is not owned by the pool, so arrange for it to
        be released even if the request is aborted mid-stream.
@@ -700,14 +673,16 @@ ngx_http_pack_brotli_encoder_create(
     }
 
     ok = BrotliEncoderSetParameter(
-        enc->brotli, BROTLI_PARAM_LGWIN, (uint32_t) window_bits);
+        enc->brotli,
+        BROTLI_PARAM_LGWIN,
+        (uint32_t) conf->window_bits);
     if (!ok) {
         ngx_log_error(
             NGX_LOG_ALERT,
             r->connection->log,
             0,
             "BrotliEncoderSetParameter(LGWIN, %uD) failed",
-            (uint32_t) window_bits);
+            (uint32_t) conf->window_bits);
         return NULL;
     }
 
@@ -718,7 +693,7 @@ ngx_http_pack_brotli_encoder_create(
         "brotli encoder instance created and configured: "
         "quality: %i, window: %uz",
         conf->quality,
-        (size_t) 1 << window_bits);
+        (size_t) 1 << conf->window_bits);
 
     return enc;
 }

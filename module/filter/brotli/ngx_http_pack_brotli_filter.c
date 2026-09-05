@@ -58,9 +58,10 @@ enum {
 
 /* Window, in bits: the same range pack_zstd_window takes, narrower
    than Brotli's own. The ceiling is memory, paid per request in
-   flight; the floor is where ratio collapses. This bounds the
-   directive and not the encoder - a known length still shrinks the
-   window to fit. */
+   flight; the floor is where ratio collapses. Unlike zstd's, this is
+   what the encoder gets: Brotli bounds its own buffers by the input
+   it is given, so naming a smaller window for a small body changes
+   nothing it had not already worked out. */
 #define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MIN 14
 #define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MAX 20
 
