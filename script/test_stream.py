@@ -2367,6 +2367,60 @@ NO_TRANSFORM_CASES = [
 ]
 
 
+# proxy_buffer_size values the suite names rather than inherits.
+# nginx derives the default from the page size, so an inherited one is
+# 4k on Linux and 16k on Apple Silicon.
+DELIVERY_SIZES = ("1k", "4k", "16k")
+
+
+@test("delivery in pieces of any size gives the same bytes",
+      needs_decoder=True, codecs=CODECS)
+def test_delivery_shape(ctx, codec):
+    """How a proxied body is cut into buffers must not change what the
+    client receives.
+
+    It is not obvious that it would not. Brotli sizes its one-pass hash
+    table from how much input a single call brings, so the same
+    response costs a quarter of the memory when it arrives in small
+    pieces; zstd folds flush markers, and every proxy buffer carries
+    one. Both mean the encoder does measurably different work for the
+    same body, and the framing it emits differs with it.
+
+    What must not differ is the body. The suite would otherwise only
+    ever see one shape per host, because proxy_buffer_size defaults to
+    the page size: 4k on Linux, 16k on Apple Silicon. That difference
+    is what made test_keepalive_allocation_balance pass here and fail
+    on CI, and adding an arm64 runner does not cover it - Ubuntu on
+    arm64 uses 4k pages too.
+    """
+    expected = ctx.fixtures["big.html"]
+    decoded = {}
+
+    for size in DELIVERY_SIZES:
+        path = codec.path(f"bufsize-{size}", "big.html")
+        _, headers, body = fetch(ctx.port, path, codec.token)
+
+        check(
+            headers.get("content-encoding") == codec.token,
+            f"proxy_buffer_size {size} answered "
+            f"{headers.get('content-encoding')!r}, so this compared nothing",
+        )
+        decoded[size] = codec.decode(body)
+        check(
+            decoded[size] == expected,
+            f"proxy_buffer_size {size} produced {len(decoded[size])} bytes "
+            f"that differ from the {len(expected)} sent",
+        )
+
+    # Stated separately from the per-size checks above: those could all
+    # be wrong in the same way against a fixture that changed underfoot.
+    check(
+        len(set(decoded.values())) == 1,
+        "the three delivery shapes decoded to different bodies: "
+        + ", ".join(f"{s} {len(d)} bytes" for s, d in decoded.items()),
+    )
+
+
 @test("no-transform on the response is honoured", codecs=CODECS)
 def test_no_transform(ctx, codec):
     """RFC 9111 section 5.2.2.6: an origin sending "no-transform" is
