@@ -14,15 +14,17 @@ permissions:
 
 jobs:
   test:
-    name: Build with ${{ matrix.cc }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build with ${{ matrix.cc }} (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       # One compiler failing should not hide the other, and neither
       # architecture should hide the other.
       fail-fast: false
       matrix:
         cc: [gcc, clang]
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        platform:
+          - { name: linux (amd64), runner: ubuntu-24.04 }
+          - { name: linux (arm64), runner: ubuntu-24.04-arm }
 
     env:
       CC: ${{ matrix.cc }}
@@ -70,13 +72,15 @@ jobs:
           done
 
   sanitizers:
-    name: Run tests with address sanitizer on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Run tests with address sanitizer (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       # Neither architecture should hide the other.
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        platform:
+          - { name: linux (amd64), runner: ubuntu-24.04 }
+          - { name: linux (arm64), runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -139,13 +143,15 @@ jobs:
         run: python3 script/test_stream.py --nginx nginx/objs/nginx
 
   undefined-behavior:
-    name: Run tests with undefined behavior sanitizer on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Run tests with undefined behavior sanitizer (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       # Neither architecture should hide the other.
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        platform:
+          - { name: linux (amd64), runner: ubuntu-24.04 }
+          - { name: linux (arm64), runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -229,13 +235,15 @@ jobs:
           echo "none of them name this module"
 
   release:
-    name: Build and test without --with-debug on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build and test without --with-debug (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       # Neither architecture should hide the other.
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        platform:
+          - { name: linux (amd64), runner: ubuntu-24.04 }
+          - { name: linux (arm64), runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -281,13 +289,15 @@ jobs:
           done
 
   small-buffer:
-    name: Run tests with a 64-byte output buffer on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Run tests with a 64-byte output buffer (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       # Neither architecture should hide the other.
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        platform:
+          - { name: linux (amd64), runner: ubuntu-24.04 }
+          - { name: linux (arm64), runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -328,13 +338,15 @@ jobs:
           done
 
   out-of-memory:
-    name: Run the out-of-memory paths on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Run the out-of-memory paths (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       # Neither architecture should hide the other.
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        platform:
+          - { name: linux (amd64), runner: ubuntu-24.04 }
+          - { name: linux (arm64), runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -370,13 +382,15 @@ jobs:
           done
 
   fuzz:
-    name: Fuzz the Accept-Encoding parser on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Fuzz the Accept-Encoding parser (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       # Neither architecture should hide the other.
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        platform:
+          - { name: linux (amd64), runner: ubuntu-24.04 }
+          - { name: linux (arm64), runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -440,15 +454,16 @@ jobs:
           if-no-files-found: ignore
 
   format:
-    name: Check formatting with clang-format on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Check formatting with clang-format (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
       matrix:
         # Newer than the other jobs on purpose: .clang-format sets
         # AlignFunctionDeclarations, added in clang-format 19, and
         # 24.04 ships 18.
-        os: [ubuntu-26.04]
+        platform:
+          - { name: linux (amd64), runner: ubuntu-26.04 }
     steps:
       - uses: actions/checkout@v4
 
