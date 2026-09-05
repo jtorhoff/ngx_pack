@@ -1129,24 +1129,31 @@ typedef struct {
 /* How big the match finder's tables should be. zstd derives them from
    the level alone, which says nothing about the window: at the window
    floor it asks for a hash table several times the window it indexes,
-   memory no response can fill. Capping both at the window returns
-   most of that for almost no ratio. */
+   memory no response can fill.
+
+   Capped a bit below the window rather than at it. The first bit
+   under is very nearly free - it halves the hash table, which is the
+   largest thing here - and the second is not, which is what decides
+   where this stops. script/bench_memory.py and script/bench_corpus.py
+   measure the trade for a given corpus. */
 static derive_tables_result
 ngx_http_pack_zstd_derive_tables(derive_tables_args *const args)
 {
     ZSTD_compressionParameters cparams;
-    uint32_t                   window;
+    uint32_t                   cap;
 
-    window  = (uint32_t) args->window_bits;
+    /* pack_zstd_window's floor is 14, so this never approaches
+       ZSTD_HASHLOG_MIN. */
+    cap     = (uint32_t) args->window_bits - 1;
     cparams = ZSTD_getCParams(
         (int32_t) args->level, args->expected, 0);
 
-    cparams.windowLog = window;
+    cparams.windowLog = (uint32_t) args->window_bits;
     cparams = ZSTD_adjustCParams(cparams, args->expected, 0);
 
     return (derive_tables_result) {
-        .hash_log  = (int32_t) ngx_min(cparams.hashLog, window),
-        .chain_log = (int32_t) ngx_min(cparams.chainLog, window),
+        .hash_log  = (int32_t) ngx_min(cparams.hashLog, cap),
+        .chain_log = (int32_t) ngx_min(cparams.chainLog, cap),
     };
 }
 
