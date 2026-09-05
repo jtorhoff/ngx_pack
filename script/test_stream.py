@@ -149,15 +149,15 @@ ZSTD = Codec("zstd", "zstd", ".zst", "pack_zstd", "", "zstd", ("zstdlib",))
 BROTLI = Codec("brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",))
 
 
-# What a test line is prefixed with: the tag right-aligned in the width
-# of the longest, so the names beside them line up - "  [zstd]",
-# "[brotli]", "[static]", "   [all]". Built from log_tag rather than
-# log_tag being the bracketed form itself, that string being
-# interpolated into the allocator regexes below, where "[zstd]" would
-# be a character class matching none of the lines it is meant to find.
+# What a test line is prefixed with: the tag clipped to four characters
+# and right-aligned in that width, so all are six columns with their
+# brackets and the names beside them line up - "[zstd]", "[brot]",
+# "[stat]", " [all]". Nothing collides at four. Built from log_tag, not
+# log_tag from it: that string goes into the allocator regexes below,
+# where "[zstd]" would be a character class matching nothing.
 def tag_for(text):
-    pad = 6 - len(text)
-    return f"{' ' * (pad)}[{text}]"
+    pad = 4 - len(text)
+    return f"{' ' * (pad)}[{text[:4]}]"
 
 
 CODECS = [ZSTD, BROTLI]
