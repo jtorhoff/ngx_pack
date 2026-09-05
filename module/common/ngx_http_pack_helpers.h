@@ -60,4 +60,38 @@ ngx_http_pack_format_size(ngx_pool_t *const pool, size_t const bytes)
     };
 }
 
+/* Whether the response may be re-encoded at all.
+
+   "Cache-Control: no-transform" is the origin saying its payload must
+   reach the client as it left - RFC 9111 section 5.2.2.6 - and
+   compressing it is exactly the transformation that forbids. nginx's
+   own gzip filter does not look, so a response carrying it is
+   compressed there; this declines instead.
+
+   The header may be repeated and may carry several directives, so the
+   token is found with nginx's own multi-header walk rather than a
+   substring search that would also match "no-transform-x".
+
+   Returns NGX_OK when compression is allowed, NGX_DECLINED when not.
+ */
+static ngx_int_t
+ngx_http_pack_transform_allowed(ngx_http_request_t *const r)
+{
+    static ngx_str_t const no_transform = ngx_string("no-transform");
+
+    if (r->headers_out.cache_control == NULL) {
+        return NGX_OK;
+    }
+
+    if (ngx_http_parse_multi_header_lines(
+            r,
+            r->headers_out.cache_control,
+            (ngx_str_t *) &no_transform,
+            NULL) != NULL) {
+        return NGX_DECLINED;
+    }
+
+    return NGX_OK;
+}
+
 #endif /* NGX_HTTP_PACK_HELPERS_H_INCLUDED_ */

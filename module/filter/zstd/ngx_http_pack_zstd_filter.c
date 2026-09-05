@@ -514,6 +514,14 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
         };
     }
 
+    /* An origin that sent "Cache-Control: no-transform" has asked for
+       its payload to arrive as it left. */
+    if (ngx_http_pack_transform_allowed(r) != NGX_OK) {
+        return (preflight_result) {
+            .status = NGX_DECLINED,
+        };
+    }
+
     /* Bypass already compressed responses. */
     if (r->headers_out.content_encoding &&
         r->headers_out.content_encoding->value.len) {

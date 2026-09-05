@@ -678,6 +678,10 @@ class Upstream:
                 self._status(conn, int(path.rsplit("/", 1)[-1]))
                 return
 
+            if path.startswith("/cc/"):
+                self._cache_control(conn, path.rsplit("/", 1)[-1])
+                return
+
             if path.startswith("/vary/"):
                 self._vary(conn, path.rsplit("/", 1)[-1])
                 return
@@ -777,6 +781,25 @@ class Upstream:
                 f"{extra}Content-Length: {len(body)}\r\n\r\n"
             ).encode()
             + body
+        )
+
+    # Long enough to clear every min_length this suite configures, so a
+    # response declined here was declined for the header and not its size.
+    TRANSFORM_BODY = (b"<html><body>" + b"no-transform payload " * 60
+                      + b"</body></html>")
+
+    def _cache_control(self, conn, directives):
+        """Replies with the given Cache-Control, or none for "plain"."""
+        extra = (
+            "" if directives == "plain"
+            else f"Cache-Control: {directives.replace('+', ', ')}\r\n"
+        )
+        conn.sendall(
+            (
+                f"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                f"{extra}Content-Length: {len(self.TRANSFORM_BODY)}\r\n\r\n"
+            ).encode()
+            + self.TRANSFORM_BODY
         )
 
     def _vary(self, conn, case):
@@ -2328,6 +2351,45 @@ PRECEDENCE_CASES = [
     ("br", "br"),
     ("gzip", "gzip"),
 ]
+
+
+# What the upstream sends as Cache-Control, and whether the response
+# may then be compressed. "+" becomes ", " on the way out.
+NO_TRANSFORM_CASES = [
+    ("plain", True),
+    ("max-age=60", True),
+    ("no-transform", False),
+    ("public+no-transform", False),
+    ("no-transform+max-age=60", False),
+    # A token that merely starts the same way is a different directive.
+    ("no-transform-x", True),
+    ("NO-TRANSFORM", False),
+]
+
+
+@test("no-transform on the response is honoured", codecs=CODECS)
+def test_no_transform(ctx, codec):
+    """RFC 9111 section 5.2.2.6: an origin sending "no-transform" is
+    saying its payload must reach the client as it left, and
+    compressing it is exactly the transformation that forbids.
+
+    nginx's own gzip filter does not look at this, so this is a
+    deliberate departure rather than parity.
+
+    The accepting rows are not decoration. Without them a gate that
+    declined every response carrying any Cache-Control at all would
+    pass, and so would one that matched "no-transform" as a substring
+    of a longer directive.
+    """
+    for directives, want_compressed in NO_TRANSFORM_CASES:
+        _, headers, _ = fetch(ctx.port, f"/cc/{directives}", codec.token)
+        got = headers.get("content-encoding")
+        check(
+            (got == codec.token) == want_compressed,
+            f"Cache-Control: {directives.replace('+', ', ')!r} was answered "
+            f"with {got!r}; expected "
+            f"{'compression' if want_compressed else 'none'}",
+        )
 
 
 @test("a proxied request is declined unless proxied is any", codecs=CODECS)
