@@ -1171,6 +1171,12 @@ def allocator_timeline(log, codec=ZSTD):
     }
 
 
+# Every wait_for_encoder_release call that gave up, as (codec, timeout).
+# The runner reads the length either side of a test to tell whether that
+# test spent its time waiting rather than working.
+TEARDOWN_TIMEOUTS = []
+
+
 def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
     """Polls the debug log until every traced request has been torn down.
 
@@ -1195,8 +1201,21 @@ def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
 
     Returns the stats either way: on a real leak this times out, and the
     caller's assertions then report what actually went wrong.
+
+    Giving up is recorded in TEARDOWN_TIMEOUTS rather than kept quiet.
+    A test whose assertions pass anyway is otherwise indistinguishable
+    from one that settled at once, except that it took the whole
+    timeout - which reads as a hung suite rather than as the signal it
+    is.
     """
     deadline = time.time() + timeout
+    # Nothing traced at all is a different answer from not settled yet.
+    # A response the filter declined - one under min_length, say - never
+    # builds an encoder, so waiting the whole timeout for one to appear
+    # turns a legitimate pass into a stall. The allocation is logged
+    # before any of the body reaches the client, so a short grace is
+    # enough to tell "declined" from "the log has not caught up".
+    empty_deadline = time.time() + 0.5
     while True:
         stats = allocator_events(nginx.read_log(), codec)
         active = [entry for entry in stats.values() if entry["allocs"]]
@@ -1204,7 +1223,12 @@ def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
             entry["closed"] and entry["allocs"] == entry["frees"] and not entry["live"]
             for entry in active
         )
-        if settled or time.time() >= deadline:
+        if settled:
+            return stats
+        if not active and time.time() >= empty_deadline:
+            return stats
+        if time.time() >= deadline:
+            TEARDOWN_TIMEOUTS.append((codec.name, timeout))
             return stats
         time.sleep(0.05)
 
@@ -3682,6 +3706,8 @@ def main():
         for entry in REGISTRY:
             name = entry["name"]
             codec = entry["codec"]
+            waits = len(TEARDOWN_TIMEOUTS)
+            started = time.time()
             if entry["needs_decoder"] and codec.decode is None:
                 results.append(
                     (SKIP, name, f"no {codec.name} decoder available")
@@ -3701,8 +3727,20 @@ def main():
                 # the run and leave nginx behind.
                 except Exception as error:  # noqa: BLE001
                     results.append((FAIL, name, f"{type(error).__name__}: {error}"))
+            elapsed = time.time() - started
+
             status, _, detail = results[-1]
-            print(f"{status:<5} {name:<{width}} {detail}")
+            # A test that passed only after waiting out an encoder teardown
+            # says so. Without this the wait is invisible: the assertions
+            # can still hold, and all that shows is a suite that seems to
+            # stall somewhere near here.
+            gave_up = len(TEARDOWN_TIMEOUTS) - waits
+            if gave_up:
+                detail = (
+                    f"{detail} " if detail else ""
+                ) + f"[{gave_up} encoder teardown wait(s) timed out]"
+            line = f"{status:<5} {name:<{width}} {detail}".rstrip()
+            print(f"{line}, {elapsed:.1f}s")
     finally:
         ctx.nginx.stop()
         upstream.shutdown()
