@@ -508,6 +508,15 @@ def build_fixtures(work):
         # short-lived per-block allocations the memory tests care about, and
         # large enough that windowLog is not reduced below pack_zstd_window.
         "big.html": f"<html><body>{make_text(200000, 1)}</body></html>",
+        # What big.html is for, at a tenth of its compressed size: still
+        # past the 128 KB block maximum and far past any window either
+        # codec defaults to, so an encoder built for it is the full-sized
+        # one, but an order of magnitude cheaper to serve under
+        # script/test-small-buffer.sh. Every 64 bytes of compressed output
+        # is a round there, and nginx logs several lines per round, so a
+        # test that only needs "a real encoder, many times over" pays for
+        # big.html's extra megabyte in debug log rather than in coverage.
+        "medium.html": f"<html><body>{make_text(24000, 11)}</body></html>",
         # Over pack_zstd_min_length, but small enough that a known Content-Length
         # drives windowLog well below pack_zstd_window.
         "small.html": f"<html><body>{make_text(200, 2)}</body></html>",
@@ -3596,13 +3605,14 @@ def test_alloc_soak(ctx, codec):
     # What this asks is whether identical requests allocate identically
     # and give it all back, which any repetition answers - drift shows
     # between the first two that differ. The count is a cost, not a
-    # confidence level: at the 64-byte output buffer
-    # script/test-small-buffer.sh builds, one big.html response takes
-    # thousands of encoder rounds and every one is logged.
+    # confidence level, and so is the body: at the 64-byte output buffer
+    # script/test-small-buffer.sh builds, every 64 bytes of compressed
+    # output is a logged round, and medium.html builds the same
+    # full-sized encoder big.html would for a tenth of them.
     rounds = 8
     ctx.nginx.mark_log()
     for _ in range(rounds):
-        fetch(ctx.port, codec.file("big.html"), codec.token)
+        fetch(ctx.port, codec.file("medium.html"), codec.token)
     active = assert_balanced(wait_for_encoder_release(ctx.nginx, codec=codec), "soak")
 
     check(
@@ -3661,9 +3671,9 @@ def test_keepalive_allocation_balance(ctx, codec):
     expensive kind rather than a fixed figure, so it stays honest if
     the vendored zstd changes what an encoder costs.
     """
-    buffered = codec.path("buffered", "big.html")
+    buffered = codec.path("buffered", "medium.html")
     paths = [
-        codec.file("big.html"),
+        codec.file("medium.html"),
         buffered,
         codec.file("under_min.html"),
     ]
@@ -3701,11 +3711,14 @@ def test_keepalive_allocation_balance(ctx, codec):
     # An encoder held for the connection rather than the request shows
     # up on the second one - at_request_start below reports every
     # request that began with live memory - and by the twelfth the peak
-    # would be an order of magnitude past the 1.25x this allows. The
-    # count is not free: script/test-small-buffer.sh drives the same
-    # test at a 64-byte output buffer, where one big.html response
-    # takes thousands of encoder rounds and each is logged, so ten
-    # rounds wrote tens of megabytes of debug log per codec.
+    # would be an order of magnitude past the 1.25x this allows.
+    #
+    # Neither the count nor the body is free: script/test-small-buffer.sh
+    # drives this at a 64-byte output buffer, where every 64 bytes of
+    # compressed output is a logged round. medium.html rather than
+    # big.html for that reason - both build the same full-sized encoder,
+    # so the peaks this compares are identical either way, and the extra
+    # megabyte only ever became debug log.
     rounds = 4
     ctx.nginx.mark_log()
     soak = keepalive_soak(ctx, paths, rounds, codec)
