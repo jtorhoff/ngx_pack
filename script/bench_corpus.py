@@ -160,18 +160,14 @@ def label_for(codec, level, window):
 def run_codec(codec, args, corpus, names, nginx_bin, summary):
     """Measures every (level, window) pair for one codec, in its own nginx."""
     levels = [lv.strip() for lv in args.level.split(",") if lv.strip()] or [""]
-    windows = (
-        [w.strip() for w in args.window.split(",")] if args.window else [""]
-    )
+    windows = [w.strip() for w in args.window.split(",")] if args.window else [""]
 
     work = tempfile.mkdtemp(prefix=f"ngx-bench-{codec.name}-")
     html = os.path.join(work, "html")
     os.makedirs(os.path.join(work, "logs"), exist_ok=True)
     for level in levels:
         for window in windows:
-            directory = os.path.join(
-                html, location(codec, level, window).strip("/")
-            )
+            directory = os.path.join(html, location(codec, level, window).strip("/"))
             os.makedirs(directory, exist_ok=True)
             for name, blob in corpus.items():
                 with open(os.path.join(directory, name), "wb") as handle:
@@ -186,8 +182,7 @@ def run_codec(codec, args, corpus, names, nginx_bin, summary):
             for window in windows:
                 print(f"### {label_for(codec, level, window)}")
                 print(
-                    f"{'file':>12} {'raw':>9} {'compressed':>11} "
-                    f"{'ratio':>7} {'ms':>8}"
+                    f"{'file':>12} {'raw':>9} {'compressed':>11} {'ratio':>7} {'ms':>8}"
                 )
                 print("-" * 52)
 
@@ -205,9 +200,7 @@ def run_codec(codec, args, corpus, names, nginx_bin, summary):
                     raw = len(corpus[name])
                     total_raw += raw
                     total_out += len(body)
-                    elapsed = bench_once(
-                        args.port, path, codec.token, args.repeat
-                    )
+                    elapsed = bench_once(args.port, path, codec.token, args.repeat)
                     total_ms += elapsed
                     print(
                         f"{name:>12} {raw:>9,} {len(body):>11,} "
@@ -238,8 +231,7 @@ def print_summary(rows):
     """Every configuration on one page, for pasting into a commit message."""
     print("### summary")
     print(
-        f"{'codec':>8} {'level':>8} {'window':>8} {'bytes':>11} "
-        f"{'ratio':>7} {'ms':>8}"
+        f"{'codec':>8} {'level':>8} {'window':>8} {'bytes':>11} {'ratio':>7} {'ms':>8}"
     )
     print("-" * 54)
     for row in rows:
@@ -272,8 +264,7 @@ def main():
     parser.add_argument(
         "--window",
         default="",
-        help="comma-separated window values; empty means the compiled-in "
-        "default",
+        help="comma-separated window values; empty means the compiled-in default",
     )
     parser.add_argument(
         "--repeat",
@@ -288,8 +279,7 @@ def main():
     unknown = [name for name in wanted if name not in by_name]
     if unknown:
         raise SystemExit(
-            f"error: no such codec {', '.join(unknown)}. "
-            f"Known: {', '.join(by_name)}"
+            f"error: no such codec {', '.join(unknown)}. Known: {', '.join(by_name)}"
         )
     codecs = [by_name[name] for name in wanted]
 

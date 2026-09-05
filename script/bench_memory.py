@@ -172,9 +172,7 @@ def measure(nginx, port, path, codec):
         # Every size the encoder asked for, in order. The peak alone says
         # how much; this says what of - a constant context shell plus one
         # workspace that carries all the variation, at the time of writing.
-        "sizes": [
-            int(m.group(3)) for m in codec.alloc_re.finditer(nginx.read_log())
-        ],
+        "sizes": [int(m.group(3)) for m in codec.alloc_re.finditer(nginx.read_log())],
     }
 
 
@@ -192,18 +190,14 @@ def label_for(codec, level, window):
 def run_codec(codec, args, corpus, names, nginx_bin, summary):
     """Measures every (level, window) pair for one codec, in its own nginx."""
     levels = [lv.strip() for lv in args.level.split(",") if lv.strip()] or [""]
-    windows = (
-        [w.strip() for w in args.window.split(",")] if args.window else [""]
-    )
+    windows = [w.strip() for w in args.window.split(",")] if args.window else [""]
 
     work = tempfile.mkdtemp(prefix=f"ngx-mem-{codec.name}-")
     html = os.path.join(work, "html")
     os.makedirs(os.path.join(work, "logs"), exist_ok=True)
     for level in levels:
         for window in windows:
-            directory = os.path.join(
-                html, location(codec, level, window).strip("/")
-            )
+            directory = os.path.join(html, location(codec, level, window).strip("/"))
             os.makedirs(directory, exist_ok=True)
             for name, blob in corpus.items():
                 with open(os.path.join(directory, name), "wb") as handle:
@@ -276,8 +270,7 @@ def print_summary(rows):
     print("-" * 40)
     for row in rows:
         print(
-            f"{row['codec']:>8} {row['level']:>8} {row['window']:>8} "
-            f"{row['peak']:>12,}"
+            f"{row['codec']:>8} {row['level']:>8} {row['window']:>8} {row['peak']:>12,}"
         )
     print()
 
@@ -303,8 +296,7 @@ def main():
     parser.add_argument(
         "--window",
         default="",
-        help="comma-separated window values; empty means the compiled-in "
-        "default",
+        help="comma-separated window values; empty means the compiled-in default",
     )
     args = parser.parse_args()
 
@@ -313,8 +305,7 @@ def main():
     unknown = [name for name in wanted if name not in by_name]
     if unknown:
         raise SystemExit(
-            f"error: no such codec {', '.join(unknown)}. "
-            f"Known: {', '.join(by_name)}"
+            f"error: no such codec {', '.join(unknown)}. Known: {', '.join(by_name)}"
         )
     codecs = [by_name[name] for name in wanted]
 

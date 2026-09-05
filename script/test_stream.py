@@ -140,19 +140,16 @@ ZSTD = Codec("zstd", "zstd", ".zst", "pack_zstd", "", "zstd", ("zstdlib",))
 BROTLI = Codec("brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",))
 
 
-# What a test line is prefixed with. Centred in the width of the
-# longest tag so the names below them line up: "[ zstd ]", "[brotli]",
-# "[static]", "[  all ]". Built from log_tag rather than log_tag being
-# the bracketed form itself - that string is interpolated into the
-# allocator regexes below, where "[ zstd ]" is a character class and
-# matches none of the debug lines it is meant to find.
-#
-# An odd space goes to the left, where "{:^6}" would put it on the
-# right. It only shows on "all", and only against a column of tags that
-# are otherwise flush.
+# What a test line is prefixed with: the tag right-aligned in the width
+# of the longest, so the names beside them line up - "  [zstd]",
+# "[brotli]", "[static]", "   [all]". Built from log_tag rather than
+# log_tag being the bracketed form itself, that string being
+# interpolated into the allocator regexes below, where "[zstd]" would
+# be a character class matching none of the lines it is meant to find.
 def tag_for(text):
     pad = 6 - len(text)
-    return f"[{' ' * (pad - pad // 2)}{text}{' ' * (pad // 2)}]"
+    return f"{' ' * (pad)}[{text}]"
+
 
 CODECS = [ZSTD, BROTLI]
 
@@ -785,13 +782,13 @@ class Upstream:
 
     # Long enough to clear every min_length this suite configures, so a
     # response declined here was declined for the header and not its size.
-    TRANSFORM_BODY = (b"<html><body>" + b"no-transform payload " * 60
-                      + b"</body></html>")
+    TRANSFORM_BODY = b"<html><body>" + b"no-transform payload " * 60 + b"</body></html>"
 
     def _cache_control(self, conn, directives):
         """Replies with the given Cache-Control, or none for "plain"."""
         extra = (
-            "" if directives == "plain"
+            ""
+            if directives == "plain"
             else f"Cache-Control: {directives.replace('+', ', ')}\r\n"
         )
         conn.sendall(
@@ -1394,7 +1391,7 @@ def check_corpus_roundtrip(ctx, name, path=None, codec=ZSTD):
         f"{path}: compressed body ({len(body)}) is not smaller than the "
         f"original ({len(original)})",
     )
-    check(codec.decode(body) == original, f"{path}: decoded body differs")
+    check(codec.decode(body) == original, f"{path}: decoded body differs")  # type: ignore
 
 
 @test("pack_static serves a pre-compressed sibling", needs_decoder=True, label="static")
@@ -2373,8 +2370,11 @@ NO_TRANSFORM_CASES = [
 DELIVERY_SIZES = ("1k", "4k", "16k")
 
 
-@test("delivery in pieces of any size gives the same bytes",
-      needs_decoder=True, codecs=CODECS)
+@test(
+    "delivery in pieces of any size gives the same bytes",
+    needs_decoder=True,
+    codecs=CODECS,
+)
 def test_delivery_shape(ctx, codec):
     """How a proxied body is cut into buffers must not change what the
     client receives.
@@ -2465,7 +2465,7 @@ def test_proxied_gate(ctx, codec):
     via = {"Via": "1.1 upstream-cache"}
 
     _, headers, _ = fetch(
-        ctx.port, f"/proxied-default/small.html", codec.token, headers=via
+        ctx.port, "/proxied-default/small.html", codec.token, headers=via
     )
     check(
         "content-encoding" not in headers,
@@ -2483,9 +2483,7 @@ def test_proxied_gate(ctx, codec):
         f"nothing about Via",
     )
 
-    _, headers, _ = fetch(
-        ctx.port, "/proxied-any/small.html", codec.token, headers=via
-    )
+    _, headers, _ = fetch(ctx.port, "/proxied-any/small.html", codec.token, headers=via)
     check(
         headers.get("content-encoding") == codec.token,
         f"{codec.directive}_proxied any still declined a request "
@@ -2642,6 +2640,7 @@ def window_sizes(ctx, codec=ZSTD):
     listed = re.search(r"must be (.+?) in ", text)
     check(listed is not None, f"no size list in the refusal:\n{text}")
 
+    assert listed is not None
     sizes = [
         size.strip() for size in listed.group(1).replace(", or ", ", ").split(", ")
     ]
@@ -2649,8 +2648,9 @@ def window_sizes(ctx, codec=ZSTD):
     return sizes
 
 
-@test("the window directive takes every power of two it lists, and no more",
-      codecs=CODECS)
+@test(
+    "the window directive takes every power of two it lists, and no more", codecs=CODECS
+)
 def test_window_bounds(ctx, codec):
     """The directive has a parser of its own rather than
     ngx_conf_num_bounds_t, so nothing checks it but this. Both ends matter:
@@ -2670,9 +2670,7 @@ def test_window_bounds(ctx, codec):
     ]
 
     for size, want in cases:
-        got, text = config_accepted(
-            ctx, f"{codec.directive}_window {size};"
-        )
+        got, text = config_accepted(ctx, f"{codec.directive}_window {size};")
         check(
             got == want,
             f"{codec.directive}_window {size}: expected "
@@ -2681,8 +2679,9 @@ def test_window_bounds(ctx, codec):
         )
 
 
-@test("the window directive names the sizes it takes when it refuses one",
-      codecs=CODECS)
+@test(
+    "the window directive names the sizes it takes when it refuses one", codecs=CODECS
+)
 def test_window_message(ctx, codec):
     """The refusal is all the operator gets, so it has to list the values
     rather than say the size was wrong. Every one it names has to be a
@@ -2714,6 +2713,7 @@ def level_bounds(ctx, codec):
     _, text = config_accepted(ctx, f"{codec.directive}_level 99;")
     found = re.search(r"must be between (-?\d+) and (-?\d+)", text)
     check(found is not None, f"no level bounds in the refusal:\n{text}")
+    assert found is not None
     return int(found.group(1)), int(found.group(2))
 
 
@@ -2806,12 +2806,14 @@ def buffer_bounds(ctx, codec=ZSTD):
     sizes = re.search(r"buffer size must be between (\S+) and (\S+)", text)
     check(sizes is not None, f"no buffer size bounds in the refusal:\n{text}")
 
+    assert sizes is not None
     _, text = config_accepted(
         ctx, f"{codec.directive}_buffers 100000 {sizes.group(1)};"
     )
     counts = re.search(r"number of buffers must be between (\d+) and (\d+)", text)
     check(counts is not None, f"no buffer count bounds in the refusal:\n{text}")
 
+    assert counts is not None
     return (
         int(counts.group(1)),
         int(counts.group(2)),
@@ -2820,8 +2822,10 @@ def buffer_bounds(ctx, codec=ZSTD):
     )
 
 
-@test("the buffers directive holds both parameters to the bounds it reports",
-      codecs=CODECS)
+@test(
+    "the buffers directive holds both parameters to the bounds it reports",
+    codecs=CODECS,
+)
 def test_buffers_bounds(ctx, codec):
     """One buffer is enough to be correct - the filter stalls until the
     filters below take it - so the count floor is 1. Every case here is
@@ -2849,9 +2853,7 @@ def test_buffers_bounds(ctx, codec):
     ]
 
     for parameters, want in cases:
-        got, text = config_accepted(
-            ctx, f"{codec.directive}_buffers {parameters};"
-        )
+        got, text = config_accepted(ctx, f"{codec.directive}_buffers {parameters};")
         check(
             got == want,
             f"{codec.directive}_buffers {parameters}: expected "
@@ -2866,8 +2868,10 @@ def test_buffers_bounds(ctx, codec):
 ONE_BUFFER_WARNING = "multiple buffers are recommended"
 
 
-@test("the buffers directive warns when a count of 1 gives up the run-ahead",
-      codecs=CODECS)
+@test(
+    "the buffers directive warns when a count of 1 gives up the run-ahead",
+    codecs=CODECS,
+)
 def test_buffers_one_warns(ctx, codec):
     """A count of 1 is legal, and costs the thing the directive
     exists to buy: the encoder stops after each buffer until the filters
@@ -3123,9 +3127,7 @@ def test_brotli_flush_folding(ctx):
     chunks = Upstream.BURST_CHUNKS
 
     ctx.nginx.mark_log()
-    _, headers, body = fetch(
-        ctx.port, BROTLI.path("burst", ""), BROTLI.token
-    )
+    _, headers, _body = fetch(ctx.port, BROTLI.path("burst", ""), BROTLI.token)
     check(
         headers.get("content-encoding") == BROTLI.token,
         f"burst was not compressed, got "
@@ -3431,7 +3433,7 @@ def test_small_window_does_not_deadlock(ctx, codec):
     path = codec.path("tiny-window", "big.html")
     try:
         _, headers, body = fetch(ctx.port, path, codec.token, timeout=DEADLOCK_TIMEOUT)
-    except (TimeoutError, socket.timeout) as exc:
+    except TimeoutError as exc:
         raise Failure(
             f"{path} did not finish within {DEADLOCK_TIMEOUT}s ({exc}). "
             f"The encoder and the write filter are deadlocked: each output "
@@ -3679,7 +3681,7 @@ def test_keepalive_allocation_balance(ctx, codec):
         ctx.nginx.mark_log()
         singles[path] = keepalive_soak(ctx, [path], 1, codec)["peak"]
 
-    dearest = max(singles, key=singles.get)
+    dearest = max(singles, key=singles.get)  # type: ignore
     alone_peak = singles[dearest]
     check(
         alone_peak > 0,
@@ -3844,7 +3846,7 @@ def test_table_sizing(ctx):
     """
     for path, ceiling in TABLE_CEILINGS:
         ctx.nginx.mark_log()
-        _, headers, body = fetch(ctx.port, path + "wiki.html")
+        _, headers, _body = fetch(ctx.port, path + "wiki.html")
         check(
             headers.get("content-encoding") == "zstd",
             f"{path} was not compressed, so no encoder was built",
@@ -3975,7 +3977,7 @@ def main():
     nginx_bin = locate_nginx(args.nginx)
     version, has_debug = nginx_build_info(nginx_bin)
     for codec in CODECS:
-        codec.decode = locate_decoder(codec)
+        codec.decode = locate_decoder(codec)  # type: ignore
 
     # The zstd one still has a name of its own: it is what ctx.decode
     # hands the tests that read the compressed bytes directly.

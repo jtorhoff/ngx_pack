@@ -69,7 +69,7 @@ def scenario(name):
                 passes += 1
                 print(f"PASS  {name}")
 
-        run.scenario = name
+        run.scenario = name  # type: ignore
         return run
 
     return wrap
@@ -92,7 +92,7 @@ def raw_get(path, timeout=10):
         while True:
             try:
                 data = sock.recv(65536)
-            except (TimeoutError, socket.timeout, ConnectionResetError):
+            except (TimeoutError, ConnectionResetError):
                 break
             if not data:
                 break
@@ -107,8 +107,7 @@ def assert_worker_healthy(nginx):
     """The control: a location needing no encoder still answers."""
     check(
         nginx.proc is not None and nginx.proc.poll() is None,
-        "the worker exited - an allocation failure should not end the "
-        "process",
+        "the worker exited - an allocation failure should not end the process",
     )
 
     body = raw_get("/plain/a.html")
@@ -176,8 +175,7 @@ def test_refuse_workspace(nginx):
     check(REFUSED in log, "the hook never refused an allocation")
     check(
         b"200 OK" not in body or b"\r\n\r\n" not in body,
-        f"a response completed although an allocation was refused: "
-        f"{body[:120]!r}",
+        f"a response completed although an allocation was refused: {body[:120]!r}",
     )
 
     assert_worker_healthy(nginx)
