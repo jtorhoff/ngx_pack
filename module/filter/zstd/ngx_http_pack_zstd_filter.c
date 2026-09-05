@@ -48,6 +48,17 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    compresses whatever the size. See merge_conf for why 256. */
 #define NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT 256
 
+/* pack_zstd_proxied. Matches gzip_proxied's default of "off": a
+   request carrying "Via" reached us through another proxy, and
+   compressing there is the operator's call, not ours. Only these two
+   of gzip's settings - the rest key off response headers this filter
+   would have to re-read, and "any" covers what they are reached for.
+ */
+enum {
+    NGX_HTTP_PACK_ZSTD_PROXIED_OFF = 0,
+    NGX_HTTP_PACK_ZSTD_PROXIED_ANY,
+};
+
 /* The ceiling is memory - encoder memory scales
    with the window, paid per request in flight. */
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 14
@@ -59,17 +70,6 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    what pays - a smaller window finds fewer matches - so an operator
    who would rather spend the memory raises the directive. */
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT 14
-
-/* pack_zstd_proxied. Matches gzip_proxied's default of "off": a
-   request carrying "Via" reached us through another proxy, and
-   compressing there is the operator's call, not ours. Only these two
-   of gzip's settings - the rest key off response headers this filter
-   would have to re-read, and "any" covers what they are reached for.
- */
-enum {
-    NGX_HTTP_PACK_ZSTD_PROXIED_OFF = 0,
-    NGX_HTTP_PACK_ZSTD_PROXIED_ANY,
-};
 
 /* Compression level. */
 #define NGX_HTTP_PACK_ZSTD_LEVEL_MIN 1
