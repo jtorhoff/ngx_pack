@@ -163,6 +163,7 @@ def test(
     needs_debug=False,
     needs_corpus=False,
     codecs=None,
+    only=None,
 ):
     """Registers a test. The body raises Failure to report a failure.
 
@@ -175,15 +176,23 @@ def test(
     Left None the test runs once against zstd and takes (ctx) alone -
     which is what every test that reads the compressed bytes has to do,
     zstd's frame header being the only one this suite can parse.
+
+    "only" says that is deliberate rather than merely how the test was
+    written: this covers the one filter and nothing equivalent covers
+    the other. The name then carries "[zstd only]", so the gap is
+    legible in a passing run instead of having to be worked out by
+    reading the file. A test that drives neither filter in particular -
+    the pack_static ones, which serve siblings for all three encodings -
+    takes no marker at all.
     """
 
     def register(fn):
         if codecs is None:
             REGISTRY.append(
                 {
-                    "name": name,
+                    "name": f"{name} [{only.name} only]" if only else name,
                     "fn": fn,
-                    "codec": ZSTD,
+                    "codec": only or ZSTD,
                     "needs_decoder": needs_decoder,
                     "needs_debug": needs_debug,
                     "needs_corpus": needs_corpus,
@@ -1307,7 +1316,7 @@ def assert_balanced(stats, label):
 # ---------------------------------------------------------------------------
 
 
-@test("static file round-trips through the encoder", needs_decoder=True)
+@test("static file round-trips through the encoder", needs_decoder=True, only=ZSTD)
 def test_static_roundtrip(ctx):
     status, headers, body = fetch(ctx.port, "/big.html")
     check(status == 200, f"expected 200, got {status}")
@@ -1842,7 +1851,7 @@ def check_vary_dedupe(ctx, case, expected):
     return vary
 
 
-@test("an upstream Vary: Accept-Encoding is not duplicated")
+@test("an upstream Vary: Accept-Encoding is not duplicated", only=ZSTD)
 def test_vary_not_duplicated(ctx):
     vary = check_vary_dedupe(ctx, "ae", 1)
     check(
@@ -1851,12 +1860,12 @@ def test_vary_not_duplicated(ctx):
     )
 
 
-@test("an upstream Vary is recognised whatever its case")
+@test("an upstream Vary is recognised whatever its case", only=ZSTD)
 def test_vary_case_insensitive(ctx):
     check_vary_dedupe(ctx, "mixed", 1)
 
 
-@test("an unrelated Vary is kept and ours added beside it")
+@test("an unrelated Vary is kept and ours added beside it", only=ZSTD)
 def test_vary_unrelated_kept(ctx):
     vary = check_vary_dedupe(ctx, "lang", 2)
     lowered = [v.lower() for v in vary]
@@ -1870,17 +1879,17 @@ def test_vary_unrelated_kept(ctx):
     )
 
 
-@test("a Vary one character short of ours is not treated as a match")
+@test("a Vary one character short of ours is not treated as a match", only=ZSTD)
 def test_vary_near_miss_short(ctx):
     check_vary_dedupe(ctx, "short", 2)
 
 
-@test("a Vary one character long is not treated as a match")
+@test("a Vary one character long is not treated as a match", only=ZSTD)
 def test_vary_near_miss_long(ctx):
     check_vary_dedupe(ctx, "long", 2)
 
 
-@test("a same-shaped header that is not Vary does not suppress ours")
+@test("a same-shaped header that is not Vary does not suppress ours", only=ZSTD)
 def test_vary_lookalike_header(ctx):
     # ETag's key is four characters and this value fifteen, so both length
     # guards pass and only the string comparison stands between it and a
@@ -1894,7 +1903,7 @@ def test_vary_lookalike_header(ctx):
     )
 
 
-@test("a response with no upstream Vary still gets exactly one")
+@test("a response with no upstream Vary still gets exactly one", only=ZSTD)
 def test_vary_added_when_absent(ctx):
     check_vary_dedupe(ctx, "none", 1)
 
@@ -1933,6 +1942,7 @@ def test_corpus_prose(ctx, codec):
     "the whole corpus round-trips as streams of unknown length",
     needs_decoder=True,
     needs_corpus=True,
+    only=ZSTD,
 )
 def test_corpus_streamed(ctx):
     # The static path above sizes the window from a known Content-Length and
@@ -2007,7 +2017,8 @@ def test_min_length_default_lower(ctx, codec):
 
 
 @test(
-    "default pack_zstd_min_length still compresses a 400 byte response", needs_decoder=True
+    "default pack_zstd_min_length still compresses a 400 byte response", needs_decoder=True,
+    only=ZSTD,
 )
 def test_min_length_default_upper(ctx):
     body_len = len(ctx.fixtures["over_min.html"])
@@ -2480,7 +2491,7 @@ def window_sizes(ctx):
     return sizes
 
 
-@test("pack_zstd_window takes every power of two it lists, and no more")
+@test("pack_zstd_window takes every power of two it lists, and no more", only=ZSTD)
 def test_window_bounds(ctx):
     """The directive has a parser of its own rather than
     ngx_conf_num_bounds_t, so nothing checks it but this. Both ends matter:
@@ -2509,7 +2520,7 @@ def test_window_bounds(ctx):
         )
 
 
-@test("pack_zstd_window names the sizes it takes when it refuses one")
+@test("pack_zstd_window names the sizes it takes when it refuses one", only=ZSTD)
 def test_window_message(ctx):
     """The refusal is all the operator gets, so it has to list the values
     rather than say the size was wrong. Every one it names has to be a
@@ -2543,7 +2554,7 @@ LEVEL_CASES = [
 ]
 
 
-@test("pack_zstd_level is held to 1..6")
+@test("pack_zstd_level is held to 1..6", only=ZSTD)
 def test_level_bounds(ctx):
     for level, want in LEVEL_CASES:
         got, text = config_accepted(ctx, f"pack_zstd_level {level};")
@@ -2564,7 +2575,7 @@ HINT_CASES = [
 ]
 
 
-@test("pack_zstd_hint takes a size at or above its floor, or \"none\"")
+@test("pack_zstd_hint takes a size at or above its floor, or \"none\"", only=ZSTD)
 def test_hint_bounds(ctx):
     """The word and the floor are separate rules, and the point is that
     they stay separate.
@@ -2633,7 +2644,7 @@ def buffer_bounds(ctx, codec=ZSTD):
     )
 
 
-@test("pack_zstd_buffers holds both parameters to the bounds it reports")
+@test("pack_zstd_buffers holds both parameters to the bounds it reports", only=ZSTD)
 def test_buffers_bounds(ctx):
     """One buffer is enough to be correct - the filter stalls until the
     filters below take it - so the count floor is 1. Every case here is
@@ -2676,7 +2687,7 @@ def test_buffers_bounds(ctx):
 ONE_BUFFER_WARNING = "multiple buffers are recommended"
 
 
-@test("pack_zstd_buffers warns when a count of 1 gives up the run-ahead")
+@test("pack_zstd_buffers warns when a count of 1 gives up the run-ahead", only=ZSTD)
 def test_buffers_one_warns(ctx):
     """A count of 1 is legal, and costs the thing pack_zstd_buffers
     exists to buy: the encoder stops after each buffer until the filters
@@ -2802,7 +2813,7 @@ WIDE_BUFFER_SIZE = 64 * 1024
 DEFAULT_BUFFER_SIZE = 16 * 1024
 
 
-@test("the pack_zstd_buffers size bounds what one round commits", needs_debug=True)
+@test("the pack_zstd_buffers size bounds what one round commits", needs_debug=True, only=ZSTD)
 def test_buffer_size_is_honoured(ctx):
     """The second parameter, checked by what the encoder does with it.
 
@@ -2898,7 +2909,7 @@ def test_flush_folding_cost(ctx, codec):
     )
 
 
-@test("a burst of flush-marked chunks folds into fewer blocks", needs_decoder=True)
+@test("a burst of flush-marked chunks folds into fewer blocks", needs_decoder=True, only=ZSTD)
 def test_flush_folding(ctx):
     """The upstream writes every chunk in one send, so the chunked filter
     hands the module a single chain of flush markers - one per chunk. Only
@@ -2930,7 +2941,7 @@ def test_flush_folding(ctx):
 
 
 @test("flush folding stops at the bound rather than swallowing a burst",
-      needs_decoder=True)
+      needs_decoder=True, only=ZSTD)
 def test_flush_folding_bounded(ctx):
     """The other end of the fold, and the one a count of buffers could not
     express: a chain carrying more than FLUSH_AFTER has to be cut, however
@@ -3003,7 +3014,7 @@ def test_flush_folding_roundtrip(ctx, codec):
 # ---------------------------------------------------------------------------
 
 
-@test("buffered stream shrinks the window once the size is known", needs_debug=True)
+@test("buffered stream shrinks the window once the size is known", needs_debug=True, only=ZSTD)
 def test_deferred_window_for_buffered_stream(ctx):
     """A small response of unknown length still reaches the filter whole, just
     without last_buf on the first call. Holding it briefly lets the filter size
@@ -3022,7 +3033,7 @@ def test_deferred_window_for_buffered_stream(ctx):
     )
 
 
-@test("buffered stream still round-trips", needs_decoder=True)
+@test("buffered stream still round-trips", needs_decoder=True, only=ZSTD)
 def test_buffered_stream_roundtrip(ctx):
     status, headers, body = fetch(ctx.port, "/buffered/big.html")
     check(status == 200, f"expected 200, got {status}")
@@ -3036,7 +3047,7 @@ def test_buffered_stream_roundtrip(ctx):
     )
 
 
-@test("large buffered stream still uses the full window", needs_debug=True)
+@test("large buffered stream still uses the full window", needs_debug=True, only=ZSTD)
 def test_deferred_falls_back_for_large(ctx):
     """Deferral must give up once enough input has accumulated: the response
     may be huge, and a window sized from a partial prefix would cost ratio."""
@@ -3053,7 +3064,7 @@ def test_deferred_falls_back_for_large(ctx):
     )
 
 
-@test("known Content-Length shrinks the encoder window", needs_debug=True)
+@test("known Content-Length shrinks the encoder window", needs_debug=True, only=ZSTD)
 def test_window_tuning(ctx):
     """Asserts the property, not the mechanism, and cannot tell the two apart.
 
@@ -3090,7 +3101,7 @@ def test_window_tuning(ctx):
     )
 
 
-@test("stream of unknown length falls back to the full window", needs_debug=True)
+@test("stream of unknown length falls back to the full window", needs_debug=True, only=ZSTD)
 def test_stream_uses_full_window(ctx):
     """Same payload as test_window_tuning's small case, but delivered chunked.
     With no Content-Length to tune from, the filter must use pack_zstd_window -
@@ -3235,7 +3246,7 @@ def peak_encoder_bytes(ctx, path):
 
 
 @test("a stream costs no more memory than the same body of known length",
-      needs_debug=True)
+      needs_debug=True, only=ZSTD)
 def test_stream_memory_ceiling(ctx):
     """Pins ZSTD_c_srcSizeHint, which nothing else here would notice.
 
@@ -3291,7 +3302,7 @@ def test_stream_memory_ceiling(ctx):
     )
 
 
-@test("pack_zstd_hint reaches the encoder", needs_debug=True)
+@test("pack_zstd_hint reaches the encoder", needs_debug=True, only=ZSTD)
 def test_hint_directive_reaches_encoder(ctx):
     """/small-hint/ is /big-hint/ with pack_zstd_hint pulled to its floor.
 
@@ -3570,7 +3581,7 @@ TABLE_CEILINGS = (
 
 
 @test("the encoder sizes its tables to the window, not to the level",
-      needs_debug=True)
+      needs_debug=True, only=ZSTD)
 def test_table_sizing(ctx):
     """Nothing in the frame says what tables made it, so this measures
     the only thing visible from outside - what the encoder allocated -
