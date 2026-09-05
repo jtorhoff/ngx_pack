@@ -3088,6 +3088,66 @@ def test_flush_folding_cost(ctx, codec):
     )
 
 
+# The encoder logs one line per folded flush, since Brotli's format
+# states no block structure to read back.
+BROTLI_FOLD_LINE = "brotli flush folded"
+
+
+@test(
+    "a burst of flush-marked chunks takes the Brotli fold path",
+    needs_debug=True,
+    only=BROTLI,
+)
+def test_brotli_flush_folding(ctx):
+    """The Brotli half of what test_flush_folding asserts for zstd, and
+    it has to be asserted differently.
+
+    zstd states a block count in its frame header, so that test reads
+    the answer out of the response. Brotli's format carries no such
+    structure, so the encoder logs the decision instead and this counts
+    the lines. What that proves is narrower and worth naming: the fold
+    path was taken, not that Brotli emitted fewer meta-blocks. The
+    second is what test_flush_folding_cost measures, by comparing the
+    burst against a file of identical bytes.
+
+    The burst arrives as one chain of flush-marked buffers, and every
+    flush but the last can fold - the last has nothing after it to push
+    its bytes out, so it must cut. Asserting a bound rather than an
+    exact count, since how much nginx reads at once is not ours to fix
+    and the burst may arrive as more than one chain.
+
+    /br-burst/ names quality 4 deliberately. At the compiled-in default
+    Brotli takes its fast path, where every call becomes a meta-block
+    whatever this decides.
+    """
+    chunks = Upstream.BURST_CHUNKS
+
+    ctx.nginx.mark_log()
+    _, headers, body = fetch(
+        ctx.port, BROTLI.path("burst", ""), BROTLI.token
+    )
+    check(
+        headers.get("content-encoding") == BROTLI.token,
+        f"burst was not compressed, got "
+        f"{headers.get('content-encoding')!r} - a flush marker is supposed "
+        f"to short-circuit pack_brotli_min_length",
+    )
+
+    folds = ctx.nginx.read_log().count(BROTLI_FOLD_LINE)
+
+    check(
+        folds > 0,
+        f"{chunks} flush-marked chunks folded none, so every flush cut a "
+        f"meta-block of its own",
+    )
+    check(
+        folds >= chunks - 2,
+        f"only {folds} of {chunks} flush-marked chunks folded; the last "
+        f"cannot, so anything below {chunks - 2} means the fold gave up "
+        f"early",
+    )
+
+
 @test(
     "a burst of flush-marked chunks folds into fewer blocks",
     needs_decoder=True,

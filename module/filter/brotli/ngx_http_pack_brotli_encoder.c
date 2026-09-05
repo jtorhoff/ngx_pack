@@ -476,6 +476,18 @@ ngx_http_pack_brotli_select_mode(select_mode_args *const args)
                     })
                     .folded) {
 
+                /* Logged because nothing in the output says it
+                   happened: Brotli states no block structure a test
+                   can read back, where zstd's frame header carries a
+                   block count. Debug only, so a release build pays
+                   nothing for it. */
+                ngx_log_debug1(
+                    NGX_LOG_DEBUG_HTTP,
+                    enc->request->connection->log,
+                    0,
+                    "brotli flush folded, block holds: %uz",
+                    enc->unflushed_bytes);
+
                 return (select_mode_result) {
                     .operation = BROTLI_OPERATION_PROCESS,
                     .from      = head,
