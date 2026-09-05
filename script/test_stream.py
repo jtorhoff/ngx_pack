@@ -75,9 +75,7 @@ class Codec:
     codec support it" flag per assertion.
     """
 
-    def __init__(
-        self, name, token, ext, directive, prefix, log_tag, superstrings
-    ):
+    def __init__(self, name, token, ext, directive, prefix, log_tag, superstrings):
         self.name = name
         self.token = token
         self.ext = ext
@@ -103,9 +101,7 @@ class Codec:
         self.alloc_re = re.compile(
             rf"\*(\d+) {log_tag} alloc: (?:0x)?([0-9A-Fa-f]+), size: (\d+)"
         )
-        self.free_re = re.compile(
-            rf"\*(\d+) {log_tag} free: (?:0x)?([0-9A-Fa-f]+)"
-        )
+        self.free_re = re.compile(rf"\*(\d+) {log_tag} free: (?:0x)?([0-9A-Fa-f]+)")
         self.out_re = re.compile(
             rf"\*(\d+) {log_tag} out: (?:0x)?[0-9A-Fa-f]+, size: (\d+)"
         )
@@ -140,12 +136,18 @@ class Codec:
         return self.name
 
 
-ZSTD = Codec(
-    "zstd", "zstd", ".zst", "pack_zstd", "", "zstd", ("zstdlib",)
-)
-BROTLI = Codec(
-    "brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",)
-)
+ZSTD = Codec("zstd", "zstd", ".zst", "pack_zstd", "", "zstd", ("zstdlib",))
+BROTLI = Codec("brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",))
+
+
+# What a test line is prefixed with. Centred in the width of the
+# longest tag so the names below them line up: "[ zstd ]",
+# "[brotli]", "[static]". Built from log_tag rather than log_tag
+# being the bracketed form itself - that string is interpolated into
+# the allocator regexes below, where "[ zstd ]" is a character class
+# and matches none of the debug lines it is meant to find.
+def tag_for(text):
+    return f"[{text:^6}]"
 
 CODECS = [ZSTD, BROTLI]
 
@@ -178,28 +180,28 @@ def test(
     which is what every test that reads the compressed bytes has to do,
     zstd's frame header being the only one this suite can parse.
 
-    "only" says that is deliberate rather than merely how the test was
-    written: this covers the one filter and nothing equivalent covers
-    the other. The name then carries "[zstd only]", so the gap is
-    legible in a passing run instead of having to be worked out by
-    reading the file.
+    "only" names the codec a test that is not parameterised drives, so
+    it is tagged like any other rather than reading as untagged. It also
+    binds entry["codec"], which is what decides whether a missing
+    decoder skips the test.
 
-    "label" marks a test that is not about either filter - "[static]"
-    for the pack_static ones, which serve pre-compressed siblings for
-    all three encodings and share no code with the encoders. Without it
-    they read as an absence of coverage rather than as coverage of
-    something else.
+    "label" tags a test that is about neither filter - "static" for the
+    pack_static ones, which serve pre-compressed siblings for all three
+    encodings and share no code with the encoders.
+
+    Every tag is a bracketed prefix, so a run sorts and scans by what
+    each test covers rather than by the first word of its sentence.
     """
     if only and label:
-        raise ValueError("a test is marked by one of only= or label=")
+        raise ValueError("a test is tagged by one of only= or label=")
 
-    suffix = f" [{only.name} only]" if only else f" [{label}]" if label else ""
+    tag = tag_for(only.log_tag if only else label) if (only or label) else ""
 
     def register(fn):
         if codecs is None:
             REGISTRY.append(
                 {
-                    "name": name + suffix,
+                    "name": f"{tag} {name}" if tag else name,
                     "fn": fn,
                     "codec": only or ZSTD,
                     "needs_decoder": needs_decoder,
@@ -212,7 +214,7 @@ def test(
         for codec in codecs:
             REGISTRY.append(
                 {
-                    "name": f"{name} [{codec.name}]",
+                    "name": f"{tag_for(codec.log_tag)} {name}",
                     # Bound now rather than read from the closure: every
                     # entry shares one function, and a late read would
                     # give them all the last codec in the list.
@@ -292,9 +294,7 @@ def locate_decoder(codec=ZSTD):
     def decode_with_cli(data):
         # The CLI is happiest with a real file; this also keeps us clear of
         # stdin-buffering differences between zstd releases.
-        with tempfile.NamedTemporaryFile(
-            suffix=codec.ext, delete=False
-        ) as handle:
+        with tempfile.NamedTemporaryFile(suffix=codec.ext, delete=False) as handle:
             handle.write(data)
             path = handle.name
         try:
@@ -361,7 +361,7 @@ def encode_with_command(argv):
 # file was chosen because they compare against the bytes on disk.
 SIBLING_ENCODINGS = [
     ("br", ".br", lambda: encode_with_command(["brotli", "-c", "-q", "5"])),
-    ("gzip", ".gz", lambda: (lambda data: gzip.compress(data))),
+    ("gzip", ".gz", lambda: lambda data: gzip.compress(data)),
     ("zstd", ".zst", locate_encoder),
 ]
 
@@ -584,8 +584,7 @@ def build_fixtures(work):
     # Brotli states nothing of the sort, so this is the observable the
     # two have in common.
     burst = b"".join(
-        b"%d %s" % (i, Upstream.BURST_TEXT)
-        for i in range(Upstream.BURST_CHUNKS)
+        b"%d %s" % (i, Upstream.BURST_TEXT) for i in range(Upstream.BURST_CHUNKS)
     )
     with open(os.path.join(html, "burst.html"), "wb") as handle:
         handle.write(burst)
@@ -729,10 +728,7 @@ class Upstream:
                 for i in range(self.WIDE_CHUNKS)
             ]
         else:
-            pieces = [
-                b"%d %s" % (i, self.BURST_TEXT)
-                for i in range(self.BURST_CHUNKS)
-            ]
+            pieces = [b"%d %s" % (i, self.BURST_TEXT) for i in range(self.BURST_CHUNKS)]
 
         body = b"".join(self._chunk(piece) for piece in pieces)
         conn.sendall(
@@ -984,9 +980,7 @@ BUF_RE = ZSTD.buf_re
 
 def buffers_created(log, codec=ZSTD):
     """Most output buffers any one response was seen to create."""
-    return max(
-        (int(m.group(2)) for m in codec.buf_re.finditer(log)), default=0
-    )
+    return max((int(m.group(2)) for m in codec.buf_re.finditer(log)), default=0)
 
 
 def encoder_count(log, codec=ZSTD):
@@ -1408,7 +1402,7 @@ def test_static_module_declines_plain_client(ctx):
 
 @test("every response from a pack_static location says it varies", label="static")
 def test_static_vary_is_unconditional(ctx):
-    """"pack_static on" is what makes the body depend on Accept-Encoding,
+    """ "pack_static on" is what makes the body depend on Accept-Encoding,
     and that is a property of the location rather than of the file, so the
     header goes out whether or not this client is served a sibling and
     whether or not one exists. A cache that stored the plain response
@@ -1422,9 +1416,7 @@ def test_static_vary_is_unconditional(ctx):
         raise Failure("no zstd encoder available to build the .zst fixture")
 
     # A sibling exists and this client cannot take it.
-    _, headers, _ = fetch(
-        ctx.port, "/static/precompressed.html", accept_encoding=None
-    )
+    _, headers, _ = fetch(ctx.port, "/static/precompressed.html", accept_encoding=None)
     check(
         headers.get("vary") == "Accept-Encoding",
         f"declined client, sibling on disk: {headers!r}",
@@ -1449,8 +1441,7 @@ def test_static_vary_is_unconditional(ctx):
     _, headers, _ = fetch(ctx.port, "/subreq/multi.html", accept_encoding=None)
     check(
         "vary" not in headers,
-        f"\"always\" serves one file to everyone, so nothing varies; "
-        f"got {headers!r}",
+        f'"always" serves one file to everyone, so nothing varies; got {headers!r}',
     )
 
 
@@ -1512,9 +1503,7 @@ def test_static_directive_order(ctx):
     values together and the order is gone by the time the handler runs."""
     for prefix, expected in [("order-bgz", "br"), ("order-zgb", "zstd")]:
         for accept in ["br, gzip, zstd", "zstd, gzip, br", "gzip, br, zstd"]:
-            check_sibling_served(
-                ctx, "multi.html", accept, expected, prefix=prefix
-            )
+            check_sibling_served(ctx, "multi.html", accept, expected, prefix=prefix)
 
 
 @test("the client's own order does not override the directive's", label="static")
@@ -1585,7 +1574,9 @@ def test_static_unknown_encodings(ctx):
         check_sibling_served(ctx, "multi.html", accept, None)
 
 
-@test("every sibling is served byte for byte and cached by its own name", label="static")
+@test(
+    "every sibling is served byte for byte and cached by its own name", label="static"
+)
 def test_static_siblings_distinct(ctx):
     """Each encoding names a different file, and the three differ in length,
     so this also covers the constructed path being hashed over the right
@@ -1623,9 +1614,7 @@ def test_static_odd_siblings(ctx):
         cases.append(("odd_perm.html", "unreadable"))
 
     for stem, shape in cases:
-        if not os.path.exists(
-            os.path.join(ctx.nginx.work, "html", stem + ".br")
-        ):
+        if not os.path.exists(os.path.join(ctx.nginx.work, "html", stem + ".br")):
             continue
         status, headers, body = fetch(ctx.port, f"/static/{stem}", "br")
         check(
@@ -1665,8 +1654,7 @@ def test_static_subrequest_declined(ctx):
     )
     check(
         headers.get("content-encoding") is None,
-        f"the parent carries Content-Encoding "
-        f"{headers.get('content-encoding')!r}",
+        f"the parent carries Content-Encoding {headers.get('content-encoding')!r}",
     )
 
 
@@ -1854,8 +1842,7 @@ def check_vary_dedupe(ctx, case, expected):
     )
     check(
         len(vary) == expected,
-        f"/vary/{case}: expected {expected} Vary header(s), got {len(vary)}: "
-        f"{vary!r}",
+        f"/vary/{case}: expected {expected} Vary header(s), got {len(vary)}: {vary!r}",
     )
     return vary
 
@@ -1917,32 +1904,34 @@ def test_vary_added_when_absent(ctx):
     check_vary_dedupe(ctx, "none", 1)
 
 
-@test("real HTML round-trips", needs_decoder=True, needs_corpus=True,
-      codecs=CODECS)
+@test("real HTML round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
 def test_corpus_html(ctx, codec):
     check_corpus_roundtrip(ctx, "wiki.html", codec=codec)
 
 
-@test("real CSS round-trips", needs_decoder=True, needs_corpus=True,
-      codecs=CODECS)
+@test("real CSS round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
 def test_corpus_css(ctx, codec):
     check_corpus_roundtrip(ctx, "site.css", codec=codec)
 
 
-@test("real JavaScript round-trips", needs_decoder=True, needs_corpus=True,
-      codecs=CODECS)
+@test(
+    "real JavaScript round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS
+)
 def test_corpus_js(ctx, codec):
     check_corpus_roundtrip(ctx, "app.js", codec=codec)
 
 
-@test("real minified JavaScript round-trips", needs_decoder=True,
-      needs_corpus=True, codecs=CODECS)
+@test(
+    "real minified JavaScript round-trips",
+    needs_decoder=True,
+    needs_corpus=True,
+    codecs=CODECS,
+)
 def test_corpus_min_js(ctx, codec):
     check_corpus_roundtrip(ctx, "app.min.js", codec=codec)
 
 
-@test("real prose round-trips", needs_decoder=True, needs_corpus=True,
-      codecs=CODECS)
+@test("real prose round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
 def test_corpus_prose(ctx, codec):
     check_corpus_roundtrip(ctx, "prose.txt", codec=codec)
 
@@ -1961,8 +1950,9 @@ def test_corpus_streamed(ctx):
         check_corpus_roundtrip(ctx, name, path=f"/stream/{name}")
 
 
-@test("streamed response of unknown length round-trips",
-      needs_decoder=True, codecs=CODECS)
+@test(
+    "streamed response of unknown length round-trips", needs_decoder=True, codecs=CODECS
+)
 def test_stream_roundtrip(ctx, codec):
     path = codec.path("stream", "big.html")
     status, headers, body = fetch(ctx.port, path, codec.token)
@@ -1982,8 +1972,7 @@ def test_stream_roundtrip(ctx, codec):
     )
 
 
-@test("small-but-eligible response round-trips", needs_decoder=True,
-      codecs=CODECS)
+@test("small-but-eligible response round-trips", needs_decoder=True, codecs=CODECS)
 def test_small_roundtrip(ctx, codec):
     _, headers, body = fetch(ctx.port, codec.file("small.html"), codec.token)
     check(
@@ -1996,8 +1985,7 @@ def test_small_roundtrip(ctx, codec):
     )
 
 
-@test("a response below the min_length default is left alone",
-      codecs=CODECS)
+@test("a response below the min_length default is left alone", codecs=CODECS)
 def test_min_length(ctx, codec):
     _, headers, body = fetch(ctx.port, codec.file("tiny.html"), codec.token)
     check(
@@ -2008,15 +1996,12 @@ def test_min_length(ctx, codec):
     check(body == ctx.fixtures["tiny.html"], "tiny.html body was altered")
 
 
-@test("the min_length default leaves a 200 byte response alone",
-      codecs=CODECS)
+@test("the min_length default leaves a 200 byte response alone", codecs=CODECS)
 def test_min_length_default_lower(ctx, codec):
     """Guards the compiled-in default, which the test config deliberately does
     not override. A response this small costs more to compress than it saves."""
     body_len = len(ctx.fixtures["under_min.html"])
-    _, headers, body = fetch(
-        ctx.port, codec.file("under_min.html"), codec.token
-    )
+    _, headers, body = fetch(ctx.port, codec.file("under_min.html"), codec.token)
     check(
         "content-encoding" not in headers,
         f"a {body_len} byte response was compressed; "
@@ -2026,7 +2011,8 @@ def test_min_length_default_lower(ctx, codec):
 
 
 @test(
-    "default pack_zstd_min_length still compresses a 400 byte response", needs_decoder=True,
+    "default pack_zstd_min_length still compresses a 400 byte response",
+    needs_decoder=True,
     only=ZSTD,
 )
 def test_min_length_default_upper(ctx):
@@ -2097,8 +2083,7 @@ def test_ttfb_on_buffered_stream(ctx, codec):
     )
 
 
-@test("min_length applies to a buffered stream of unknown length",
-      codecs=CODECS)
+@test("min_length applies to a buffered stream of unknown length", codecs=CODECS)
 def test_min_length_on_stream(ctx, codec):
     """The header filter cannot compare against min_length when it has no
     Content-Length, so it holds the headers until the body has answered
@@ -2124,8 +2109,7 @@ def test_min_length_on_stream(ctx, codec):
     )
 
 
-@test("min_length is bypassed when a buffer asks to be flushed",
-      codecs=CODECS)
+@test("min_length is bypassed when a buffer asks to be flushed", codecs=CODECS)
 def test_min_length_not_applied_when_urgent(ctx, codec):
     """The same body as the buffered case above, and the opposite outcome.
 
@@ -2146,9 +2130,7 @@ def test_min_length_not_applied_when_urgent(ctx, codec):
         f"compiled-in {codec.directive}_min_length of 256 this test "
         f"depends on",
     )
-    _, headers, _ = fetch(
-        ctx.port, codec.path("stream", "under_min.html"), codec.token
-    )
+    _, headers, _ = fetch(ctx.port, codec.path("stream", "under_min.html"), codec.token)
     check(
         headers.get("content-encoding") == codec.token,
         f"a {len(body)} byte unbuffered response was not compressed; the "
@@ -2157,8 +2139,11 @@ def test_min_length_not_applied_when_urgent(ctx, codec):
     )
 
 
-@test("a streamed response over min_length is still compressed",
-      needs_decoder=True, codecs=CODECS)
+@test(
+    "a streamed response over min_length is still compressed",
+    needs_decoder=True,
+    codecs=CODECS,
+)
 def test_min_length_on_stream_upper(ctx, codec):
     """The counterweight to the two above: the deferral has to release the
     response as well as hold it back."""
@@ -2176,8 +2161,7 @@ def test_min_length_on_stream_upper(ctx, codec):
     )
 
 
-@test("bodyless and ranged statuses are not given a Content-Encoding",
-      codecs=CODECS)
+@test("bodyless and ranged statuses are not given a Content-Encoding", codecs=CODECS)
 def test_status_guard(ctx, codec):
     """204 and 304 have no body to encode, and a 206 body is a byte range whose
     Content-Range still describes the uncompressed entity. Labelling any of
@@ -2194,8 +2178,7 @@ def test_status_guard(ctx, codec):
         )
 
 
-@test("other statuses are still compressed", needs_decoder=True,
-      codecs=CODECS)
+@test("other statuses are still compressed", needs_decoder=True, codecs=CODECS)
 def test_status_guard_not_too_broad(ctx, codec):
     """The guard replaced an allow list that also excluded these. They are
     ordinary compressible responses and must stay compressed."""
@@ -2215,8 +2198,7 @@ def test_status_guard_not_too_broad(ctx, codec):
         )
 
 
-@test("a MIME type outside the types directive is left alone",
-      codecs=CODECS)
+@test("a MIME type outside the types directive is left alone", codecs=CODECS)
 def test_mime_filtering(ctx, codec):
     _, headers, body = fetch(ctx.port, codec.file("data.bin"), codec.token)
     check(
@@ -2228,9 +2210,7 @@ def test_mime_filtering(ctx, codec):
 
 @test("client without Accept-Encoding gets plain bytes", codecs=CODECS)
 def test_no_accept_encoding(ctx, codec):
-    _, headers, body = fetch(
-        ctx.port, codec.file("big.html"), accept_encoding=None
-    )
+    _, headers, body = fetch(ctx.port, codec.file("big.html"), accept_encoding=None)
     check(
         "content-encoding" not in headers,
         "compressed for a client that did not ask for it",
@@ -2250,17 +2230,14 @@ def test_q_zero(ctx, codec):
         f"{tok}\t;\tq\t=\t0",
         f"gzip, {tok};q=0",
     ]:
-        _, headers, _ = fetch(
-            ctx.port, codec.file("big.html"), accept_encoding=value
-        )
+        _, headers, _ = fetch(ctx.port, codec.file("big.html"), accept_encoding=value)
         check(
             "content-encoding" not in headers,
             f"{value!r} should decline {tok}, but the response was compressed",
         )
 
 
-@test("tokens that merely contain the token do not select it",
-      codecs=CODECS)
+@test("tokens that merely contain the token do not select it", codecs=CODECS)
 def test_partial_token(ctx, codec):
     """The near misses are built from the token, except the superstrings,
     which cannot be derived - see Codec. "brotli" is the one that matters:
@@ -2269,18 +2246,16 @@ def test_partial_token(ctx, codec):
     values = [f"{tok}x", f"x-{tok}", f"{tok}-x", "bar", "b", "gzip, deflate"]
     values.extend(codec.superstrings)
     for value in values:
-        _, headers, _ = fetch(
-            ctx.port, codec.file("big.html"), accept_encoding=value
-        )
+        _, headers, _ = fetch(ctx.port, codec.file("big.html"), accept_encoding=value)
         check(
             "content-encoding" not in headers,
-            f"{value!r} should not select {tok}, but the response was "
-            f"compressed",
+            f"{value!r} should not select {tok}, but the response was compressed",
         )
 
 
-@test("Accept-Encoding lists that do select the token",
-      needs_decoder=True, codecs=CODECS)
+@test(
+    "Accept-Encoding lists that do select the token", needs_decoder=True, codecs=CODECS
+)
 def test_encoding_lists(ctx, codec):
     tok = codec.token
     for value in [
@@ -2307,8 +2282,7 @@ def test_encoding_lists(ctx, codec):
         )
         check(
             headers.get("content-encoding") == tok,
-            f"{value!r} should select {tok}, got "
-            f"{headers.get('content-encoding')!r}",
+            f"{value!r} should select {tok}, got {headers.get('content-encoding')!r}",
         )
         check(
             codec.decode(body) == ctx.fixtures["small.html"],
@@ -2395,10 +2369,7 @@ def test_http_version_gate(ctx, codec):
         head = data.split(b"\r\n\r\n", 1)[0].decode("latin-1")
         lower = [line.lower() for line in head.split("\r\n")]
         return (
-            any(
-                line.startswith(f"content-encoding: {codec.token}")
-                for line in lower
-            ),
+            any(line.startswith(f"content-encoding: {codec.token}") for line in lower),
             any(line.startswith("vary:") for line in lower),
         )
 
@@ -2419,9 +2390,7 @@ def test_http_version_gate(ctx, codec):
 @test("Vary: Accept-Encoding is advertised to every client", codecs=CODECS)
 def test_vary(ctx, codec):
     for accept in [codec.token, "gzip", None]:
-        _, headers, _ = fetch(
-            ctx.port, codec.file("big.html"), accept_encoding=accept
-        )
+        _, headers, _ = fetch(ctx.port, codec.file("big.html"), accept_encoding=accept)
         vary = headers.get("vary", "")
         check(
             "accept-encoding" in vary.lower(),
@@ -2493,8 +2462,7 @@ def window_sizes(ctx):
     check(listed is not None, f"no size list in the refusal:\n{text}")
 
     sizes = [
-        size.strip()
-        for size in listed.group(1).replace(", or ", ", ").split(", ")
+        size.strip() for size in listed.group(1).replace(", or ", ", ").split(", ")
     ]
     check(len(sizes) > 1, f"only one size listed:\n{text}")
     return sizes
@@ -2540,8 +2508,7 @@ def test_window_message(ctx):
     for size, value in zip(sizes, values):
         check(
             value and (value & (value - 1)) == 0,
-            f"the refusal offers {size}, which is not a power of two:\n"
-            f"{sizes}",
+            f"the refusal offers {size}, which is not a power of two:\n{sizes}",
         )
     check(
         values == sorted(values),
@@ -2584,7 +2551,7 @@ HINT_CASES = [
 ]
 
 
-@test("pack_zstd_hint takes a size at or above its floor, or \"none\"", only=ZSTD)
+@test('pack_zstd_hint takes a size at or above its floor, or "none"', only=ZSTD)
 def test_hint_bounds(ctx):
     """The word and the floor are separate rules, and the point is that
     they stay separate.
@@ -2614,7 +2581,7 @@ def test_hint_bounds(ctx):
 
 
 def parse_size(text):
-    """"16k" to 16384, the units ngx_parse_size accepts."""
+    """ "16k" to 16384, the units ngx_parse_size accepts."""
     if text.endswith("k"):
         return int(text[:-1]) * 1024
     if text.endswith("m"):
@@ -2640,9 +2607,7 @@ def buffer_bounds(ctx, codec=ZSTD):
     _, text = config_accepted(
         ctx, f"{codec.directive}_buffers 100000 {sizes.group(1)};"
     )
-    counts = re.search(
-        r"number of buffers must be between (\d+) and (\d+)", text
-    )
+    counts = re.search(r"number of buffers must be between (\d+) and (\d+)", text)
     check(counts is not None, f"no buffer count bounds in the refusal:\n{text}")
 
     return (
@@ -2708,9 +2673,7 @@ def test_buffers_one_warns(ctx):
     emitted unconditionally would pass just as well."""
     num_min, _, size_min, _ = buffer_bounds(ctx)
 
-    accepted, text = config_accepted(
-        ctx, f"pack_zstd_buffers {num_min} {size_min};"
-    )
+    accepted, text = config_accepted(ctx, f"pack_zstd_buffers {num_min} {size_min};")
     check(accepted, f"a count of {num_min} was refused:\n{text}")
     check(
         ONE_BUFFER_WARNING in text,
@@ -2734,7 +2697,6 @@ def test_buffers_one_warns(ctx):
 # ---------------------------------------------------------------------------
 # Output buffers
 # ---------------------------------------------------------------------------
-
 
 
 def stall_a_response(port, path, accept_encoding="zstd", seconds=0.6):
@@ -2773,9 +2735,7 @@ def test_multiple_output_buffers(ctx, codec):
     _, max_buffers, _, _ = buffer_bounds(ctx, codec)
 
     ctx.nginx.mark_log()
-    stall_a_response(
-        ctx.port, codec.path("throttled", "wiki.html"), codec.token
-    )
+    stall_a_response(ctx.port, codec.path("throttled", "wiki.html"), codec.token)
     created = buffers_created(ctx.nginx.read_log(), codec)
 
     check(
@@ -2802,9 +2762,7 @@ def test_buffers_directive_is_honoured(ctx, codec):
     more than one, the directive is being ignored rather than the stall
     failing to happen."""
     ctx.nginx.mark_log()
-    stall_a_response(
-        ctx.port, codec.path("throttled-one", "wiki.html"), codec.token
-    )
+    stall_a_response(ctx.port, codec.path("throttled-one", "wiki.html"), codec.token)
     created = buffers_created(ctx.nginx.read_log(), codec)
 
     check(
@@ -2822,7 +2780,11 @@ WIDE_BUFFER_SIZE = 64 * 1024
 DEFAULT_BUFFER_SIZE = 16 * 1024
 
 
-@test("the pack_zstd_buffers size bounds what one round commits", needs_debug=True, only=ZSTD)
+@test(
+    "the pack_zstd_buffers size bounds what one round commits",
+    needs_debug=True,
+    only=ZSTD,
+)
 def test_buffer_size_is_honoured(ctx):
     """The second parameter, checked by what the encoder does with it.
 
@@ -2872,8 +2834,11 @@ FLUSH_AFTER = 32 * 1024
 FOLD_COST_LIMIT = 1.25
 
 
-@test("a burst of flush-marked chunks costs little against the same bytes",
-      needs_decoder=True, codecs=CODECS)
+@test(
+    "a burst of flush-marked chunks costs little against the same bytes",
+    needs_decoder=True,
+    codecs=CODECS,
+)
 def test_flush_folding_cost(ctx, codec):
     """Flush folding, measured the one way both encoders allow.
 
@@ -2889,9 +2854,7 @@ def test_flush_folding_cost(ctx, codec):
     so the file is the floor and the gap is what folding failed to
     recover.
     """
-    _, flat_headers, flat = fetch(
-        ctx.port, codec.file("burst.html"), codec.token
-    )
+    _, flat_headers, flat = fetch(ctx.port, codec.file("burst.html"), codec.token)
     check(
         flat_headers.get("content-encoding") == codec.token,
         "the static burst fixture was not compressed",
@@ -2900,8 +2863,7 @@ def test_flush_folding_cost(ctx, codec):
     _, headers, body = fetch(ctx.port, codec.path("burst", ""), codec.token)
     check(
         headers.get("content-encoding") == codec.token,
-        f"burst was not compressed, got "
-        f"{headers.get('content-encoding')!r}",
+        f"burst was not compressed, got {headers.get('content-encoding')!r}",
     )
 
     check(
@@ -2918,7 +2880,11 @@ def test_flush_folding_cost(ctx, codec):
     )
 
 
-@test("a burst of flush-marked chunks folds into fewer blocks", needs_decoder=True, only=ZSTD)
+@test(
+    "a burst of flush-marked chunks folds into fewer blocks",
+    needs_decoder=True,
+    only=ZSTD,
+)
 def test_flush_folding(ctx):
     """The upstream writes every chunk in one send, so the chunked filter
     hands the module a single chain of flush markers - one per chunk. Only
@@ -2949,8 +2915,11 @@ def test_flush_folding(ctx):
     )
 
 
-@test("flush folding stops at the bound rather than swallowing a burst",
-      needs_decoder=True, only=ZSTD)
+@test(
+    "flush folding stops at the bound rather than swallowing a burst",
+    needs_decoder=True,
+    only=ZSTD,
+)
 def test_flush_folding_bounded(ctx):
     """The other end of the fold, and the one a count of buffers could not
     express: a chain carrying more than FLUSH_AFTER has to be cut, however
@@ -2968,8 +2937,7 @@ def test_flush_folding_bounded(ctx):
 
     check(
         headers.get("content-encoding") == "zstd",
-        f"wide burst was not compressed, got "
-        f"{headers.get('content-encoding')!r}",
+        f"wide burst was not compressed, got {headers.get('content-encoding')!r}",
     )
     check(
         len(ctx.decode(body)) == raw,
@@ -2992,8 +2960,7 @@ def test_flush_folding_bounded(ctx):
     )
 
 
-@test("a folded flush still delivers every byte",
-      needs_decoder=True, codecs=CODECS)
+@test("a folded flush still delivers every byte", needs_decoder=True, codecs=CODECS)
 def test_flush_folding_roundtrip(ctx, codec):
     """Folding may not lose or reorder anything: the point is that only the
     framing changes. Both encoders fold, each with its own chain walk, and
@@ -3023,7 +2990,11 @@ def test_flush_folding_roundtrip(ctx, codec):
 # ---------------------------------------------------------------------------
 
 
-@test("buffered stream shrinks the window once the size is known", needs_debug=True, only=ZSTD)
+@test(
+    "buffered stream shrinks the window once the size is known",
+    needs_debug=True,
+    only=ZSTD,
+)
 def test_deferred_window_for_buffered_stream(ctx):
     """A small response of unknown length still reaches the filter whole, just
     without last_buf on the first call. Holding it briefly lets the filter size
@@ -3110,7 +3081,11 @@ def test_window_tuning(ctx):
     )
 
 
-@test("stream of unknown length falls back to the full window", needs_debug=True, only=ZSTD)
+@test(
+    "stream of unknown length falls back to the full window",
+    needs_debug=True,
+    only=ZSTD,
+)
 def test_stream_uses_full_window(ctx):
     """Same payload as test_window_tuning's small case, but delivered chunked.
     With no Content-Length to tune from, the filter must use pack_zstd_window -
@@ -3187,9 +3162,7 @@ def test_small_window_does_not_deadlock(ctx, codec):
     """
     path = codec.path("tiny-window", "big.html")
     try:
-        _, headers, body = fetch(
-            ctx.port, path, codec.token, timeout=DEADLOCK_TIMEOUT
-        )
+        _, headers, body = fetch(ctx.port, path, codec.token, timeout=DEADLOCK_TIMEOUT)
     except (TimeoutError, socket.timeout) as exc:
         raise Failure(
             f"{path} did not finish within {DEADLOCK_TIMEOUT}s ({exc}). "
@@ -3218,9 +3191,7 @@ def test_small_window_does_not_deadlock(ctx, codec):
 def test_alloc_balance_static(ctx, codec):
     ctx.nginx.mark_log()
     fetch(ctx.port, codec.file("big.html"), codec.token)
-    assert_balanced(
-        wait_for_encoder_release(ctx.nginx, codec=codec), "static"
-    )
+    assert_balanced(wait_for_encoder_release(ctx.nginx, codec=codec), "static")
 
 
 @test(
@@ -3231,9 +3202,7 @@ def test_alloc_balance_static(ctx, codec):
 def test_alloc_balance_stream(ctx, codec):
     ctx.nginx.mark_log()
     fetch(ctx.port, codec.path("stream", "big.html"), codec.token)
-    assert_balanced(
-        wait_for_encoder_release(ctx.nginx, codec=codec), "stream"
-    )
+    assert_balanced(wait_for_encoder_release(ctx.nginx, codec=codec), "stream")
 
 
 def peak_encoder_bytes(ctx, path):
@@ -3254,8 +3223,11 @@ def peak_encoder_bytes(ctx, path):
     return max(entry["peak_bytes"] for entry in active), body
 
 
-@test("a stream costs no more memory than the same body of known length",
-      needs_debug=True, only=ZSTD)
+@test(
+    "a stream costs no more memory than the same body of known length",
+    needs_debug=True,
+    only=ZSTD,
+)
 def test_stream_memory_ceiling(ctx):
     """Pins ZSTD_c_srcSizeHint, which nothing else here would notice.
 
@@ -3324,8 +3296,7 @@ def test_hint_directive_reaches_encoder(ctx):
     small_peak, small_body = peak_encoder_bytes(ctx, "/small-hint/big.html")
 
     check(
-        not frame_declares_size(default_body)
-        and not frame_declares_size(small_body),
+        not frame_declares_size(default_body) and not frame_declares_size(small_body),
         "one of the two took the pledge path rather than the hint path, so "
         "this does not compare what it means to",
     )
@@ -3353,9 +3324,7 @@ def test_alloc_soak(ctx, codec):
     ctx.nginx.mark_log()
     for _ in range(rounds):
         fetch(ctx.port, codec.file("big.html"), codec.token)
-    active = assert_balanced(
-        wait_for_encoder_release(ctx.nginx, codec=codec), "soak"
-    )
+    active = assert_balanced(wait_for_encoder_release(ctx.nginx, codec=codec), "soak")
 
     check(
         len(active) == rounds, f"expected {rounds} traced requests, saw {len(active)}"
@@ -3390,8 +3359,11 @@ def keepalive_soak(ctx, paths, rounds, codec=ZSTD):
     return allocator_timeline(ctx.nginx.read_log(), codec)
 
 
-@test("one connection serving many requests holds nothing between them",
-      needs_debug=True, codecs=CODECS)
+@test(
+    "one connection serving many requests holds nothing between them",
+    needs_debug=True,
+    codecs=CODECS,
+)
 def test_keepalive_allocation_balance(ctx, codec):
     """The encoder's lifetime is the request, not the connection.
 
@@ -3504,9 +3476,7 @@ def test_cleanup_handler_on_abort(ctx, codec):
     fetch_and_abort(ctx.port, codec.path("slow", ""), codec.token)
     # Polls rather than sleeping a fixed 2.5s for nginx to notice the reset:
     # faster here, and it does not give up early on a loaded runner.
-    active = assert_balanced(
-        wait_for_encoder_release(ctx.nginx, codec=codec), "abort"
-    )
+    active = assert_balanced(wait_for_encoder_release(ctx.nginx, codec=codec), "abort")
 
     # The point of this test. The encoder must be released by the pool cleanup
     # handler, which runs inside ngx_destroy_pool - after nginx has logged
@@ -3527,8 +3497,11 @@ def released_early_paths(codec):
     return (codec.file("big.html"), codec.path("stream", "big.html"))
 
 
-@test("a finished response releases the encoder before the request closes",
-      needs_debug=True, codecs=CODECS)
+@test(
+    "a finished response releases the encoder before the request closes",
+    needs_debug=True,
+    codecs=CODECS,
+)
 def test_encoder_released_before_close(ctx, codec):
     """The mirror of the abort test above, and the only cover for the close
     in ngx_http_pack_zstd_finish.
@@ -3589,8 +3562,11 @@ TABLE_CEILINGS = (
 )
 
 
-@test("the encoder sizes its tables to the window, not to the level",
-      needs_debug=True, only=ZSTD)
+@test(
+    "the encoder sizes its tables to the window, not to the level",
+    needs_debug=True,
+    only=ZSTD,
+)
 def test_table_sizing(ctx):
     """Nothing in the frame says what tables made it, so this measures
     the only thing visible from outside - what the encoder allocated -
@@ -3606,8 +3582,7 @@ def test_table_sizing(ctx):
             f"{path} was not compressed, so no encoder was built",
         )
 
-        active = assert_balanced(
-            wait_for_encoder_release(ctx.nginx), f"tables {path}")
+        active = assert_balanced(wait_for_encoder_release(ctx.nginx), f"tables {path}")
         peak = max(entry["peak_bytes"] for entry in active.values())
 
         check(
@@ -3618,8 +3593,11 @@ def test_table_sizing(ctx):
         )
 
 
-@test("committed output rounds account for every byte of the body",
-      needs_debug=True, codecs=CODECS)
+@test(
+    "committed output rounds account for every byte of the body",
+    needs_debug=True,
+    codecs=CODECS,
+)
 def test_output_rounds_account_for_the_body(ctx, codec):
     """The filter refills its output buffers round after round.
 
@@ -3639,9 +3617,7 @@ def test_output_rounds_account_for_the_body(ctx, codec):
     the build was limited to.
     """
     ctx.nginx.mark_log()
-    status, headers, body = fetch(
-        ctx.port, codec.file("big.html"), codec.token
-    )
+    status, headers, body = fetch(ctx.port, codec.file("big.html"), codec.token)
     check(status == 200, f"expected 200, got {status}")
     check(
         headers.get("content-encoding") == codec.token,
@@ -3788,9 +3764,7 @@ def main():
             waits = len(TEARDOWN_TIMEOUTS)
             started = time.time()
             if entry["needs_decoder"] and codec.decode is None:
-                results.append(
-                    (SKIP, name, f"no {codec.name} decoder available")
-                )
+                results.append((SKIP, name, f"no {codec.name} decoder available"))
             elif entry["needs_debug"] and not has_debug:
                 results.append((SKIP, name, "nginx lacks --with-debug"))
             elif entry["needs_corpus"] and not has_corpus:
