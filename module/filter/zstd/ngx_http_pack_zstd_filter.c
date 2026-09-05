@@ -248,6 +248,12 @@ static char *ngx_http_pack_zstd_set_buffers(
    slowest match-finding strategies for a ratio gain that shrinks as
    the level climbs; script/bench_corpus.py is what would justify
    raising NGX_HTTP_PACK_ZSTD_LEVEL_MAX instead. */
+static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
+    ngx_conf_check_num_bounds,
+    NGX_HTTP_PACK_ZSTD_LEVEL_MIN,
+    NGX_HTTP_PACK_ZSTD_LEVEL_MAX,
+};
+
 static ngx_conf_enum_t const ngx_http_pack_zstd_proxied[] = {
     {
         .name  = ngx_string("off"),
@@ -261,12 +267,6 @@ static ngx_conf_enum_t const ngx_http_pack_zstd_proxied[] = {
         .name  = ngx_null_string,
         .value = 0,
     },
-};
-
-static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
-    ngx_conf_check_num_bounds,
-    NGX_HTTP_PACK_ZSTD_LEVEL_MIN,
-    NGX_HTTP_PACK_ZSTD_LEVEL_MAX,
 };
 
 static ngx_conf_post_handler_pt const
