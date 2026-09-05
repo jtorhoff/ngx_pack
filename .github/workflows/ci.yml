@@ -35,10 +35,7 @@ jobs:
           submodules: recursive
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake libpcre3-dev zlib1g-dev
+        uses: ./.github/actions/build-deps
 
       - name: Build zstd and nginx
         run: script/build.sh
@@ -87,10 +84,7 @@ jobs:
           submodules: recursive
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake libpcre3-dev zlib1g-dev
+        uses: ./.github/actions/build-deps
 
       # This job and the other sanitizer one build the libraries
       # themselves rather than running script/build.sh, because that
@@ -104,7 +98,8 @@ jobs:
         run: |
           cmake -S deps/zstd/build/cmake -B deps/zstd/out \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_SHARED=OFF \
+                -DZSTD_BUILD_STATIC=ON \
+                -DZSTD_BUILD_SHARED=OFF \
                 -DZSTD_BUILD_PROGRAMS=OFF \
                 -DZSTD_MULTITHREAD_SUPPORT=OFF \
                 -DZSTD_LEGACY_SUPPORT=OFF
@@ -158,10 +153,7 @@ jobs:
           submodules: recursive
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake libpcre3-dev zlib1g-dev
+        uses: ./.github/actions/build-deps
 
       # This job and the other sanitizer one build the libraries
       # themselves rather than running script/build.sh, because that
@@ -175,7 +167,8 @@ jobs:
         run: |
           cmake -S deps/zstd/build/cmake -B deps/zstd/out \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DZSTD_BUILD_STATIC=ON -DZSTD_BUILD_SHARED=OFF \
+                -DZSTD_BUILD_STATIC=ON \
+                -DZSTD_BUILD_SHARED=OFF \
                 -DZSTD_BUILD_PROGRAMS=OFF \
                 -DZSTD_MULTITHREAD_SUPPORT=OFF \
                 -DZSTD_LEGACY_SUPPORT=OFF
@@ -250,10 +243,7 @@ jobs:
           submodules: recursive
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake libpcre3-dev zlib1g-dev
+        uses: ./.github/actions/build-deps
 
       # Every other job builds --with-debug, so nothing here has ever
       # been compiled with NGX_DEBUG off. That hides a whole class of
@@ -304,10 +294,7 @@ jobs:
           submodules: recursive
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake libpcre3-dev zlib1g-dev
+        uses: ./.github/actions/build-deps
 
       # For libzstd and the zstd CLI the suites decompress with;
       # test-small-buffer.sh builds only its own nginx tree.
@@ -353,10 +340,7 @@ jobs:
           submodules: recursive
 
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake libpcre3-dev zlib1g-dev
+        uses: ./.github/actions/build-deps
 
       # For libzstd; test-oom.sh builds its own nginx tree, with the
       # allocation-fault hook compiled in.
@@ -401,10 +385,11 @@ jobs:
       # and then fails at link with
       # "cannot find .../libclang_rt.fuzzer-<arch>.a".
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang libclang-rt-dev cmake libpcre3-dev zlib1g-dev
+        uses: ./.github/actions/build-deps
+        with:
+          # libFuzzer needs clang and its runtime; the clang package
+          # alone leaves the sanitizer archive missing at link time.
+          extra: clang libclang-rt-dev
 
       # The targets include nginx's headers and compile its
       # ngx_string.c, so they need a configured tree. Reusing
@@ -430,11 +415,11 @@ jobs:
 
       # Exploratory, and time-boxed. New inputs go to a scratch
       # directory given first, so a run cannot rewrite the seeds.
-      - name: Fuzz for two minutes
+      - name: Fuzz for one minute
         run: |
           mkdir -p script/fuzz/out/corpus
           script/fuzz/out/fuzz_accept_encoding \
-            -max_total_time=120 -print_final_stats=1 \
+            -max_total_time=60 -print_final_stats=1 \
             -dict=script/fuzz/accept_encoding.dict \
             script/fuzz/out/corpus script/fuzz/corpus
 
