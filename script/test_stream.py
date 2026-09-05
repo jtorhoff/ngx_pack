@@ -902,18 +902,31 @@ class Nginx:
 # ---------------------------------------------------------------------------
 
 
-def fetch(port, path, accept_encoding: str | None = "zstd", method="GET", timeout=30):
+def fetch(
+    port,
+    path,
+    accept_encoding: str | None = "zstd",
+    method="GET",
+    timeout=30,
+    headers=None,
+):
     """Returns (status, lowercased headers, raw body). No auto-decompression.
 
     accept_encoding of None sends no Accept-Encoding header at all, which is a
     different case from sending an empty one.
+
+    "headers" adds request headers the caller needs - "Via", for the
+    proxied gate - and is applied after Accept-Encoding, so a caller can
+    override that too.
     """
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     try:
-        headers = {"Host": "localhost"}
+        request_headers = {"Host": "localhost"}
         if accept_encoding is not None:
-            headers["Accept-Encoding"] = accept_encoding
-        conn.request(method, path, headers=headers)
+            request_headers["Accept-Encoding"] = accept_encoding
+        if headers:
+            request_headers.update(headers)
+        conn.request(method, path, headers=request_headers)
         response = conn.getresponse()
         body = response.read()
         return (response.status, {k.lower(): v for k, v in response.getheaders()}, body)
@@ -2315,6 +2328,53 @@ PRECEDENCE_CASES = [
     ("br", "br"),
     ("gzip", "gzip"),
 ]
+
+
+@test("a proxied request is declined unless proxied is any", codecs=CODECS)
+def test_proxied_gate(ctx, codec):
+    """A "Via" header means another proxy already handled this request.
+
+    gzip_proxied defaults to off and declines those, so an operator
+    moving from gzip would otherwise find responses being compressed
+    that were previously passed through - a change nobody asked for,
+    and one that shows up as cache behaviour rather than an error.
+
+    Only off and any are offered. gzip's other settings key off
+    response headers - expired, no-cache, no-store, private, auth - and
+    "any" is what most configurations that care reach for anyway.
+
+    Sent as a plain request too, since a rule that declined everything
+    would satisfy the first assertion on its own.
+    """
+    via = {"Via": "1.1 upstream-cache"}
+
+    _, headers, _ = fetch(
+        ctx.port, f"/proxied-default/small.html", codec.token, headers=via
+    )
+    check(
+        "content-encoding" not in headers,
+        f"a request carrying Via was compressed with "
+        f"{headers.get('content-encoding')!r} at the default setting",
+    )
+
+    # Same location, no Via: proves the decline above is the header's
+    # doing and not the location refusing everything.
+    _, headers, _ = fetch(ctx.port, "/proxied-default/small.html", codec.token)
+    check(
+        headers.get("content-encoding") == codec.token,
+        f"the same location without Via answered "
+        f"{headers.get('content-encoding')!r}, so the test above proves "
+        f"nothing about Via",
+    )
+
+    _, headers, _ = fetch(
+        ctx.port, "/proxied-any/small.html", codec.token, headers=via
+    )
+    check(
+        headers.get("content-encoding") == codec.token,
+        f"{codec.directive}_proxied any still declined a request "
+        f"carrying Via, answering {headers.get('content-encoding')!r}",
+    )
 
 
 @test("zstd, then br, then gzip claims a response", label="all")

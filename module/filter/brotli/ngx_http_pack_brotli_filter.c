@@ -29,6 +29,17 @@ static ngx_str_t const ENCODING = ngx_string("br");
    case this exists to learn. */
 #define NGX_HTTP_PACK_BROTLI_HELD_INPUT (32 * 1024)
 
+/* pack_brotli_proxied. Matches gzip_proxied's default of "off": a
+   request carrying "Via" reached us through another proxy, and
+   compressing there is the operator's call, not ours. Only these two
+   of gzip's settings - the rest key off response headers this filter
+   would have to re-read, and "any" covers what they are reached for.
+ */
+enum {
+    NGX_HTTP_PACK_BROTLI_PROXIED_OFF = 0,
+    NGX_HTTP_PACK_BROTLI_PROXIED_ANY,
+};
+
 /* Compression level, spelled out rather than taken from
    BROTLI_MIN_QUALITY and BROTLI_MAX_QUALITY so that this file needs
    no Brotli header: what the encoder is made of is its own business.
@@ -115,6 +126,10 @@ typedef struct {
        pack_brotli_buffers, kept in the pair nginx parses them into.
      */
     ngx_bufs_t bufs;
+
+    /* pack_brotli_proxied: whether a request that arrived through
+       another proxy may be compressed. */
+    ngx_uint_t proxied;
 } conf_t;
 
 
@@ -208,6 +223,21 @@ static char *ngx_http_pack_brotli_set_buffers(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
+static ngx_conf_enum_t const ngx_http_pack_brotli_proxied[] = {
+    {
+        .name  = ngx_string("off"),
+        .value = NGX_HTTP_PACK_BROTLI_PROXIED_OFF,
+    },
+    {
+        .name  = ngx_string("any"),
+        .value = NGX_HTTP_PACK_BROTLI_PROXIED_ANY,
+    },
+    {
+        .name  = ngx_null_string,
+        .value = 0,
+    },
+};
+
 static ngx_conf_num_bounds_t ngx_http_pack_brotli_level_bounds = {
     ngx_conf_check_num_bounds,
     NGX_HTTP_PACK_BROTLI_LEVEL_MIN,
@@ -266,6 +296,16 @@ static ngx_command_t ngx_http_pack_brotli_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, min_length),
         NULL,
+    },
+
+    {
+        ngx_string("pack_brotli_proxied"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE1,
+        ngx_conf_set_enum_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, proxied),
+        (void *) &ngx_http_pack_brotli_proxied,
     },
 
     {
@@ -394,6 +434,15 @@ ngx_http_pack_brotli_preflight(ngx_http_request_t *const r)
         r->headers_out.status == NGX_HTTP_NO_CONTENT ||
         r->headers_out.status == NGX_HTTP_PARTIAL_CONTENT ||
         r->headers_out.status == NGX_HTTP_NOT_MODIFIED) {
+        return NGX_DECLINED;
+    }
+
+    /* A "Via" header means the request reached us through another
+       proxy. gzip_proxied's default declines those, and an operator
+       moving from gzip should not silently start compressing what
+       they were passing through. */
+    if (r->headers_in.via != NULL &&
+        conf->proxied == NGX_HTTP_PACK_BROTLI_PROXIED_OFF) {
         return NGX_DECLINED;
     }
 
@@ -859,6 +908,7 @@ ngx_http_pack_brotli_create_conf(ngx_conf_t *const cf)
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
     conf->min_length  = NGX_CONF_UNSET;
+    conf->proxied     = NGX_CONF_UNSET_UINT;
 
     return conf;
 }
@@ -873,6 +923,13 @@ ngx_http_pack_brotli_merge_conf(
     char   *rc;
 
     ngx_conf_merge_value(conf->enable, prev->enable, 0);
+
+    /* Off, as gzip_proxied is: a response reached through another
+       proxy is not this server's to transform by default. */
+    ngx_conf_merge_uint_value(
+        conf->proxied,
+        prev->proxied,
+        NGX_HTTP_PACK_BROTLI_PROXIED_OFF);
 
     /* See the constant block above for why each of these three is
        what it is; the reasoning is long enough to belong beside the
