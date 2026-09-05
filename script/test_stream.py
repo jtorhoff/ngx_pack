@@ -489,6 +489,7 @@ CORPUS_FILES = (
     "app.min.js",
     "prose.txt",
     "api.json",
+    "feed.pb",
 )
 
 
@@ -1999,12 +2000,21 @@ def test_corpus_prose(ctx, codec):
     check_corpus_roundtrip(ctx, "prose.txt", codec=codec)
 
 
-# The only corpus file that is not text/*, so it is also what checks that a
-# type reaches the filter through pack_*_types rather than through the
-# always-compressed text/html the other five lean on.
+# Not text/*, so it is also what checks that a type reaches the filter
+# through pack_*_types rather than through the always-compressed text/html
+# the text fixtures lean on. feed.pb below covers the same ground in binary.
 @test("real JSON round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
 def test_corpus_json(ctx, codec):
     check_corpus_roundtrip(ctx, "api.json", codec=codec)
+
+
+# The only corpus file that is not text at all. Everything else here is
+# characters, where a byte that decompressed wrongly would likely still
+# decode; this is protobuf wire format, so the round-trip is checked
+# against bytes that have no such slack.
+@test("real protobuf round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
+def test_corpus_protobuf(ctx, codec):
+    check_corpus_roundtrip(ctx, "feed.pb", codec=codec)
 
 
 @test(

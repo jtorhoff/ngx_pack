@@ -113,6 +113,7 @@ http {{
     application/javascript js;
     text/plain txt;
     application/json json;
+    application/x-protobuf pb;
   }}
   default_type application/octet-stream;
 
@@ -121,7 +122,7 @@ http {{
   # it draws a "duplicate MIME type" warning into output meant for a
   # commit message.
   {codec.directive}_types text/css application/javascript text/plain
-                        application/json;
+                        application/json application/x-protobuf;
   {others}
 
   server {{
