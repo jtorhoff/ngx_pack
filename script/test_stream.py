@@ -2630,7 +2630,7 @@ def config_accepted(ctx, directive):
 # parser walks a loop from WINDOW_BITS_MIN to WINDOW_BITS_MAX comparing
 # against 1 << bits, so an off-by-one at either end is exactly the
 # mistake it can make.
-def window_sizes(ctx):
+def window_sizes(ctx, codec=ZSTD):
     """The window sizes this nginx accepts, read out of its own refusal.
 
     The refusal is generated from NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN/MAX, so
@@ -2638,7 +2638,7 @@ def window_sizes(ctx):
     time a bound moves - and comparing it against what is actually accepted
     below is what would catch the list and the parser disagreeing.
     """
-    _, text = config_accepted(ctx, "pack_zstd_window 1500;")
+    _, text = config_accepted(ctx, f"{codec.directive}_window 1500;")
     listed = re.search(r"must be (.+?) in ", text)
     check(listed is not None, f"no size list in the refusal:\n{text}")
 
@@ -2649,13 +2649,14 @@ def window_sizes(ctx):
     return sizes
 
 
-@test("pack_zstd_window takes every power of two it lists, and no more", only=ZSTD)
-def test_window_bounds(ctx):
+@test("the window directive takes every power of two it lists, and no more",
+      codecs=CODECS)
+def test_window_bounds(ctx, codec):
     """The directive has a parser of its own rather than
     ngx_conf_num_bounds_t, so nothing checks it but this. Both ends matter:
     the floor and the ceiling are what keep a window from costing more
     memory per request in flight than this module is willing to spend."""
-    sizes = window_sizes(ctx)
+    sizes = window_sizes(ctx, codec)
     accepted = [parse_size(size) for size in sizes]
 
     cases = [(size, True) for size in sizes]
@@ -2669,21 +2670,24 @@ def test_window_bounds(ctx):
     ]
 
     for size, want in cases:
-        got, text = config_accepted(ctx, f"pack_zstd_window {size};")
+        got, text = config_accepted(
+            ctx, f"{codec.directive}_window {size};"
+        )
         check(
             got == want,
-            f"pack_zstd_window {size}: expected "
+            f"{codec.directive}_window {size}: expected "
             f"{'accepted' if want else 'refused'}, got the opposite"
             f"{'' if want else chr(10) + text}",
         )
 
 
-@test("pack_zstd_window names the sizes it takes when it refuses one", only=ZSTD)
-def test_window_message(ctx):
+@test("the window directive names the sizes it takes when it refuses one",
+      codecs=CODECS)
+def test_window_message(ctx, codec):
     """The refusal is all the operator gets, so it has to list the values
     rather than say the size was wrong. Every one it names has to be a
     power of two, in ascending order, and none may be past the ceiling."""
-    sizes = window_sizes(ctx)
+    sizes = window_sizes(ctx, codec)
     values = [parse_size(size) for size in sizes]
 
     for size, value in zip(sizes, values):
@@ -2701,23 +2705,40 @@ def test_window_message(ctx):
     )
 
 
-LEVEL_CASES = [
-    ("1", True),
-    ("3", True),
-    ("6", True),
-    ("0", False),
-    ("7", False),
-    ("-1", False),  # a real zstd level, deliberately not exposed
-]
+# The two ranges differ at both ends, which is why the cases are read
+# out of the binary rather than written down: zstd starts at 1 because
+# it exposes none of libzstd's lower or negative levels, Brotli at 0
+# because quality 0 is a real setting with a fast path of its own.
+def level_bounds(ctx, codec):
+    """(floor, ceiling) the level directive enforces, from its refusal."""
+    _, text = config_accepted(ctx, f"{codec.directive}_level 99;")
+    found = re.search(r"must be between (-?\d+) and (-?\d+)", text)
+    check(found is not None, f"no level bounds in the refusal:\n{text}")
+    return int(found.group(1)), int(found.group(2))
 
 
-@test("pack_zstd_level is held to 1..6", only=ZSTD)
-def test_level_bounds(ctx):
-    for level, want in LEVEL_CASES:
-        got, text = config_accepted(ctx, f"pack_zstd_level {level};")
+@test("the level directive is held to the range it reports", codecs=CODECS)
+def test_level_bounds(ctx, codec):
+    """Both ends, and both sides of both ends. The ceiling is the half
+    that had nothing checking it: pack_brotli_level's was moved to 5
+    and no test would have noticed had it been wrong."""
+    floor, ceiling = level_bounds(ctx, codec)
+
+    cases = [
+        (str(floor), True),
+        (str(ceiling), True),
+        (str((floor + ceiling) // 2), True),
+        (str(floor - 1), False),
+        (str(ceiling + 1), False),
+        ("-1", floor <= -1),
+        ("99", False),
+    ]
+
+    for level, want in cases:
+        got, text = config_accepted(ctx, f"{codec.directive}_level {level};")
         check(
             got == want,
-            f"pack_zstd_level {level}: expected "
+            f"{codec.directive}_level {level}: expected "
             f"{'accepted' if want else 'refused'}, got the opposite"
             f"{'' if want else chr(10) + text}",
         )
@@ -2799,8 +2820,9 @@ def buffer_bounds(ctx, codec=ZSTD):
     )
 
 
-@test("pack_zstd_buffers holds both parameters to the bounds it reports", only=ZSTD)
-def test_buffers_bounds(ctx):
+@test("the buffers directive holds both parameters to the bounds it reports",
+      codecs=CODECS)
+def test_buffers_bounds(ctx, codec):
     """One buffer is enough to be correct - the filter stalls until the
     filters below take it - so the count floor is 1. Every case here is
     built from the bounds the binary names in its own refusals, so what
@@ -2809,7 +2831,7 @@ def test_buffers_bounds(ctx):
     Both parameters are required, as with gzip_buffers, so a lone count
     is a configuration error rather than a count with the default size.
     """
-    num_min, num_max, size_min, size_max = buffer_bounds(ctx)
+    num_min, num_max, size_min, size_max = buffer_bounds(ctx, codec)
 
     cases = [
         (f"{num_min} {size_min}", True),
@@ -2827,10 +2849,12 @@ def test_buffers_bounds(ctx):
     ]
 
     for parameters, want in cases:
-        got, text = config_accepted(ctx, f"pack_zstd_buffers {parameters};")
+        got, text = config_accepted(
+            ctx, f"{codec.directive}_buffers {parameters};"
+        )
         check(
             got == want,
-            f"pack_zstd_buffers {parameters}: expected "
+            f"{codec.directive}_buffers {parameters}: expected "
             f"{'accepted' if want else 'refused'}, got the opposite"
             f"{'' if want else chr(10) + text}",
         )
@@ -2842,9 +2866,10 @@ def test_buffers_bounds(ctx):
 ONE_BUFFER_WARNING = "multiple buffers are recommended"
 
 
-@test("pack_zstd_buffers warns when a count of 1 gives up the run-ahead", only=ZSTD)
-def test_buffers_one_warns(ctx):
-    """A count of 1 is legal, and costs the thing pack_zstd_buffers
+@test("the buffers directive warns when a count of 1 gives up the run-ahead",
+      codecs=CODECS)
+def test_buffers_one_warns(ctx, codec):
+    """A count of 1 is legal, and costs the thing the directive
     exists to buy: the encoder stops after each buffer until the filters
     below give it back. Nothing else says so - the configuration is
     accepted and the server runs - so the warning is the only notice an
@@ -2852,9 +2877,11 @@ def test_buffers_one_warns(ctx):
 
     The count above the floor is the control: without it a warning
     emitted unconditionally would pass just as well."""
-    num_min, _, size_min, _ = buffer_bounds(ctx)
+    num_min, _, size_min, _ = buffer_bounds(ctx, codec)
 
-    accepted, text = config_accepted(ctx, f"pack_zstd_buffers {num_min} {size_min};")
+    accepted, text = config_accepted(
+        ctx, f"{codec.directive}_buffers {num_min} {size_min};"
+    )
     check(accepted, f"a count of {num_min} was refused:\n{text}")
     check(
         ONE_BUFFER_WARNING in text,
@@ -2866,7 +2893,7 @@ def test_buffers_one_warns(ctx):
     )
 
     accepted, text = config_accepted(
-        ctx, f"pack_zstd_buffers {num_min + 1} {size_min};"
+        ctx, f"{codec.directive}_buffers {num_min + 1} {size_min};"
     )
     check(accepted, f"a count of {num_min + 1} was refused:\n{text}")
     check(
