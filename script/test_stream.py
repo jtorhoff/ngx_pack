@@ -2228,41 +2228,57 @@ def test_encoding_lists(ctx, codec):
         )
 
 
-@test("zstd claims a response the client would take either way")
+# What /all/ answers with, for a client that takes some combination of
+# the three. The single-token rows are not ordering cases: they are what
+# proves each filter is switched on at that location, without which
+# every row above them would pass just as well against a server that
+# had never heard of the codec it claims to have passed over.
+PRECEDENCE_CASES = [
+    ("gzip, br, zstd", "zstd"),
+    ("zstd, br, gzip", "zstd"),
+    ("gzip, zstd", "zstd"),
+    ("gzip, br", "br"),
+    ("br, gzip", "br"),
+    # Weights are read only for an explicit zero, so preferring one
+    # loudly does not move it up the chain.
+    ("gzip;q=1.0, br;q=0.9, zstd;q=0.1", "zstd"),
+    ("zstd;q=0, gzip, br", "br"),
+    ("zstd;q=0, br;q=0, gzip", "gzip"),
+    ("zstd", "zstd"),
+    ("br", "br"),
+    ("gzip", "gzip"),
+]
+
+
+@test("zstd, then br, then gzip claims a response")
 def test_codec_precedence(ctx):
-    """Which filter takes a response both would accept is settled by
+    """Which filter takes a response several would accept is settled by
     chain order, not by the client and not by configuration.
 
     Each filter prepends itself to the header chain, so whichever
-    registers last runs first: zstd, which follows Brotli in
-    objs/ngx_modules.c. It labels the response, and the other then sees
-    a Content-Encoding already set and passes through.
+    registers last runs first. In objs/ngx_modules.c that is gzip, then
+    Brotli, then zstd - so the chain runs them in reverse, zstd first.
+    The one that runs first labels the response and the rest see a
+    Content-Encoding already set and pass through.
 
-    Nothing in either module states that preference - it falls out of
-    the order the root config walks the subdirectories - so it would
-    flip silently if those moved. The client cannot influence it either:
-    weights are read only for an explicit zero, so a client that asks
-    for Brotli by preference still gets zstd.
+    Nothing states that preference. For our two it falls out of the
+    order the root config walks the subdirectories, and gzip is below
+    both only because nginx registers its own filters before any addon.
+    Reordering either would flip the answer silently.
+
+    The client has no say: weights are read only for an explicit zero,
+    which is why the q=0 rows move down the chain and the q=1.0 row
+    does not move up.
     """
-    for accept in ("br, zstd", "zstd, br", "br;q=1.0, zstd;q=0.1"):
-        _, headers, _ = fetch(ctx.port, "/both/small.html", accept)
+    for accept, expected in PRECEDENCE_CASES:
+        _, headers, _ = fetch(ctx.port, "/all/small.html", accept)
         check(
-            headers.get("content-encoding") == ZSTD.token,
+            headers.get("content-encoding") == expected,
             f"Accept-Encoding: {accept!r} was answered with "
-            f"{headers.get('content-encoding')!r}; the filters have "
-            f"changed places in the chain",
+            f"{headers.get('content-encoding')!r}, not {expected!r}; "
+            f"the filters have changed places in the chain, or one of "
+            f"them is not enabled at /all/",
         )
-
-    # The control. Without it every assertion above would pass just as
-    # well with the Brotli filter switched off at this location, which
-    # would make the precedence they claim to pin meaningless.
-    _, headers, _ = fetch(ctx.port, "/both/small.html", BROTLI.token)
-    check(
-        headers.get("content-encoding") == BROTLI.token,
-        f"a client taking only br got {headers.get('content-encoding')!r}, "
-        f"so Brotli is not enabled at /both/ and the precedence above "
-        f"proves nothing",
-    )
 
 
 @test("HTTP/1.0 clients are not served a compressed body", codecs=CODECS)
