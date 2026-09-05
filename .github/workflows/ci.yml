@@ -257,9 +257,16 @@ jobs:
       - name: Build the vendored libraries
         uses: ./.github/actions/build-libs
 
-      - name: Build nginx
-        run: script/build.sh
-
+      # No "script/build.sh" step here, deliberately: it would build an
+      # ordinary nginx that nothing in this job ever runs.
+      # test-small-buffer.sh clones and builds nginx-small-buffer of its
+      # own and points both suites at that binary, by NGINX_BIN for the
+      # shell suite and --nginx for the streaming one, so neither can
+      # fall back to nginx/objs/nginx. The libraries it does need come
+      # from the cached step above.
+      #
+      # The fixtures below are not the same story: test-small-buffer.sh
+      # runs the shell suite, which serves them.
       - name: Prepare fixtures
         run: script/prepare-tests.sh
 
@@ -306,11 +313,12 @@ jobs:
       - name: Build the vendored libraries
         uses: ./.github/actions/build-libs
 
-      - name: Build nginx
-        run: script/build.sh
-
-      - name: Prepare fixtures
-        run: script/prepare-tests.sh
+      # Neither a "script/build.sh" nor a "prepare-tests.sh" step here,
+      # deliberately. test-oom.sh builds nginx-oom and hands that binary
+      # to test_oom.py, which calls build_fixtures() for a fixture tree
+      # of its own - so an ordinary nginx and the shell suite's fixtures
+      # are both dead weight, the latter including a download from
+      # gutenberg.org this job would otherwise have to survive.
 
       # The branches taken when libzstd cannot get memory. Nothing else
       # reaches them: a test cannot make malloc fail for one module and
