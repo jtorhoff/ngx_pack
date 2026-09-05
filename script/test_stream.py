@@ -141,13 +141,18 @@ BROTLI = Codec("brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",
 
 
 # What a test line is prefixed with. Centred in the width of the
-# longest tag so the names below them line up: "[ zstd ]",
-# "[brotli]", "[static]". Built from log_tag rather than log_tag
-# being the bracketed form itself - that string is interpolated into
-# the allocator regexes below, where "[ zstd ]" is a character class
-# and matches none of the debug lines it is meant to find.
+# longest tag so the names below them line up: "[ zstd ]", "[brotli]",
+# "[static]", "[  all ]". Built from log_tag rather than log_tag being
+# the bracketed form itself - that string is interpolated into the
+# allocator regexes below, where "[ zstd ]" is a character class and
+# matches none of the debug lines it is meant to find.
+#
+# An odd space goes to the left, where "{:^6}" would put it on the
+# right. It only shows on "all", and only against a column of tags that
+# are otherwise flush.
 def tag_for(text):
-    return f"[{text:^6}]"
+    pad = 6 - len(text)
+    return f"[{' ' * (pad - pad // 2)}{text}{' ' * (pad // 2)}]"
 
 CODECS = [ZSTD, BROTLI]
 
@@ -2312,7 +2317,7 @@ PRECEDENCE_CASES = [
 ]
 
 
-@test("zstd, then br, then gzip claims a response")
+@test("zstd, then br, then gzip claims a response", label="all")
 def test_codec_precedence(ctx):
     """Which filter takes a response several would accept is settled by
     chain order, not by the client and not by configuration.
