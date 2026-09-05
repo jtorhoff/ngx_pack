@@ -1127,15 +1127,11 @@ typedef struct {
 } derive_tables_result;
 
 /* How big the match finder's tables should be. zstd derives them from
-   the level alone, which says nothing about the window: at the window
-   floor it asks for a hash table several times the window it indexes,
-   memory no response can fill.
-
-   Capped a bit below the window rather than at it. The first bit
-   under is very nearly free - it halves the hash table, which is the
-   largest thing here - and the second is not, which is what decides
-   where this stops. script/bench_memory.py and script/bench_corpus.py
-   measure the trade for a given corpus. */
+   the level alone, which says nothing about the window: at the floor
+   it asks for a hash table several times the window it indexes.
+   Capped a bit below the window, that bit halving the largest
+   allocation here for almost nothing on the wire, where the next one
+   costs. */
 static derive_tables_result
 ngx_http_pack_zstd_derive_tables(derive_tables_args *const args)
 {
