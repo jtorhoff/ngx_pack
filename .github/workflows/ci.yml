@@ -450,6 +450,39 @@ jobs:
           CLANG: clang
         run: script/analyze.sh
 
+  shellcheck:
+    name: Lint the shell scripts
+    # One runner is enough: shellcheck reads the scripts, so the result
+    # does not depend on the architecture underneath it.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+
+      # Found rather than listed, so a script added later is covered
+      # without anyone remembering to name it here - a lint job that
+      # quietly stops covering things is worse than none.
+      #
+      # Default severity, which is already everything from errors down to
+      # style. Not "-o all": that turns on the optional checks, and they
+      # ask for braces around every variable and [[ ]] over [ ] - some 350
+      # findings across these ten files, none of them bugs, all of them
+      # against the idiom the scripts are written in.
+      - name: Check the scripts
+        run: |
+          shellcheck --version | grep version:
+          mapfile -t scripts < <(find script -name '*.sh' -type f | sort)
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            echo "::error::no shell scripts found under script/"
+            exit 1
+          fi
+          printf '  %s\n' "${scripts[@]}"
+          shellcheck "${scripts[@]}"
+
   format:
     name: Check formatting with clang-format (${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}
