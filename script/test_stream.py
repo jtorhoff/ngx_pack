@@ -427,9 +427,11 @@ def encode_with_command(argv: list[str]) -> Callable[[bytes], bytes] | None:
 # bytes are also genuinely decodable by a client; where none is
 # installed a marker body stands in, and the tests still prove which
 # file was chosen because they compare against the bytes on disk.
-SIBLING_ENCODINGS = [
+SIBLING_ENCODINGS: list[
+    tuple[str, str, Callable[[], Callable[[bytes], bytes] | None]]
+] = [
     ("br", ".br", lambda: encode_with_command(["brotli", "-c", "-q", "5"])),
-    ("gzip", ".gz", lambda: lambda data: gzip.compress(data)),
+    ("gzip", ".gz", lambda: (lambda data: gzip.compress(data))),
     ("zstd", ".zst", locate_encoder),
 ]
 
@@ -554,7 +556,7 @@ CORPUS_FILES = (
 
 def load_corpus() -> dict[str, bytes]:
     """Returns {name: bytes}, or {} if the corpus is not present."""
-    corpus = {}
+    corpus: dict[str, bytes] = {}
     for name in CORPUS_FILES:
         path = os.path.join(CORPUS, name)
         try:
@@ -1787,7 +1789,7 @@ def test_static_siblings_distinct(ctx: Context) -> None:
     so this also covers the constructed path being hashed over the right
     length: open_file_cache is on for this location, and ".br" and ".zst"
     are not the same number of characters."""
-    seen = {}
+    seen: dict[str, bytes] = {}
     for encoding in ("br", "zstd", "gzip"):
         # Twice, so the second answer comes from open_file_cache.
         for _ in range(2):
@@ -2585,7 +2587,7 @@ def test_delivery_shape(ctx: Context, codec: Codec) -> None:
     arm64 uses 4k pages too.
     """
     expected = ctx.fixtures["big.html"]
-    decoded = {}
+    decoded: dict[str, bytes] = {}
 
     for size in DELIVERY_SIZES:
         path = codec.path(f"bufsize-{size}", "big.html")
@@ -2720,7 +2722,7 @@ def test_http_version_gate(ctx: Context, codec: Codec) -> None:
     Vary advertised, as the gzip filter does, so a cache in front keeps the
     responses apart."""
 
-    def raw(version):
+    def raw(version: str) -> tuple[bool, bool]:
         sock = socket.create_connection(("127.0.0.1", ctx.port), timeout=30)
         try:
             sock.sendall(
@@ -3883,7 +3885,7 @@ def test_keepalive_allocation_balance(ctx: Context, codec: Codec) -> None:
     # Taking the maximum keeps what the test is for - the soak must not
     # exceed the dearest thing in it - without needing to know which of
     # the paths that is on the platform underneath.
-    singles = {}
+    singles: dict[str, int] = {}
     for path in paths:
         ctx.nginx.mark_log()
         singles[path] = keepalive_soak(ctx, [path], 1, codec)["peak"]
@@ -4092,7 +4094,7 @@ def continue_ordinal(codec: Codec) -> int:
     if block is None:
         raise Failure(f"no step enum found in {header}")
 
-    value, seen = 0, {}
+    value, seen = 0, dict[str, int]()
     for line in block.group(1).split("\n"):
         m = re.match(r"\s*(NGX_HTTP_PACK_\w+?_STEP_(\w+))\s*(?:=\s*(\d+))?\s*,", line)
         if not m:
@@ -4201,7 +4203,7 @@ def test_output_rounds_account_for_the_body(ctx: Context, codec: Codec) -> None:
         "response was not compressed",
     )
 
-    rounds = {}
+    rounds: dict[str, list[int]] = {}
     for conn, size in codec.out_re.findall(ctx.nginx.read_log()):
         rounds.setdefault(conn, []).append(int(size))
     check(len(rounds) == 1, f"expected one traced request, saw {len(rounds)}")
@@ -4339,7 +4341,7 @@ def main() -> int:
     )
     ctx.nginx.start()
 
-    results = []
+    results: list[tuple[str, str, str]] = []
     try:
         width = max(len(entry["name"]) for entry in REGISTRY)
         for entry in REGISTRY:
