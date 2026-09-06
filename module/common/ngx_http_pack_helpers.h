@@ -29,11 +29,11 @@ ngx_http_pack_format_size(ngx_pool_t *const pool, size_t const bytes)
 
     size_t  value;
     u_char  unit;
-    u_char *data;
-    size_t  end;
+    u_char *buf;
+    size_t  len;
 
-    data = ngx_pnalloc(pool, max_str_len);
-    if (data == NULL) {
+    buf = ngx_pnalloc(pool, max_str_len);
+    if (buf == NULL) {
         return (ngx_str_t) ngx_null_string;
     }
 
@@ -48,15 +48,15 @@ ngx_http_pack_format_size(ngx_pool_t *const pool, size_t const bytes)
         unit  = 0;
     }
 
-    end = (size_t) (ngx_sprintf(data, "%uz", value) - data);
+    len = (size_t) (ngx_sprintf(buf, "%uz", value) - buf) +
+          (unit ? 1 : 0);
     if (unit) {
-        data[end]  = unit;
-        end       += 1;
+        buf[len - 1] = unit;
     }
 
     return (ngx_str_t) {
-        .data = data,
-        .len  = end,
+        .len  = len,
+        .data = buf,
     };
 }
 
