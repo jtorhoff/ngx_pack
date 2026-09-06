@@ -27,7 +27,8 @@
 
    What this does NOT cover: the filter module itself, which needs a
    request, a pool and a buffer chain to do anything.
-   script/tests/stream/test_stream.py covers that at the integration level.
+   script/tests/stream/test_stream.py covers that at the integration
+   level.
 
    Build and run: script/fuzz/build.sh, then
    script/fuzz/out/fuzz_accept_encoding
