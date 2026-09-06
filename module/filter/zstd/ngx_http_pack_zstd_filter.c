@@ -78,7 +78,7 @@ enum {
 /* The floor here too, and for the other axis: level is what trades
    CPU for size, where the window trades memory for it. Raising it
    buys ratio and costs time, at the same memory.
-   script/bench_corpus.py measures both halves. */
+   script/bench/bench_corpus.py measures both halves. */
 #define NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT 1
 
 /* Bounds on pack_zstd_buffers' count. One buffer is enough to be
@@ -246,8 +246,8 @@ static char *ngx_http_pack_zstd_set_buffers(
 /* Narrower than zstd's own stable range (1 to 22, plus negatives,
    none exposed here). Past this ceiling, levels reach for zstd's
    slowest match-finding strategies for a ratio gain that shrinks as
-   the level climbs; script/bench_corpus.py is what would justify
-   raising NGX_HTTP_PACK_ZSTD_LEVEL_MAX instead. */
+   the level climbs; script/bench/bench_corpus.py is what would
+   justify raising NGX_HTTP_PACK_ZSTD_LEVEL_MAX instead. */
 static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
     ngx_conf_check_num_bounds,
     NGX_HTTP_PACK_ZSTD_LEVEL_MIN,
@@ -1131,8 +1131,8 @@ ngx_http_pack_zstd_merge_conf(
 
     /* Not zstd's own default, which is 3 (ZSTD_CLEVEL_DEFAULT):
        chosen rather than kept, see the constant.
-       script/bench_corpus.py is what would justify moving it for a
-       given corpus. */
+       script/bench/bench_corpus.py is what would justify moving it
+       for a given corpus. */
     ngx_conf_merge_value(
         conf->level, prev->level, NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT);
 

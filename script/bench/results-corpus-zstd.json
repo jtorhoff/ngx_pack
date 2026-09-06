@@ -1,0 +1,65 @@
+{
+  "tool": "bench_corpus",
+  "nginx": "nginx-bench/objs/nginx",
+  "build": "nginx version: nginx/1.30.4",
+  "repeat": 20,
+  "rows": [
+    {
+      "codec": "none",
+      "level": "off",
+      "window": "-",
+      "raw": 1283760,
+      "out": 1283760,
+      "ms": 1.827833300922066,
+      "measured_with": "zstd"
+    },
+    {
+      "codec": "zstd",
+      "level": "1",
+      "window": "default",
+      "raw": 1283760,
+      "out": 368643,
+      "ms": 4.05696050147526
+    },
+    {
+      "codec": "zstd",
+      "level": "2",
+      "window": "default",
+      "raw": 1283760,
+      "out": 360506,
+      "ms": 4.4171353976707906
+    },
+    {
+      "codec": "zstd",
+      "level": "3",
+      "window": "default",
+      "raw": 1283760,
+      "out": 354669,
+      "ms": 4.693029151530936
+    },
+    {
+      "codec": "zstd",
+      "level": "4",
+      "window": "default",
+      "raw": 1283760,
+      "out": 334726,
+      "ms": 6.813633444835432
+    },
+    {
+      "codec": "zstd",
+      "level": "5",
+      "window": "default",
+      "raw": 1283760,
+      "out": 320773,
+      "ms": 8.990693753003143
+    },
+    {
+      "codec": "zstd",
+      "level": "6",
+      "window": "default",
+      "raw": 1283760,
+      "out": 312117,
+      "ms": 11.959947951254435
+    }
+  ]
+}

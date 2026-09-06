@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 616" width="1000" height="616" font-family="IBM Plex Sans, ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" role="img">
+  <title>Peak encoder memory against latency, zstd and brotli</title>
+  <desc>Latency for the whole corpus on the horizontal axis, compression level on the vertical. Mark area is proportional to the peak memory one response held. A vertical rule at 1.81 ms marks the same server with compression switched off.</desc>
+  <rect width="1000" height="616" fill="#151d23"/>
+  <rect x="74" y="44" width="75.5" height="380" fill="#1b242b"/>
+  <line x1="74.0" y1="44" x2="74.0" y2="424" stroke="#1f2b33" stroke-width="1"/>
+  <text x="74.0" y="446" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">0</text>
+  <line x1="283.0" y1="44" x2="283.0" y2="424" stroke="#1f2b33" stroke-width="1"/>
+  <text x="283.0" y="446" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">5</text>
+  <line x1="492.1" y1="44" x2="492.1" y2="424" stroke="#1f2b33" stroke-width="1"/>
+  <text x="492.1" y="446" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">10</text>
+  <line x1="701.1" y1="44" x2="701.1" y2="424" stroke="#1f2b33" stroke-width="1"/>
+  <text x="701.1" y="446" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">15</text>
+  <line x1="910.2" y1="44" x2="910.2" y2="424" stroke="#1f2b33" stroke-width="1"/>
+  <text x="910.2" y="446" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">20</text>
+  <line x1="74" y1="396.9" x2="952" y2="396.9" stroke="#1f2b33" stroke-width="1"/>
+  <text x="62" y="400.9" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">0</text>
+  <line x1="74" y1="342.6" x2="952" y2="342.6" stroke="#1f2b33" stroke-width="1"/>
+  <text x="62" y="346.6" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">1</text>
+  <line x1="74" y1="288.3" x2="952" y2="288.3" stroke="#1f2b33" stroke-width="1"/>
+  <text x="62" y="292.3" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">2</text>
+  <line x1="74" y1="234.0" x2="952" y2="234.0" stroke="#1f2b33" stroke-width="1"/>
+  <text x="62" y="238.0" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">3</text>
+  <line x1="74" y1="179.7" x2="952" y2="179.7" stroke="#1f2b33" stroke-width="1"/>
+  <text x="62" y="183.7" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">4</text>
+  <line x1="74" y1="125.4" x2="952" y2="125.4" stroke="#1f2b33" stroke-width="1"/>
+  <text x="62" y="129.4" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">5</text>
+  <line x1="74" y1="71.1" x2="952" y2="71.1" stroke="#1f2b33" stroke-width="1"/>
+  <text x="62" y="75.1" text-anchor="end" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">6</text>
+  <line x1="74" y1="424" x2="952" y2="424" stroke="#26333c" stroke-width="1.5"/>
+  <line x1="74" y1="44" x2="74" y2="424" stroke="#26333c" stroke-width="1.5"/>
+  <line x1="149.5" y1="44" x2="149.5" y2="424" stroke="#b0c0cc" stroke-width="2"/>
+  <text x="159.5" y="59" font-size="12" font-weight="600" fill="#b0c0cc">no encoder</text>
+  <text x="159.5" y="76" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#8095a4">0 bytes</text>
+  <text x="513.0" y="482" text-anchor="middle" font-size="12.5" font-weight="600" fill="#b0c0cc">latency for the whole corpus, ms &#8212; lower is better</text>
+  <text x="18" y="234.0" text-anchor="middle" font-size="12.5" font-weight="600" fill="#b0c0cc" transform="rotate(-90 18 234.0)">compression level</text>
+  <polyline points="243.6,342.6 258.7,288.3 270.2,234.0 358.9,179.7 449.9,125.4 574.0,71.1" fill="none" stroke="#56b6d4" stroke-width="2" opacity="0.45"/>
+  <circle cx="243.6" cy="342.6" r="8.02" fill="#56b6d4" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="243.6" y="326.6" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#56b6d4">165 KB</text>
+  <circle cx="243.6" cy="342.6" r="13.02" fill="none" stroke="#56b6d4" stroke-width="1" stroke-dasharray="2 2" opacity="0.85"/>
+  <text x="243.6" y="368.6" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" font-weight="500" fill="#8095a4">default</text>
+  <circle cx="258.7" cy="288.3" r="8.76" fill="#56b6d4" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="258.7" y="271.5" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#56b6d4">197 KB</text>
+  <circle cx="270.2" cy="234.0" r="8.76" fill="#56b6d4" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="270.2" y="217.2" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#56b6d4">197 KB</text>
+  <circle cx="358.9" cy="179.7" r="8.76" fill="#56b6d4" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="358.9" y="163.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#56b6d4">197 KB</text>
+  <circle cx="449.9" cy="125.4" r="8.76" fill="#56b6d4" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="449.9" y="108.7" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#56b6d4">197 KB</text>
+  <circle cx="574.0" cy="71.1" r="8.76" fill="#56b6d4" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="574.0" y="54.4" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#56b6d4">197 KB</text>
+  <polyline points="288.7,396.9 338.1,342.6 416.5,288.3 449.0,234.0 578.3,179.7 881.5,125.4" fill="none" stroke="#f0904f" stroke-width="2" opacity="0.45"/>
+  <circle cx="288.7" cy="396.9" r="8.26" fill="#f0904f" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="288.7" y="380.6" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#f0904f">175 KB</text>
+  <circle cx="288.7" cy="396.9" r="13.26" fill="none" stroke="#f0904f" stroke-width="1" stroke-dasharray="2 2" opacity="0.85"/>
+  <text x="288.7" y="423.1" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10" font-weight="500" fill="#8095a4">default</text>
+  <circle cx="338.1" cy="342.6" r="8.62" fill="#f0904f" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="338.1" y="326.0" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#f0904f">191 KB</text>
+  <circle cx="416.5" cy="288.3" r="15.13" fill="#f0904f" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="416.5" y="265.2" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#f0904f">588 KB</text>
+  <circle cx="449.0" cy="234.0" r="15.13" fill="#f0904f" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="449.0" y="210.9" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#f0904f">588 KB</text>
+  <circle cx="578.3" cy="179.7" r="27.29" fill="#f0904f" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="578.3" y="144.4" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#f0904f">1.87 MB</text>
+  <circle cx="881.5" cy="125.4" r="27.24" fill="#f0904f" fill-opacity="0.85" stroke="#151d23" stroke-width="1.5"/>
+  <text x="881.5" y="90.2" text-anchor="middle" font-family="IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500" fill="#f0904f">1.86 MB</text>
+  <line x1="74" y1="516" x2="952" y2="516" stroke="#26333c" stroke-width="1"/>
+  <line x1="74" y1="542" x2="100" y2="542" stroke="#56b6d4" stroke-width="2"/>
+  <circle cx="87" cy="542" r="5.5" fill="#56b6d4"/>
+  <text x="110" y="546" font-size="13" fill="#b0c0cc"><tspan font-weight="600" fill="#e6edf2">zstd</tspan> · levels 1–6</text>
+  <line x1="284" y1="542" x2="310" y2="542" stroke="#f0904f" stroke-width="2"/>
+  <circle cx="297" cy="542" r="5.5" fill="#f0904f"/>
+  <text x="320" y="546" font-size="13" fill="#b0c0cc"><tspan font-weight="600" fill="#e6edf2">brotli</tspan> · levels 0–5</text>
+  <line x1="524" y1="534" x2="524" y2="550" stroke="#b0c0cc" stroke-width="2"/>
+  <text x="540" y="546" font-size="13" fill="#b0c0cc"><tspan font-weight="600" fill="#e6edf2">no compression</tspan> · 1.81 ms</text>
+  <circle cx="82.0" cy="583" r="8.02" fill="none" stroke="#8095a4" stroke-width="1.5"/>
+  <circle cx="131.3" cy="583" r="27.29" fill="none" stroke="#8095a4" stroke-width="1.5"/>
+  <text x="172.6" y="588" font-size="13" fill="#b0c0cc">mark area &#8733; peak encoder memory &#8212; <tspan font-weight="600" fill="#e6edf2">165 KB</tspan> to <tspan font-weight="600" fill="#e6edf2">1.87 MB</tspan></text>
+</svg>

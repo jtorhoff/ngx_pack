@@ -1,0 +1,43 @@
+{
+  "tool": "bench_memory",
+  "nginx": "nginx/objs/nginx",
+  "build": "nginx version: nginx/1.30.4",
+  "rows": [
+    {
+      "codec": "brotli",
+      "level": "0",
+      "window": "default",
+      "peak": 179463
+    },
+    {
+      "codec": "brotli",
+      "level": "1",
+      "window": "default",
+      "peak": 195327
+    },
+    {
+      "codec": "brotli",
+      "level": "2",
+      "window": "default",
+      "peak": 601840
+    },
+    {
+      "codec": "brotli",
+      "level": "3",
+      "window": "default",
+      "peak": 601840
+    },
+    {
+      "codec": "brotli",
+      "level": "4",
+      "window": "default",
+      "peak": 1959034
+    },
+    {
+      "codec": "brotli",
+      "level": "5",
+      "window": "default",
+      "peak": 1951574
+    }
+  ]
+}

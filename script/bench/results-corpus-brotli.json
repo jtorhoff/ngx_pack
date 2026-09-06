@@ -1,0 +1,65 @@
+{
+  "tool": "bench_corpus",
+  "nginx": "nginx-bench/objs/nginx",
+  "build": "nginx version: nginx/1.30.4",
+  "repeat": 20,
+  "rows": [
+    {
+      "codec": "none",
+      "level": "off",
+      "window": "-",
+      "raw": 1283760,
+      "out": 1283760,
+      "ms": 1.782677206210792,
+      "measured_with": "brotli"
+    },
+    {
+      "codec": "brotli",
+      "level": "0",
+      "window": "default",
+      "raw": 1283760,
+      "out": 409530,
+      "ms": 5.1358958531636745
+    },
+    {
+      "codec": "brotli",
+      "level": "1",
+      "window": "default",
+      "raw": 1283760,
+      "out": 409578,
+      "ms": 6.3173645990900695
+    },
+    {
+      "codec": "brotli",
+      "level": "2",
+      "window": "default",
+      "raw": 1283760,
+      "out": 331320,
+      "ms": 8.192260449868627
+    },
+    {
+      "codec": "brotli",
+      "level": "3",
+      "window": "default",
+      "raw": 1283760,
+      "out": 324566,
+      "ms": 8.968137452029623
+    },
+    {
+      "codec": "brotli",
+      "level": "4",
+      "window": "default",
+      "raw": 1283760,
+      "out": 317040,
+      "ms": 12.061637447914109
+    },
+    {
+      "codec": "brotli",
+      "level": "5",
+      "window": "default",
+      "raw": 1283760,
+      "out": 294725,
+      "ms": 19.314350007334724
+    }
+  ]
+}

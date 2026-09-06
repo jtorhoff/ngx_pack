@@ -35,19 +35,23 @@ Three traps worth knowing before trusting any number this prints:
     fresh worker serves costs substantially more, and nothing here shows it.
 
 Usage:
-    python3 script/bench_corpus.py
-    python3 script/bench_corpus.py --codec brotli --level 0,2,5
-    python3 script/bench_corpus.py --level 1,3,6 --window 16k,64k
-    python3 script/bench_corpus.py --nginx /path/to/nginx --repeat 40
+    python3 script/bench/bench_corpus.py
+    python3 script/bench/bench_corpus.py --codec brotli --level 0,2,5
+    python3 script/bench/bench_corpus.py --level 1,3,6 --window 16k,64k
+    python3 script/bench/bench_corpus.py --nginx /path/to/nginx --repeat 40
 """
 
 import argparse
+import json
 import os
 import sys
 import tempfile
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# test_stream.py lives in script/, one level up from this directory, and
+# carries the fixtures, the nginx wrapper and the allocator-trace parser
+# these tools are built on.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import test_stream as T
 
@@ -90,6 +94,18 @@ def render_conf(work, port, codec, levels, windows):
     # a table headed "brotli" from measuring whichever one won the chain.
     others = "\n  ".join(
         f"{other.directive} off;" for other in T.CODECS if other is not codec
+    )
+
+    # The same corpus with this codec switched off. Every figure above is
+    # read against it - a ratio is free to look good on a filter that has
+    # tripled the time to first byte - and measuring it here rather than in a
+    # second server keeps it the same binary, the same files and the same
+    # request pattern.
+    locations.append(
+        f"    location /plain/ {{\n"
+        f"      root html;\n"
+        f"      {codec.directive} off;\n"
+        f"    }}"
     )
 
     conf = f"""
@@ -178,11 +194,55 @@ def run_codec(codec, args, corpus, names, nginx_bin, summary):
                 with open(os.path.join(directory, name), "wb") as handle:
                     handle.write(blob)
 
+    plain = os.path.join(html, "plain")
+    os.makedirs(plain, exist_ok=True)
+    for name, blob in corpus.items():
+        with open(os.path.join(plain, name), "wb") as handle:
+            handle.write(blob)
+
     conf = render_conf(work, args.port, codec, levels, windows)
     nginx = T.Nginx(nginx_bin, work, conf, args.port)
     nginx.start()
 
     try:
+        print(f"### {codec.name}, filter off - the floor every figure below is "
+              f"read against")
+        print(f"{'file':>12} {'bytes':>9} {'ms':>8}")
+        print("-" * 32)
+        base_ms = base_bytes = 0
+        for name in names:
+            path = "/plain/" + name
+            _, headers, body = T.fetch(args.port, path, codec.token)
+            # Asserted rather than assumed: a baseline that quietly came back
+            # compressed would make every comparison here flattering.
+            if headers.get("content-encoding") is not None:
+                raise SystemExit(
+                    f"error: {path} came back {headers['content-encoding']}-encoded, "
+                    f"so this is not a baseline"
+                )
+            if len(body) != len(corpus[name]):
+                raise SystemExit(
+                    f"error: {path} returned {len(body)} bytes against "
+                    f"{len(corpus[name])} on disk"
+                )
+            elapsed = bench_once(args.port, path, codec.token, args.repeat)
+            base_ms += elapsed
+            base_bytes += len(body)
+            print(f"{name:>12} {len(body):>9,} {elapsed:>7.2f}")
+        print("-" * 32)
+        print(f"{'total':>12} {base_bytes:>9,} {base_ms:>7.2f}\n")
+        summary.append(
+            {
+                "codec": "none",
+                "level": "off",
+                "window": "-",
+                "raw": base_bytes,
+                "out": base_bytes,
+                "ms": base_ms,
+                "measured_with": codec.name,
+            }
+        )
+
         for level in levels:
             for window in windows:
                 print(f"### {label_for(codec, level, window)}")
@@ -248,6 +308,28 @@ def print_summary(rows):
     print()
 
 
+def write_json(path, nginx_bin, version, rows, args):
+    """The summary rows, for a reader that is not a person.
+
+    Everything needed to tell one run from another goes in beside them: a
+    latency is only comparable against another measured on the same binary,
+    with the same repeat count, on the same machine.
+    """
+    with open(path, "w") as handle:
+        json.dump(
+            {
+                "tool": "bench_corpus",
+                "nginx": nginx_bin,
+                "build": version,
+                "repeat": args.repeat,
+                "rows": rows,
+            },
+            handle,
+            indent=2,
+        )
+    print(f"wrote {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -270,6 +352,13 @@ def main():
         "--window",
         default="",
         help="comma-separated window values; empty means the compiled-in default",
+    )
+    parser.add_argument(
+        "--json",
+        metavar="PATH",
+        help="also write the summary rows to PATH as JSON. make_svg.py reads "
+        "this, so a chart is drawn from a real run rather than from figures "
+        "copied out of a terminal",
     )
     parser.add_argument(
         "--repeat",
@@ -319,6 +408,9 @@ def main():
     # above already said everything it would.
     if len(summary) > 1:
         print_summary(summary)
+
+    if args.json:
+        write_json(args.json, nginx_bin, version, summary, args)
 
 
 if __name__ == "__main__":

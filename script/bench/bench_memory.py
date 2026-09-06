@@ -49,17 +49,21 @@ Four traps worth knowing before trusting any number this prints:
     not carry it, and there is nothing to read.
 
 Usage:
-    python3 script/bench_memory.py --nginx /path/to/debug/nginx
-    python3 script/bench_memory.py --codec brotli --window 16k,32k,64k
-    python3 script/bench_memory.py --level 1,3 --window 16k,32k,64k
+    python3 script/bench/bench_memory.py --nginx /path/to/debug/nginx
+    python3 script/bench/bench_memory.py --codec brotli --window 16k,32k,64k
+    python3 script/bench/bench_memory.py --level 1,3 --window 16k,32k,64k
 """
 
 import argparse
+import json
 import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# test_stream.py lives in script/, one level up from this directory, and
+# carries the fixtures, the nginx wrapper and the allocator-trace parser
+# these tools are built on.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import test_stream as T
 
@@ -301,6 +305,13 @@ def main():
         default="",
         help="comma-separated window values; empty means the compiled-in default",
     )
+    parser.add_argument(
+        "--json",
+        metavar="PATH",
+        help="also write the summary rows to PATH as JSON. make_svg.py reads "
+        "this, so a chart is drawn from a real run rather than from figures "
+        "copied out of a terminal",
+    )
     args = parser.parse_args()
 
     by_name = {c.name: c for c in T.CODECS}
@@ -342,6 +353,20 @@ def main():
 
     if len(summary) > 1:
         print_summary(summary)
+
+    if args.json:
+        with open(args.json, "w") as handle:
+            json.dump(
+                {
+                    "tool": "bench_memory",
+                    "nginx": nginx_bin,
+                    "build": version,
+                    "rows": summary,
+                },
+                handle,
+                indent=2,
+            )
+        print(f"wrote {args.json}")
 
 
 if __name__ == "__main__":
