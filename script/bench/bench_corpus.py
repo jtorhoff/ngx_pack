@@ -41,12 +41,15 @@ Usage:
     python3 script/bench/bench_corpus.py --nginx /path/to/nginx --repeat 40
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import sys
 import tempfile
 import time
+from typing import NotRequired, TypedDict
 
 # test_stream.py lives in script/tests/stream, a sibling of this
 # directory's parent, and carries the fixtures, the nginx wrapper and
@@ -70,7 +73,24 @@ MIME = {
 }
 
 
-def location(codec, level, window):
+class Row(TypedDict):
+    """One measured configuration: a summary() entry, and a write_json() row.
+
+    "measured_with" only appears on the "off" baseline row, since that
+    one figure is shared between whichever codecs were run - it names
+    which codec's server happened to produce it.
+    """
+
+    codec: str
+    level: str
+    window: str
+    raw: int
+    out: int
+    ms: float
+    measured_with: NotRequired[str]
+
+
+def location(codec: T.Codec, level: str, window: str) -> str:
     """The path a (level, window) pair is served under, codec included.
 
     Named rather than numbered so a failure in the middle of a sweep says
@@ -78,9 +98,11 @@ def location(codec, level, window):
     return f"/{codec.name}-q{level or 'default'}w{window or 'default'}/"
 
 
-def render_conf(work, port, codec, levels, windows):
+def render_conf(
+    work: str, port: int, codec: T.Codec, levels: list[str], windows: list[str]
+) -> str:
     """One location per (level, window) pair, for this codec alone."""
-    locations = []
+    locations: list[str] = []
     for level in levels:
         for window in windows:
             body = ["      root html;"]
@@ -159,11 +181,11 @@ http {{
     return path
 
 
-def bench_once(port, path, token, repeat):
+def bench_once(port: int, path: str, token: str, repeat: int) -> float:
     """Milliseconds per request, best of five batches."""
     for _ in range(min(8, repeat)):
         T.fetch(port, path, token)
-    samples = []
+    samples: list[float] = []
     for _ in range(5):
         start = time.perf_counter()
         for _ in range(repeat):
@@ -172,8 +194,8 @@ def bench_once(port, path, token, repeat):
     return min(samples)
 
 
-def label_for(codec, level, window):
-    parts = []
+def label_for(codec: T.Codec, level: str, window: str) -> str:
+    parts: list[str] = []
     if level:
         parts.append(f"{codec.directive}_level {level}")
     else:
@@ -183,10 +205,21 @@ def label_for(codec, level, window):
     return ", ".join(parts)
 
 
-def run_codec(codec, args, corpus, names, nginx_bin, summary):
+def run_codec(
+    codec: T.Codec,
+    args: argparse.Namespace,
+    corpus: dict[str, bytes],
+    names: list[str],
+    nginx_bin: str,
+    summary: list[Row],
+) -> None:
     """Measures every (level, window) pair for one codec, in its own nginx."""
-    levels = [lv.strip() for lv in args.level.split(",") if lv.strip()] or [""]
-    windows = [w.strip() for w in args.window.split(",")] if args.window else [""]
+    levels: list[str] = [
+        lv.strip() for lv in args.level.split(",") if lv.strip()
+    ] or [""]
+    windows: list[str] = (
+        [w.strip() for w in args.window.split(",")] if args.window else [""]
+    )
 
     work = tempfile.mkdtemp(prefix=f"ngx-bench-{codec.name}-")
     html = os.path.join(work, "html")
@@ -214,7 +247,8 @@ def run_codec(codec, args, corpus, names, nginx_bin, summary):
               f"read against")
         print(f"{'file':>12} {'bytes':>9} {'ms':>8}")
         print("-" * 32)
-        base_ms = base_bytes = 0
+        base_ms = 0.0
+        base_bytes = 0
         for name in names:
             path = "/plain/" + name
             _, headers, body = T.fetch(args.port, path, codec.token)
@@ -256,7 +290,8 @@ def run_codec(codec, args, corpus, names, nginx_bin, summary):
                 )
                 print("-" * 52)
 
-                total_raw = total_out = 0
+                total_raw = 0
+                total_out = 0
                 total_ms = 0.0
                 for name in names:
                     path = location(codec, level, window) + name
@@ -297,7 +332,7 @@ def run_codec(codec, args, corpus, names, nginx_bin, summary):
         nginx.stop()
 
 
-def print_summary(rows):
+def print_summary(rows: list[Row]) -> None:
     """Every configuration on one page, for pasting into a commit message."""
     print("### summary")
     print(
@@ -313,7 +348,13 @@ def print_summary(rows):
     print()
 
 
-def write_json(path, nginx_bin, version, rows, args):
+def write_json(
+    path: str,
+    nginx_bin: str,
+    version: str,
+    rows: list[Row],
+    args: argparse.Namespace,
+) -> None:
     """The summary rows, for a reader that is not a person.
 
     Everything needed to tell one run from another goes in beside them: a
@@ -335,7 +376,7 @@ def write_json(path, nginx_bin, version, rows, args):
     print(f"wrote {path}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -405,7 +446,7 @@ def main():
 
     names = sorted(corpus, key=lambda n: MIME.get(os.path.splitext(n)[1], ""))
 
-    summary = []
+    summary: list[Row] = []
     for codec in codecs:
         run_codec(codec, args, corpus, names, nginx_bin, summary)
 
