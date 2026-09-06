@@ -31,12 +31,35 @@ or an <img>.
     python3 script/bench/make_svg.py [--results DIR] [--out DIR]
 """
 
+from __future__ import annotations
+
 import argparse
 import glob
 import json
 import math
 import os
 import sys
+from collections.abc import Callable
+from typing import TypedDict
+
+# One measured (codec, level) pair: latency, the ratio achieved and the
+# peak encoder memory it cost. What load() assembles and build() draws.
+Point = tuple[str, int, float, float, float]
+
+
+class Mode(TypedDict):
+    """One chart's disagreement with the other - see modes()."""
+
+    radius: Callable[[Point], float]
+    label: Callable[[Point], str]
+    rule_head: str
+    rule_sub: str
+    key: str
+    key_lo: str
+    key_hi: str
+    title: str
+    desc: str
+
 
 W, H = 1000, 616
 L, R, T, B = 74, 952, 44, 424
@@ -66,8 +89,8 @@ DEFAULT_LEVEL_DEFINE = {
 }
 
 
-def read_defaults(root):
-    out = {}
+def read_defaults(root: str) -> dict[str, int]:
+    out: dict[str, int] = {}
     for codec, (path, define) in DEFAULT_LEVEL_DEFINE.items():
         try:
             for line in open(os.path.join(root, path)):
@@ -79,7 +102,7 @@ def read_defaults(root):
     return out
 
 
-def load(results_dir):
+def load(results_dir: str) -> tuple[list[Point], float, float, dict[str, str]]:
     """Merges the bench JSON into one point per codec and level.
 
     Latency and ratio come from bench_corpus, peak memory from bench_memory,
@@ -87,7 +110,9 @@ def load(results_dir):
     missing one of its two dimensions would be quietly wrong rather than
     visibly incomplete.
     """
-    points, baselines, meta = {}, [], {}
+    points: dict[tuple[str, int], dict[str, float]] = {}
+    baselines: list[float] = []
+    meta: dict[str, str] = {}
 
     for path in sorted(glob.glob(os.path.join(results_dir, "results-corpus-*.json"))):
         blob = json.load(open(path))
@@ -132,7 +157,9 @@ def load(results_dir):
     # One per codec measured, being the same quantity twice. Averaged, with the
     # spread reported, since two runs of the same thing never land identically.
     baseline = sum(baselines) / len(baselines)
-    spread = (max(baselines) - min(baselines)) / baseline if len(baselines) > 1 else 0
+    spread = (
+        (max(baselines) - min(baselines)) / baseline if len(baselines) > 1 else 0.0
+    )
 
     data = sorted(
         ((c, lv, v["ms"], v["ratio"], v["peak"]) for (c, lv), v in points.items()),
@@ -141,11 +168,11 @@ def load(results_dir):
     return data, baseline, spread, meta
 
 
-def bytes_label(n):
+def bytes_label(n: float) -> str:
     return f"{n / 1048576:.2f} MB" if n >= 1048576 else f"{round(n / 1024)} KB"
 
 
-def modes(data, baseline):
+def modes(data: list[Point], baseline: float) -> dict[str, Mode]:
     """What the two charts disagree about, and nothing else.
 
     "ratio" takes its area from ratio - 1 rather than ratio. 1x is a response
@@ -156,10 +183,10 @@ def modes(data, baseline):
     "memory" needs no such trick. Zero bytes is a real zero and the span is an
     order of magnitude, so area is proportional to the figure itself.
     """
-    ratios = [d[3] for d in data]
-    peaks = [d[4] for d in data]
+    ratios: list[float] = [d[3] for d in data]
+    peaks: list[float] = [d[4] for d in data]
     return {
-        "ratio": dict(
+        "ratio": Mode(
             radius=lambda d: 8.5 * math.sqrt(d[3] - 1),
             label=lambda d: f"{d[3]:.2f}&#215;",
             rule_head="no compression", rule_sub=f"{baseline:.2f} ms",
@@ -168,7 +195,7 @@ def modes(data, baseline):
             title="Compression level against latency, zstd and brotli",
             desc="Mark area is proportional to the compression achieved.",
         ),
-        "memory": dict(
+        "memory": Mode(
             radius=lambda d: 0.0195 * math.sqrt(d[4]),
             label=lambda d: bytes_label(d[4]),
             rule_head="no encoder", rule_sub="0 bytes",
@@ -180,21 +207,28 @@ def modes(data, baseline):
     }
 
 
-def x(ms):
+def x(ms: float) -> float:
     return L + (ms / MS_MAX) * (R - L)
 
 
-def y_lev(lv):
+def y_lev(lv: float) -> float:
     return B - ((lv - LV_LO) / (LV_HI - LV_LO)) * (B - T)
 
 
-def esc(s):
+def esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def build(mode, m, theme, data, baseline, defaults):
+def build(
+    mode: str,
+    m: Mode,
+    theme: str,
+    data: list[Point],
+    baseline: float,
+    defaults: dict[str, int],
+) -> str:
     c = THEMES[theme]
-    o = []
+    o: list[str] = []
     a = o.append
 
     a(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" '
@@ -261,7 +295,7 @@ def build(mode, m, theme, data, baseline, defaults):
     a(f'  <line x1="{L}" y1="516" x2="{R}" y2="516" stroke="{c["rule"]}" stroke-width="1"/>')
     row1, row2 = 546, 588
 
-    def key_text(tx, ty, bold, rest):
+    def key_text(tx: float, ty: float, bold: str, rest: str) -> None:
         a(f'  <text x="{tx}" y="{ty}" font-size="13" fill="{c["ink_soft"]}">'
           f'<tspan font-weight="600" fill="{c["ink"]}">{bold}</tspan>{esc(rest)}</text>')
 
@@ -297,7 +331,7 @@ def build(mode, m, theme, data, baseline, defaults):
     return "\n".join(o) + "\n"
 
 
-def main():
+def main() -> None:
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(os.path.dirname(here))
     parser = argparse.ArgumentParser(
