@@ -193,7 +193,7 @@ BROTLI = Codec(
 # "[stat]", " [all]". Nothing collides at four. Built from log_tag, not
 # log_tag from it: that string goes into the allocator regexes below,
 # where "[zstd]" would be a character class matching nothing.
-def tag_for(text):
+def tag_for(text: str) -> str:
     pad = 4 - len(text)
     return f"{' ' * (pad)}[{text[:4]}]"
 
@@ -209,14 +209,14 @@ REGISTRY = []
 
 
 def test(
-    name,
-    needs_decoder=False,
-    needs_debug=False,
-    needs_corpus=False,
-    codecs=None,
-    only=None,
-    label=None,
-):
+    name: str,
+    needs_decoder: bool = False,
+    needs_debug: bool = False,
+    needs_corpus: bool = False,
+    codecs: list[Codec] | None = None,
+    only: Codec | None = None,
+    label: str | None = None,
+) -> Callable[[Callable[..., None]], Callable[..., None]]:
     """Registers a test. The body raises Failure to report a failure.
 
     "codecs" is what makes a test structural: given a list, it is
@@ -244,9 +244,14 @@ def test(
     if only and label:
         raise ValueError("a test is tagged by one of only= or label=")
 
-    tag = tag_for(only.log_tag if only else label) if (only or label) else ""
+    if only:
+        tag = tag_for(only.log_tag)
+    elif label:
+        tag = tag_for(label)
+    else:
+        tag = ""
 
-    def register(fn):
+    def register(fn: Callable[..., None]) -> Callable[..., None]:
         if codecs is None:
             REGISTRY.append(
                 {
