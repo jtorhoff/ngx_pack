@@ -17,8 +17,11 @@ Reuses test_stream's fixtures, upstream and server plumbing so this file
 is only the part that differs.
 """
 
+from __future__ import annotations
+
 import os
 import sys
+from collections.abc import Callable
 
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stream")
@@ -32,7 +35,7 @@ CONF = os.path.join(
 PORT, UPSTREAM_PORT = T.PORT, T.UPSTREAM_PORT
 
 
-def render_conf(work):
+def render_conf(work: str) -> str:
     with open(CONF) as handle:
         conf = handle.read()
     path = os.path.join(work, "test_header_status.conf")
@@ -41,12 +44,12 @@ def render_conf(work):
     return path
 
 
-def check(condition, message):
+def check(condition: bool, message: str) -> None:
     if not condition:
         raise T.Failure(message)
 
 
-def main():
+def main() -> int:
     import shutil
     import tempfile
 
@@ -68,9 +71,9 @@ def main():
     nginx = T.Nginx(nginx_bin, work, conf, PORT)
     nginx.start()
 
-    results = []
+    results: list[tuple[str, str, str]] = []
 
-    def record(name, fn):
+    def record(name: str, fn: Callable[[], None]) -> None:
         try:
             fn()
             results.append((T.PASS, name, ""))
@@ -81,7 +84,7 @@ def main():
         status, _, detail = results[-1]
         print(f"{status:<5} {name:<52} {detail}", flush=True)
 
-    def control_still_compresses():
+    def control_still_compresses() -> None:
         """The same upstream without the fault filter must be unaffected."""
         status, headers, _ = T.fetch(PORT, "/stream/big.html")
         check(status == 200, f"expected 200, got {status}")
@@ -91,7 +94,7 @@ def main():
             "rather than the branch under test",
         )
 
-    def request_terminates_promptly():
+    def request_terminates_promptly() -> None:
         """The request must end, rather than hang until the client gives up.
 
         The status itself cannot reach the client: it is a header
@@ -118,7 +121,7 @@ def main():
             f"rather than being finalized",
         )
 
-    def context_is_closed():
+    def context_is_closed() -> None:
         """The encoder must not be left live behind the rejected response.
 
         With ctx left open, a later body filter call finds closed == 0,
@@ -142,7 +145,7 @@ def main():
                 f"rejected response",
             )
 
-    def no_frame_reaches_the_wire():
+    def no_frame_reaches_the_wire() -> None:
         """The held body must not be emitted once the response is replaced.
 
         This is the sharp one. With the context left open, a later body
