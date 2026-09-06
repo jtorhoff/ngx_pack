@@ -1,10 +1,10 @@
 #!/bin/bash
 #
 # Builds an nginx carrying this module with its allocation-fault hook
-# compiled in, and runs script/test_oom.py against it.
+# compiled in, and runs script/tests/oom/test_oom.py against it.
 #
 # The hook is guarded by NGX_HTTP_PACK_ZSTD_FAULT_INJECT and defined
-# nowhere else - script/build.sh does not define it, so a shipping
+# nowhere else - script/build/build.sh does not define it, so a shipping
 # binary has none of this in it. Without the hook the out-of-memory
 # branches cannot be reached: a test has no way to make malloc fail
 # for one module and not the rest of the worker.
@@ -13,14 +13,14 @@
 # see that a refused allocation leaves nothing behind.
 #
 # Required:
-#   NGINX_REF   git ref of nginx to build against, as script/build.sh
+#   NGINX_REF   git ref of nginx to build against, as script/build/build.sh
 #
 # Overridable:
 #   JOBS        parallelism (default: number of processors)
 #
 set -eux
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 if [ -z "${NGINX_REF:-}" ]; then
 	echo "NGINX_REF must be set, e.g. NGINX_REF=stable-1.30 $0" >&2
 	exit 1
@@ -30,7 +30,7 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 BUILD="$ROOT/nginx-oom"
 
 if [ ! -f "$ROOT/deps/zstd/out/lib/libzstd.a" ]; then
-	echo "build libzstd first: NGINX_REF=$NGINX_REF script/build.sh" >&2
+	echo "build libzstd first: NGINX_REF=$NGINX_REF script/build/build.sh" >&2
 	exit 1
 fi
 
@@ -46,7 +46,7 @@ CC_OPT="-DNGX_HTTP_PACK_ZSTD_FAULT_INJECT=1"
 # Where the headers and libraries live on this machine; empty
 # everywhere they are already on the search path. See the file.
 # shellcheck disable=SC1091
-. "$ROOT/script/toolchain.sh"
+. "$ROOT/script/build/toolchain.sh"
 if [ -n "$PACK_CC_OPT" ]; then
 	CC_OPT="$CC_OPT $PACK_CC_OPT"
 fi
@@ -66,4 +66,4 @@ fi
 make -j "$JOBS"
 
 cd "$ROOT"
-python3 script/test_oom.py "$BUILD/objs/nginx"
+python3 script/tests/oom/test_oom.py "$BUILD/objs/nginx"

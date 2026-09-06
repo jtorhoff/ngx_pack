@@ -41,26 +41,26 @@ jobs:
         uses: ./.github/actions/build-libs
 
       - name: Build nginx
-        run: script/build.sh
+        run: script/build/build.sh
 
       - name: Prepare fixtures
-        run: script/prepare-tests.sh
+        run: script/tests/basic/prepare-tests.sh
 
       - name: Static files and Accept-Encoding
-        run: script/run-tests.sh
+        run: script/tests/basic/run-tests.sh
 
       - name: Streaming responses and encoder lifetime
-        run: python3 script/test_stream.py --nginx nginx/objs/nginx
+        run: python3 script/tests/stream/test_stream.py --nginx nginx/objs/nginx
 
-      # Builds a second nginx of its own, carrying script/fault_filter
-      # alongside this module: the filter sends held headers from
-      # inside the body filter, and nothing in nginx's tree can return
-      # a status to that call - ngx_http_image_filter_module is the
-      # only header filter that returns one, and only when
-      # Content-Length is known, which this path never is. The driver
-      # makes its own fixtures.
+      # Builds a second nginx of its own, carrying
+      # script/tests/header_status/fault_filter alongside this module:
+      # the filter sends held headers from inside the body filter, and
+      # nothing in nginx's tree can return a status to that call -
+      # ngx_http_image_filter_module is the only header filter that
+      # returns one, and only when Content-Length is known, which this
+      # path never is. The driver makes its own fixtures.
       - name: Rejected-header handling
-        run: script/test-header-status.sh
+        run: script/tests/header_status/test-header-status.sh
 
       - name: Collect logs on failure
         if: failure()
@@ -113,7 +113,7 @@ jobs:
         # suite itself.
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: python3 script/test_stream.py --nginx nginx/objs/nginx
+        run: python3 script/tests/stream/test_stream.py --nginx nginx/objs/nginx
 
   undefined-behavior:
     name: Run tests with undefined behavior sanitizer (${{ matrix.platform.name }})
@@ -159,7 +159,7 @@ jobs:
       - name: Streaming suite under UndefinedBehaviorSanitizer
         env:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=0:log_path=/tmp/ubsan
-        run: python3 script/test_stream.py --nginx nginx/objs/nginx
+        run: python3 script/tests/stream/test_stream.py --nginx nginx/objs/nginx
 
       - name: Fail on undefined behavior in this module
         run: |
@@ -210,20 +210,20 @@ jobs:
       - name: Build nginx without --with-debug
         env:
           WITH_DEBUG: "0"
-        run: script/build.sh
+        run: script/build/build.sh
 
       - name: Prepare fixtures
-        run: script/prepare-tests.sh
+        run: script/tests/basic/prepare-tests.sh
 
       - name: Static files and Accept-Encoding
-        run: script/run-tests.sh
+        run: script/tests/basic/run-tests.sh
 
       # Also the only run of these against optimised, non-debug code.
       # The nine window and memory tests read the encoder's allocator
       # tracing out of the debug log, so the driver skips them here
       # and reports them as skipped rather than passing.
       - name: Streaming responses and encoder lifetime
-        run: python3 script/test_stream.py --nginx nginx/objs/nginx
+        run: python3 script/tests/stream/test_stream.py --nginx nginx/objs/nginx
 
       - name: Collect logs on failure
         if: failure()
@@ -257,7 +257,7 @@ jobs:
       - name: Build the vendored libraries
         uses: ./.github/actions/build-libs
 
-      # No "script/build.sh" step here, deliberately: it would build an
+      # No "script/build/build.sh" step here, deliberately: it would build an
       # ordinary nginx that nothing in this job ever runs.
       # test-small-buffer.sh clones and builds nginx-small-buffer of its
       # own and points both suites at that binary, by NGINX_BIN for the
@@ -268,7 +268,7 @@ jobs:
       # The fixtures below are not the same story: test-small-buffer.sh
       # runs the shell suite, which serves them.
       - name: Prepare fixtures
-        run: script/prepare-tests.sh
+        run: script/tests/basic/prepare-tests.sh
 
       # Under AddressSanitizer, since the point of the tiny buffer is
       # to make the partial-drain and resend paths dense and those are
@@ -279,7 +279,7 @@ jobs:
         env:
           SANITIZE: "1"
           ASAN_OPTIONS: detect_leaks=0
-        run: script/test-small-buffer.sh
+        run: script/tests/stream/test-small-buffer.sh
 
       - name: Collect logs on failure
         if: failure()
@@ -313,7 +313,7 @@ jobs:
       - name: Build the vendored libraries
         uses: ./.github/actions/build-libs
 
-      # Neither a "script/build.sh" nor a "prepare-tests.sh" step here,
+      # Neither a "script/build/build.sh" nor a "prepare-tests.sh" step here,
       # deliberately. test-oom.sh builds nginx-oom and hands that binary
       # to test_oom.py, which calls build_fixtures() for a fixture tree
       # of its own - so an ordinary nginx and the shell suite's fixtures
@@ -324,7 +324,7 @@ jobs:
       # reaches them: a test cannot make malloc fail for one module and
       # not the rest of the worker.
       - name: Refused allocations
-        run: script/test-oom.sh
+        run: script/tests/oom/test-oom.sh
 
       - name: Collect logs on failure
         if: failure()
@@ -370,7 +370,7 @@ jobs:
         uses: ./.github/actions/build-libs
 
       - name: Build nginx
-        run: script/build.sh
+        run: script/build/build.sh
 
       - name: Build the fuzz targets
         env:
@@ -439,7 +439,7 @@ jobs:
       - name: Build nginx with clang
         env:
           CC: clang
-        run: script/build.sh
+        run: script/build/build.sh
 
       # Analyses only the five files this repository owns. Findings in
       # nginx or in deps/ are not ours to answer for, and filtering them
@@ -448,7 +448,7 @@ jobs:
       - name: Analyse this module
         env:
           CLANG: clang
-        run: script/analyze.sh
+        run: script/build/analyze.sh
 
   types:
     name: Type-check the Python scripts

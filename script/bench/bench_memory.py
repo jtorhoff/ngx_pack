@@ -61,10 +61,15 @@ import sys
 import tempfile
 from typing import TypedDict
 
-# test_stream.py lives in script/, one level up from this directory, and
-# carries the fixtures, the nginx wrapper and the allocator-trace parser
-# these tools are built on.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# test_stream.py lives in script/tests/stream, a sibling of this
+# directory's parent, and carries the fixtures, the nginx wrapper and
+# the allocator-trace parser these tools are built on.
+sys.path.insert(
+    0,
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "stream"
+    ),
+)
 
 import test_stream as T
 

@@ -95,7 +95,8 @@ $BROTLI_OUTPUT_DIRECTORY/libbrotlicommon.a -lm"
 # nginx, never loaded. Declaring one anyway would leave the config
 # carrying the mechanism a reader reaches for first when changing
 # which filter claims a response, doing nothing: the reordering below
-# is what decides that, and script/test_stream.py pins the result.
+# is what decides that, and script/tests/stream/test_stream.py pins
+# the result.
 
 . auto/module
 

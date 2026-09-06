@@ -38,7 +38,7 @@
 # the original.
 #
 # Required:
-#   NGINX_REF   git ref of nginx to build against, as script/build.sh
+#   NGINX_REF   git ref of nginx to build against, as script/build/build.sh
 #
 # Overridable:
 #   OUT_SIZE    bytes for both encoders' BUFFER_SIZE_DEFAULT
@@ -48,7 +48,7 @@
 #
 set -eux
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 if [ -z "${NGINX_REF:-}" ]; then
 	echo "NGINX_REF must be set, e.g. NGINX_REF=stable-1.30 $0" >&2
 	exit 1
@@ -62,15 +62,15 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
 # stress binary left sitting in nginx/objs would be invisible.
 BUILD="$ROOT/nginx-small-buffer"
 
-# script/build.sh puts both libraries here and nginx links them from
+# script/build/build.sh puts both libraries here and nginx links them from
 # there. Checked separately so the message names the one that is
 # missing rather than sending you to rebuild what you already have.
 if [ ! -f "$ROOT/deps/zstd/out/lib/libzstd.a" ]; then
-	echo "build libzstd first: NGINX_REF=$NGINX_REF script/build.sh" >&2
+	echo "build libzstd first: NGINX_REF=$NGINX_REF script/build/build.sh" >&2
 	exit 1
 fi
 if [ ! -f "$ROOT/deps/brotli/out/libbrotlienc.a" ]; then
-	echo "build libbrotlienc first: NGINX_REF=$NGINX_REF script/build.sh" >&2
+	echo "build libbrotlienc first: NGINX_REF=$NGINX_REF script/build/build.sh" >&2
 	exit 1
 fi
 
@@ -98,7 +98,7 @@ fi
 # Where the headers and libraries live on this machine; empty
 # everywhere they are already on the search path. See the file.
 # shellcheck disable=SC1091
-. "$ROOT/script/toolchain.sh"
+. "$ROOT/script/build/toolchain.sh"
 if [ -n "$PACK_CC_OPT" ]; then
 	CC_OPT="$CC_OPT $PACK_CC_OPT"
 fi
@@ -107,7 +107,7 @@ if [ -n "$PACK_LD_OPT" ]; then
 fi
 
 cd "$BUILD"
-# --with-debug as in script/build.sh: the streaming suite reads the
+# --with-debug as in script/build/build.sh: the streaming suite reads the
 # encoder's allocator tracing, and the output-round accounting this
 # script exists to stress, out of the debug log.
 ./auto/configure \
@@ -120,10 +120,10 @@ cd "$BUILD"
 make -j "$JOBS"
 
 cd "$ROOT"
-NGINX_BIN="$BUILD/objs/nginx" script/run-tests.sh
+NGINX_BIN="$BUILD/objs/nginx" script/tests/basic/run-tests.sh
 # --max-out-size turns "the -D reached the compiler" into a checked
 # precondition. Without it a plumbing regression would silently
 # degrade this whole script into a second run of the normal suite.
-python3 script/test_stream.py \
+python3 script/tests/stream/test_stream.py \
 	--nginx "$BUILD/objs/nginx" \
 	--max-out-size "$OUT_SIZE"

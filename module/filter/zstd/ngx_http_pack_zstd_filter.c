@@ -102,7 +102,8 @@ enum {
    ceiling: a response that keeps up with its client only ever
    refills one buffer, so a larger size goes unused. Overridable at
    build time only, below what the directive itself permits, so
-   script/test-small-buffer.sh can force rare partial-drain paths. */
+   script/tests/stream/test-small-buffer.sh can force rare
+   partial-drain paths. */
 #ifndef NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT
 #define NGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT (16 * 1024)
 #endif
@@ -704,7 +705,7 @@ ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
     /* An error, or a filter below replacing the response with a
        status. Returns NGX_ERROR rather than the status, since a body
        filter's callers treat any status as success.
-       See script/test-header-status.sh. */
+       See script/tests/header_status/test-header-status.sh. */
     if (header_rc == NGX_ERROR || header_rc > NGX_OK) {
         ngx_http_pack_zstd_close(ctx);
 
@@ -1308,7 +1309,8 @@ ngx_http_pack_zstd_set_hint(
    takes no post handler, so bounds are checked here rather than in
    the merge: the message then names the file and line the value
    came from, and the compiled-in default - moved below the floor on
-   purpose by script/test-small-buffer.sh - is never held to it. */
+   purpose by script/tests/stream/test-small-buffer.sh - is never
+   held to it. */
 static char *
 ngx_http_pack_zstd_set_buffers(
     ngx_conf_t *const cf, ngx_command_t *const cmd, void *const conf)

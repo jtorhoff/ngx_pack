@@ -1,11 +1,12 @@
 #!/bin/bash
 #
 # Lays out the fixtures the shell suite serves.
-# script/test_stream.py needs none of this - it generates its own.
+# script/tests/stream/test_stream.py needs none of this - it generates
+# its own.
 #
 set -eux
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 FILES="$ROOT/script/test"
 
 mkdir -p "$FILES/logs"

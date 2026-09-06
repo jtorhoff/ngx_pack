@@ -9,8 +9,9 @@ tree does on a response of unknown length - ngx_http_image_filter_module
 is the only stock header filter that returns a status at all, and only
 when Content-Length is known.
 
-script/fault_filter is a test-only module that does exactly that, and
-script/test-header-status.sh builds an nginx carrying both.
+script/tests/header_status/fault_filter is a test-only module that does
+exactly that, and script/tests/header_status/test-header-status.sh
+builds an nginx carrying both.
 
 Reuses test_stream's fixtures, upstream and server plumbing so this file
 is only the part that differs.
@@ -19,11 +20,15 @@ is only the part that differs.
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stream")
+)
 
 import test_stream as T
 
-CONF = os.path.join(T.ROOT, "script", "test_header_status.conf")
+CONF = os.path.join(
+    T.ROOT, "script", "tests", "header_status", "test_header_status.conf"
+)
 PORT, UPSTREAM_PORT = T.PORT, T.UPSTREAM_PORT
 
 

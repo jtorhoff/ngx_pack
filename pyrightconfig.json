@@ -1,6 +1,7 @@
 {
   "include": ["script"],
   "exclude": ["script/test", "script/fuzz/out", "**/__pycache__"],
+  "extraPaths": ["script/tests/stream"],
   "pythonVersion": "3.12",
   "typeCheckingMode": "strict"
 }

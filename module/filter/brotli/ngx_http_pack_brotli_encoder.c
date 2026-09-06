@@ -201,8 +201,8 @@ ngx_http_pack_brotli_get_buf(get_buf_args *const args)
     /* The tag lets ngx_chain_update_chains tell our buffers apart on
        the busy list. "recycled" is load-bearing: without it the write
        filter holds a block shorter than postpone_output while the
-       encoder waits for that same buffer, and the response
-       deadlocks. Only script/test-small-buffer.sh still reaches it.
+       encoder waits for that same buffer, and the response deadlocks.
+       Only script/tests/stream/test-small-buffer.sh still reaches it.
      */
     buf->tag      = (ngx_buf_tag_t) &encoder_tag;
     buf->recycled = 1;

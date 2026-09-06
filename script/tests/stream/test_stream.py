@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regression harness for the ngx_zstd filter module.
 
-script/run-tests.sh already covers Accept-Encoding parsing against static
+script/tests/basic/run-tests.sh already covers Accept-Encoding parsing against static
 files. This harness covers the two areas it does not:
 
   * streaming responses, where Content-Length is unknown and the body reaches
@@ -13,10 +13,10 @@ The memory tests read the encoder's own allocator tracing out of the debug
 log, so they need an nginx built --with-debug; they are skipped otherwise.
 
 Usage:
-    python3 script/test_stream.py [--nginx PATH] [--keep] [-v]
+    python3 script/tests/stream/test_stream.py [--nginx PATH] [--keep] [-v]
 
 nginx is looked up in --nginx, then $NGINX, then ./nginx/objs/nginx (where
-script/build.sh puts it). Exits with the number of failed tests, so
+script/build/build.sh puts it). Exits with the number of failed tests, so
 it can be chained after the existing suite.
 """
 
@@ -52,8 +52,8 @@ if sys.version_info < (3, 12):
         f"{sys.version_info.major}.{sys.version_info.minor}"
     )
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONF = os.path.join(ROOT, "script", "test_stream.conf")
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+CONF = os.path.join(ROOT, "script", "tests", "stream", "test_stream.conf")
 
 PORT = 8899
 UPSTREAM_PORT = 8901
@@ -325,7 +325,7 @@ def locate_nginx(explicit: str | None) -> str:
     raise SystemExit(
         f"error: nginx binary not found.\n"
         f"  Looked at: {looked_at}\n"
-        f"  Build one with script/build.sh, or pass --nginx PATH."
+        f"  Build one with script/build/build.sh, or pass --nginx PATH."
     )
 
 
@@ -341,7 +341,7 @@ def nginx_build_info(nginx: str) -> tuple[str, bool]:
 
 
 # Where each codec's own command line tool is built, when the vendored
-# one was built at all. script/build.sh asks for zstd's; Brotli's is off
+# one was built at all. script/build/build.sh asks for zstd's; Brotli's is off
 # by default there, since nothing but this needs it, so that path is
 # usually a miss and the system CLI is what answers.
 BUNDLED_DECODERS = {
@@ -581,7 +581,7 @@ def build_fixtures(work: str) -> dict[str, bytes]:
         # past the 128 KB block maximum and far past any window either
         # codec defaults to, so an encoder built for it is the full-sized
         # one, but an order of magnitude cheaper to serve under
-        # script/test-small-buffer.sh. Every 64 bytes of compressed output
+        # script/tests/stream/test-small-buffer.sh. Every 64 bytes of compressed output
         # is a round there, and nginx logs several lines per round, so a
         # test that only needs "a real encoder, many times over" pays for
         # big.html's extra megabyte in debug log rather than in coverage.
@@ -3181,7 +3181,7 @@ def test_buffers_directive_is_honoured(ctx: Context, codec: Codec) -> None:
     )
 
 
-# script/test_stream.conf, the size /wide-buffers/ asks for, and the
+# script/tests/stream/test_stream.conf, the size /wide-buffers/ asks for, and the
 # compiled-in default it has to be told apart from. Larger rather than
 # smaller because the size floor and the default are both 16k: the
 # smallest a config may ask for is the default itself, so only a bigger
@@ -3614,7 +3614,7 @@ def test_small_window_does_not_deadlock(ctx: Context, codec: Codec) -> None:
     produce a block short enough to reach the condition - dropping
     "recycled" was measured here and every response still completed.
     So this is a smallest-window smoke test, and the real cover for
-    the deadlock is script/test-small-buffer.sh, where a 64-byte
+    the deadlock is script/tests/stream/test-small-buffer.sh, where a 64-byte
     buffer does reach it: dropping the flag there hangs a plain static
     response while zstd carries on unaffected.
 
@@ -3791,7 +3791,7 @@ def test_alloc_soak(ctx: Context, codec: Codec) -> None:
     # and give it all back, which any repetition answers - drift shows
     # between the first two that differ. The count is a cost, not a
     # confidence level, and so is the body: at the 64-byte output buffer
-    # script/test-small-buffer.sh builds, every 64 bytes of compressed
+    # script/tests/stream/test-small-buffer.sh builds, every 64 bytes of compressed
     # output is a logged round, and medium.html builds the same
     # full-sized encoder big.html would for a tenth of them.
     rounds = 8
@@ -3903,7 +3903,7 @@ def test_keepalive_allocation_balance(ctx: Context, codec: Codec) -> None:
     # request that began with live memory - and by the twelfth the peak
     # would be an order of magnitude past the 1.25x this allows.
     #
-    # Neither the count nor the body is free: script/test-small-buffer.sh
+    # Neither the count nor the body is free: script/tests/stream/test-small-buffer.sh
     # drives this at a 64-byte output buffer, where every 64 bytes of
     # compressed output is a logged round. medium.html rather than
     # big.html for that reason - both build the same full-sized encoder,
@@ -4125,7 +4125,7 @@ def test_rounds_make_progress(ctx: Context, codec: Codec) -> None:
     a guard on a path nothing reaches is a guard nobody has seen work.
 
     This is the other half: not that the guard fires, but that on ordinary
-    traffic it never needs to. Under script/test-small-buffer.sh the same
+    traffic it never needs to. Under script/tests/stream/test-small-buffer.sh the same
     assertion covers thousands of rounds per response rather than a
     handful, which is where it has real teeth.
 
@@ -4187,7 +4187,7 @@ def test_output_rounds_account_for_the_body(ctx: Context, codec: Codec) -> None:
 
     Deliberately calibrated from the trace rather than against a hard-coded
     16 KB, so that the same test tightens rather than breaks under
-    script/test-small-buffer.sh, where a 64-byte buffer makes almost every
+    script/tests/stream/test-small-buffer.sh, where a 64-byte buffer makes almost every
     round a partial one and this count goes from single digits to ~1500.
 
     Under that script this is also the only thing standing between a real
@@ -4275,7 +4275,7 @@ def main() -> int:
         type=int,
         help="assert the module's output buffer is at most this many bytes, "
         "i.e. that -DNGX_HTTP_PACK_ZSTD_BUFFER_SIZE_DEFAULT reached the build "
-        "(see script/test-small-buffer.sh)",
+        "(see script/tests/stream/test-small-buffer.sh)",
     )
     parser.add_argument(
         "--keep",
@@ -4322,7 +4322,7 @@ def main() -> int:
         print(
             "         round-trip tests need a zstd decoder: install the "
             "zstd CLI, or build the bundled one with\n"
-            "           script/build.sh"
+            "           script/build/build.sh"
         )
     print()
 

@@ -12,24 +12,24 @@
 # which is long after the change that caused it. This is that check,
 # in about a second.
 #
-# Required: a configured nginx tree, i.e. script/build.sh has run.
+# Required: a configured nginx tree, i.e. script/build/build.sh has run.
 # The flags come out of its objs/Makefile rather than being repeated
 # here, so this stays honest about however that tree was configured.
 #
 # Overridable:
 #   NGINX_BUILD  tree to take the flags from (default: nginx)
 #
-# WITH_DEBUG=0 script/build.sh is still what produces an actual
+# WITH_DEBUG=0 script/build/build.sh is still what produces an actual
 # release nginx. It also overwrites the debug one every other suite
 # needs, which is why this exists beside it rather than instead.
 set -eu
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD="${NGINX_BUILD:-$ROOT/nginx}"
 
 if [ ! -f "$BUILD/objs/Makefile" ]; then
 	echo "no configured nginx at $BUILD;" >&2
-	echo "run NGINX_REF=... script/build.sh first" >&2
+	echo "run NGINX_REF=... script/build/build.sh first" >&2
 	exit 1
 fi
 
@@ -46,7 +46,7 @@ trap 'rm -rf "$WORK"' EXIT
 cp "$BUILD/objs/ngx_auto_config.h" "$WORK/ngx_auto_config.h"
 cat >>"$WORK/ngx_auto_config.h" <<'END'
 
-/* Appended by script/check-release-build.sh - see that file. */
+/* Appended by script/build/check-release-build.sh - see that file. */
 #undef NGX_DEBUG
 #define NGX_DEBUG 0
 END

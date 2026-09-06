@@ -4,7 +4,7 @@
 #
 # Requires nginx to have been configured already, because the
 # targets include nginx's headers and compile its ngx_string.c -
-# script/build.sh does that.
+# script/build/build.sh does that.
 #
 # Overridable:
 #   CC        clang to build with. Must be a clang whose libFuzzer
@@ -23,7 +23,7 @@ NGX="$ROOT/nginx"
 NGX_OBJS="${NGX_OBJS:-$NGX/objs}"
 
 if [ ! -f "$NGX_OBJS/ngx_auto_config.h" ]; then
-	echo "no nginx build in $NGX_OBJS; run script/build.sh first" >&2
+	echo "no nginx build in $NGX_OBJS; run script/build/build.sh first" >&2
 	exit 1
 fi
 
@@ -34,7 +34,7 @@ fi
 # a bad bound would actually bite, lives here.
 STRING_C="$NGX/src/core/ngx_string.c"
 if [ ! -f "$STRING_C" ]; then
-	echo "no $STRING_C; run script/build.sh first" >&2
+	echo "no $STRING_C; run script/build/build.sh first" >&2
 	exit 1
 fi
 

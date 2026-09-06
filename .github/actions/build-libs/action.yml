@@ -6,8 +6,8 @@ description: >
   one cache entry serves them all.
 
   Jobs that go on to build nginx their own way call this and stop;
-  jobs that call script/build.sh afterwards find the libraries already
-  built and cmake skips them.
+  jobs that call script/build/build.sh afterwards find the libraries
+  already built and cmake skips them.
 
 runs:
   using: composite
@@ -37,4 +37,4 @@ runs:
     # returns in about a second, which is cheaper than the "if" that
     # would skip it and cannot go stale.
     - shell: bash
-      run: DEPS_ONLY=1 script/build.sh
+      run: DEPS_ONLY=1 script/build/build.sh

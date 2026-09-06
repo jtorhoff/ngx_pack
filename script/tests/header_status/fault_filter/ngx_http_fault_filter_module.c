@@ -18,8 +18,8 @@
    The config beside this file places the module below the zstd filter
    in the chain, so what it returns is what zstd's send_headers sees.
 
-   Never built into a shipping binary. script/build.sh does not add
-   it; only script/test-header-status.sh does.
+   Never built into a shipping binary. script/build/build.sh does not add
+   it; only script/tests/header_status/test-header-status.sh does.
  */
 
 #include <ngx_config.h>

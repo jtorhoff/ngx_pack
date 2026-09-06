@@ -16,7 +16,7 @@
 # flags from the ones it ships with is analysing something else.
 #
 # Required:
-#   a configured nginx tree, which script/build.sh leaves behind
+#   a configured nginx tree, which script/build/build.sh leaves behind
 #
 # Overridable:
 #   NGINX_DIR  the tree to take flags from (default: nginx)
@@ -24,12 +24,12 @@
 #
 set -eu
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NGINX_DIR="${NGINX_DIR:-$ROOT/nginx}"
 CLANG="${CLANG:-clang}"
 
 if [ ! -f "$NGINX_DIR/objs/Makefile" ]; then
-	echo "no configured nginx at $NGINX_DIR - run script/build.sh first" >&2
+	echo "no configured nginx at $NGINX_DIR - run script/build/build.sh first" >&2
 	exit 1
 fi
 

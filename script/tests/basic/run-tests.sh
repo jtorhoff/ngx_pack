@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Static-file and Accept-Encoding suite, over HTTP/1.1 and HTTP/2.
-# Run script/build.sh and script/prepare-tests.sh first.
+# Run script/build/build.sh and script/tests/basic/prepare-tests.sh first.
 #
 # Overridable:
 #   NGINX_BIN  nginx binary to exercise (default: the one
-#              script/build.sh makes)
+#              script/build/build.sh makes)
 #   ZSTD       zstd CLI used to decompress (default: the one
-#              script/build.sh makes, else PATH)
+#              script/build/build.sh makes, else PATH)
 #
 # Note NGINX_BIN rather than NGINX: nginx reserves the NGINX
 # environment variable for socket inheritance, and reads a binary
@@ -15,7 +15,7 @@
 #
 # Exits with the number of failed tests.
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 NGINX="${NGINX_BIN:-$ROOT/nginx/objs/nginx}"
 ZSTD="${ZSTD:-$ROOT/deps/zstd/out/programs/zstd}"
 SERVER=http://localhost:8080
@@ -23,7 +23,7 @@ FILES=$ROOT/script/test
 HR="-----------------------------------------------------------------"
 
 if [ ! -x "$NGINX" ]; then
-	echo "no nginx at $NGINX; run script/build.sh or set NGINX" >&2
+	echo "no nginx at $NGINX; run script/build/build.sh or set NGINX" >&2
 	exit 1
 fi
 if [ ! -x "$ZSTD" ]; then
@@ -79,7 +79,7 @@ expect_zst_equal() {
 
 # Start default server.
 echo "Starting NGINX"
-$NGINX -p "$FILES" -c "$ROOT/script/test.conf"
+$NGINX -p "$FILES" -c "$ROOT/script/tests/basic/test.conf"
 # Fetch vanilla 404 response.
 curl -s -o tmp/notfound.txt "$SERVER/notfound"
 
@@ -158,13 +158,13 @@ expect_equal "$FILES/small.html" tmp/ae-13.txt
 echo $HR
 echo "Stopping default NGINX"
 # Stop server.
-$NGINX -p "$FILES" -c "$ROOT/script/test.conf" -s stop
+$NGINX -p "$FILES" -c "$ROOT/script/tests/basic/test.conf" -s stop
 
 ######################################################################
 
 # Start default server.
 echo "Starting h2 NGINX"
-$NGINX -p "$FILES" -c "$ROOT/script/test_h2.conf"
+$NGINX -p "$FILES" -c "$ROOT/script/tests/basic/test_h2.conf"
 
 CURL="curl --http2-prior-knowledge -s"
 
@@ -188,7 +188,7 @@ expect_equal "$FILES/small.html" tmp/h2-ae-13.txt
 echo $HR
 echo "Stopping h2 NGINX"
 # Stop server.
-$NGINX -p "$FILES" -c "$ROOT/script/test_h2.conf" -s stop
+$NGINX -p "$FILES" -c "$ROOT/script/tests/basic/test_h2.conf" -s stop
 
 ######################################################################
 

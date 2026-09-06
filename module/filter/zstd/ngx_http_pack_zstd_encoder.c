@@ -1376,8 +1376,8 @@ ngx_http_pack_zstd_ensure_stream(encoder_t *const enc)
     enc->last_out = &enc->out;
 
     /* Both halves are done, which is why the line is here rather than
-       at the end of either. script/test_stream.py counts it to know
-       how many encoders a slice of the log built. */
+       at the end of either. script/tests/stream/test_stream.py counts
+       it to know how many encoders a slice of the log built. */
     ngx_log_debug0(
         NGX_LOG_DEBUG_HTTP,
         enc->request->connection->log,
@@ -1391,12 +1391,12 @@ ngx_http_pack_zstd_ensure_stream(encoder_t *const enc)
 
 
 #if (NGX_HTTP_PACK_ZSTD_FAULT_INJECT)
-/* Test-only, and never in a shipping binary: script/build.sh does not
-   define NGX_HTTP_PACK_ZSTD_FAULT_INJECT. Refuses the Nth libzstd
-   allocation and every one after, so the out-of-memory branches can
-   be reached on demand. N comes from the environment so one binary
-   covers every case script/test_oom.py drives; absent or zero refuses
-   none. */
+/* Test-only, and never in a shipping binary: script/build/build.sh
+   does not define NGX_HTTP_PACK_ZSTD_FAULT_INJECT. Refuses the Nth
+   libzstd allocation and every one after, so the out-of-memory
+   branches can be reached on demand. N comes from the environment so
+   one binary covers every case script/tests/oom/test_oom.py drives;
+   absent or zero refuses none. */
 static ngx_uint_t ngx_http_pack_zstd_fault_read;
 static ngx_uint_t ngx_http_pack_zstd_fault_after;
 static ngx_uint_t ngx_http_pack_zstd_fault_seen;

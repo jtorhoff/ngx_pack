@@ -34,6 +34,6 @@ compile_commands.json
 # rather than a property of the project.
 .vscode/
 
-# Artifacts left behind by script/run-tests.sh: response bodies and
+# Artifacts left behind by script/tests/basic/run-tests.sh: response bodies and
 # the decompressed copies it compares them against.
 tmp/

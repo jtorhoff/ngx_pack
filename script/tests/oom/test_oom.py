@@ -21,7 +21,7 @@ What must hold is everything around that:
   * nothing is leaked, whether the refusal came before the context
     existed or after.
 
-script/test-oom.sh builds the nginx these need, with
+script/tests/oom/test-oom.sh builds the nginx these need, with
 NGX_HTTP_PACK_ZSTD_FAULT_INJECT defined. A shipping binary has none of
 this compiled in.
 
@@ -34,11 +34,13 @@ import socket
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stream")
+)
 
 import test_stream as T
 
-CONF = os.path.join(T.ROOT, "script", "test_oom.conf")
+CONF = os.path.join(T.ROOT, "script", "tests", "oom", "test_oom.conf")
 PORT = T.PORT
 
 # What the module logs when it cannot build an encoder, and what the

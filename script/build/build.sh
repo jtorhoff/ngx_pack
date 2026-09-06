@@ -23,7 +23,7 @@
 #
 set -eux
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPS_ONLY="${DEPS_ONLY:-0}"
 # Checked here rather than left to git, which reports an unset ref
 # as the baffling "fatal: Remote branch  not found in upstream
@@ -113,7 +113,7 @@ fi
 # Where the headers and libraries live on this machine; empty
 # everywhere they are already on the search path. See the file.
 # shellcheck disable=SC1091
-. "$ROOT/script/toolchain.sh"
+. "$ROOT/script/build/toolchain.sh"
 if [ -n "$PACK_CC_OPT" ]; then
 	configure_opts+=(--with-cc-opt="$PACK_CC_OPT")
 fi
