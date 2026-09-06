@@ -36,7 +36,8 @@ import tempfile
 import threading
 import time
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import TypedDict
 
 # One floor for every script here, stated once: the four others in
 # this directory import this module, so they inherit it. The runners
@@ -87,9 +88,16 @@ class Codec:
     """
 
     def __init__(
-        self, name, token, ext, directive, prefix, log_tag, superstrings,
-        continue_step,
-    ):
+        self,
+        name: str,
+        token: str,
+        ext: str,
+        directive: str,
+        prefix: str,
+        log_tag: str,
+        superstrings: tuple[str, ...],
+        continue_step: int,
+    ) -> None:
         self.name = name
         self.token = token
         self.ext = ext
@@ -977,13 +985,13 @@ class Nginx:
 
 
 def fetch(
-    port,
-    path,
+    port: int,
+    path: str,
     accept_encoding: str | None = "zstd",
-    method="GET",
-    timeout=30,
-    headers=None,
-):
+    method: str = "GET",
+    timeout: float = 30,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict[str, str], bytes]:
     """Returns (status, lowercased headers, raw body). No auto-decompression.
 
     accept_encoding of None sends no Accept-Encoding header at all, which is a
@@ -1008,7 +1016,13 @@ def fetch(
         conn.close()
 
 
-def fetch_repeated(port, path, name, accept_encoding="zstd", timeout=30):
+def fetch_repeated(
+    port: int,
+    path: str,
+    name: str,
+    accept_encoding: str | None = "zstd",
+    timeout: float = 30,
+) -> tuple[int, list[str], dict[str, str]]:
     """Returns (status, every value sent for `name`, the collapsed headers).
 
     fetch() folds the headers into a dict, which is exactly wrong here: one
@@ -1249,7 +1263,26 @@ def allocator_events(log, codec=ZSTD, into=None):
 REQUEST_LINE_RE = re.compile(r"\*(\d+) http request line")
 
 
-def allocator_timeline(log, codec=ZSTD):
+class Timeline(TypedDict):
+    """What allocator_timeline returns.
+
+    Spelled out because the values are not one type - three of these are
+    counts, one is a list and one a set - and a plain dict collapses them
+    into a union that nothing can be indexed out of. Naming the shape is
+    also the only way len(soak["connections"]) can be checked at all.
+    """
+
+    allocs: int
+    frees: int
+    unmatched: int
+    peak: int
+    live_at_end: int
+    blocks_at_end: int
+    at_request_start: list[int]
+    connections: set[str]
+
+
+def allocator_timeline(log: str, codec: "Codec" = ZSTD) -> Timeline:
     """Replays the allocator trace in order instead of grouping by connection.
 
     allocator_events() sums per connection, which is what a test opening one
@@ -1258,10 +1291,11 @@ def allocator_timeline(log, codec=ZSTD):
     was released before the next request began - only walking the log in order
     and recording live bytes at each request line does.
     """
-    live, live_bytes, peak = {}, 0, 0
+    live: dict[str, int] = {}
+    live_bytes = peak = 0
     allocs = frees = unmatched = 0
-    at_request_start = []
-    connections = set()
+    at_request_start: list[int] = []
+    connections: set[str] = set()
 
     for line in log.splitlines():
         match = REQUEST_LINE_RE.search(line)
@@ -3691,7 +3725,12 @@ def test_alloc_soak(ctx, codec):
     )
 
 
-def keepalive_soak(ctx, paths, rounds, codec=ZSTD):
+def keepalive_soak(
+    ctx: "Context",
+    paths: Sequence[str],
+    rounds: int,
+    codec: "Codec" = ZSTD,
+) -> Timeline:
     """Drives `rounds` passes over `paths` down one connection."""
     conn = http.client.HTTPConnection("127.0.0.1", ctx.port, timeout=60)
     try:
@@ -4121,7 +4160,14 @@ class Context:
     """Everything a test needs: the server, the port, the fixture bytes and a
     zstd decoder."""
 
-    def __init__(self, port, decode, fixtures, nginx, max_out_size=None):
+    def __init__(
+        self,
+        port: int,
+        decode: Callable[[bytes], bytes] | None,
+        fixtures: dict[str, bytes],
+        nginx: "Nginx",
+        max_out_size: int | None = None,
+    ) -> None:
         self.port = port
         self.decode = decode
         self.fixtures = fixtures

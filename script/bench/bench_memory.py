@@ -59,6 +59,7 @@ import json
 import os
 import sys
 import tempfile
+from typing import TypedDict
 
 # test_stream.py lives in script/, one level up from this directory, and
 # carries the fixtures, the nginx wrapper and the allocator-trace parser
@@ -143,7 +144,22 @@ http {{
     return path
 
 
-def measure(nginx, port, path, codec):
+class Measurement(TypedDict):
+    """What measure() returns.
+
+    Named because the values are not one type - two counts, an optional
+    window and a list of sizes - and a plain dict unions them into
+    something max() cannot order and "sizes" cannot be iterated out of.
+    """
+
+    peak: int
+    allocs: int
+    leaked: int
+    window: int | None
+    sizes: list[int]
+
+
+def measure(nginx, port, path, codec) -> Measurement | None:
     """What one response allocated, or None if it came back uncompressed.
 
     fetch() opens its own connection per request, so the connection id the
