@@ -54,6 +54,8 @@ Usage:
     python3 script/bench/bench_memory.py --level 1,3 --window 16k,32k,64k
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -74,14 +76,16 @@ sys.path.insert(
 import test_stream as T
 
 
-def location(codec, level, window):
+def location(codec: T.Codec, level: str, window: str) -> str:
     """The path a (level, window) pair is served under, codec included."""
     return f"/{codec.name}-q{level or 'default'}w{window or 'default'}/"
 
 
-def render_conf(work, port, codec, levels, windows):
+def render_conf(
+    work: str, port: int, codec: T.Codec, levels: list[str], windows: list[str]
+) -> str:
     """One location per (level, window) pair, for this codec alone."""
-    locations = []
+    locations: list[str] = []
     for level in levels:
         for window in windows:
             body = ["      root html;"]
@@ -164,7 +168,9 @@ class Measurement(TypedDict):
     sizes: list[int]
 
 
-def measure(nginx, port, path, codec) -> Measurement | None:
+def measure(
+    nginx: T.Nginx, port: int, path: str, codec: T.Codec
+) -> Measurement | None:
     """What one response allocated, or None if it came back uncompressed.
 
     fetch() opens its own connection per request, so the connection id the
@@ -204,8 +210,8 @@ def measure(nginx, port, path, codec) -> Measurement | None:
     }
 
 
-def label_for(codec, level, window):
-    parts = []
+def label_for(codec: T.Codec, level: str, window: str) -> str:
+    parts: list[str] = []
     if level:
         parts.append(f"{codec.directive}_level {level}")
     else:
@@ -215,10 +221,30 @@ def label_for(codec, level, window):
     return ", ".join(parts)
 
 
-def run_codec(codec, args, corpus, names, nginx_bin, summary):
+class Row(TypedDict):
+    """One row of the summary: the worst peak one (level, window) reached."""
+
+    codec: str
+    level: str
+    window: str
+    peak: int
+
+
+def run_codec(
+    codec: T.Codec,
+    args: argparse.Namespace,
+    corpus: dict[str, bytes],
+    names: list[str],
+    nginx_bin: str,
+    summary: list[Row],
+) -> None:
     """Measures every (level, window) pair for one codec, in its own nginx."""
-    levels = [lv.strip() for lv in args.level.split(",") if lv.strip()] or [""]
-    windows = [w.strip() for w in args.window.split(",")] if args.window else [""]
+    levels: list[str] = [
+        lv.strip() for lv in args.level.split(",") if lv.strip()
+    ] or [""]
+    windows: list[str] = (
+        [w.strip() for w in args.window.split(",")] if args.window else [""]
+    )
 
     work = tempfile.mkdtemp(prefix=f"ngx-mem-{codec.name}-")
     html = os.path.join(work, "html")
@@ -290,7 +316,7 @@ def run_codec(codec, args, corpus, names, nginx_bin, summary):
         nginx.stop()
 
 
-def print_summary(rows):
+def print_summary(rows: list[Row]) -> None:
     """The worst peak each configuration reached, which is the number a
     server sizing itself for concurrent responses has to budget from."""
     print("### summary - highest peak over the corpus")
@@ -303,7 +329,7 @@ def print_summary(rows):
     print()
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -368,7 +394,7 @@ def main():
 
     names = sorted(corpus)
 
-    summary = []
+    summary: list[Row] = []
     for codec in codecs:
         run_codec(codec, args, corpus, names, nginx_bin, summary)
 
