@@ -665,20 +665,11 @@ typedef struct {
 } made_progress_result;
 
 /* Whether the round moved anything, and the whole of why the loop
-   above it terminates. Called before the buffer is disposed of, which
-   is what lets it speak first: dispose_buf answers CONTINUE whenever
-   nothing was written, so without this a round that wrote nothing
-   would be repeated on identical inputs for as long as the worker
-   lives.
- *
- * Three things count as movement: input taken, a byte written, or a
- * directive completed - the last because record_round then clears
- * unflushed_input or sets frame_closed, so the next round differs
- * whatever this one produced. An empty flush of an empty block is
- * that third case, and legitimate.
- *
- * An error rather than anything retryable, deliberately: retrying is
- * the very thing that spins. */
+   terminates: dispose_buf answers CONTINUE whenever nothing was
+   written, so a round that moved nothing would repeat on identical
+   inputs forever. Input taken, a byte written or a directive
+   completed all count - the last because record_round then changes
+   what the next round does. */
 static made_progress_result
 ngx_http_pack_zstd_made_progress(made_progress_args *const args)
 {
