@@ -411,6 +411,45 @@ jobs:
             oom-*
           if-no-files-found: ignore
 
+  analyze:
+    name: Static analysis with clang (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { name: linux/amd64, runner: ubuntu-24.04 }
+          - { name: linux/arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        uses: ./.github/actions/build-deps
+        with:
+          extra: clang
+
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
+
+      # The analyser takes its flags from the tree this leaves behind, so
+      # it must be configured the way the module ships - and configured
+      # with clang, since those flags are handed back to clang.
+      - name: Build nginx with clang
+        env:
+          CC: clang
+        run: script/build.sh
+
+      # Analyses only the five files this repository owns. Findings in
+      # nginx or in deps/ are not ours to answer for, and filtering them
+      # out of a whole-build report by path is how a job like this rots
+      # into always-green. See the script.
+      - name: Analyse this module
+        env:
+          CLANG: clang
+        run: script/analyze.sh
+
   format:
     name: Check formatting with clang-format (${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}
