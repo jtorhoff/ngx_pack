@@ -627,17 +627,14 @@ ngx_http_pack_brotli_prepare(prepare_args *const args)
         }
 
         header_rc = ngx_http_pack_brotli_send_headers(ctx);
-        if (header_rc == NGX_ERROR) {
+
+        /* An error, or a filter below replacing the response with a
+           status. Returns NGX_ERROR rather than the status, since a
+           body filter's callers treat any status as success.
+           See script/tests/header_status/test-header-status.sh. */
+        if (header_rc == NGX_ERROR || header_rc > NGX_OK) {
             ngx_http_pack_brotli_close(ctx);
             *args->rc = NGX_ERROR;
-            return NGX_HTTP_PACK_BROTLI_ERROR;
-        }
-
-        /* A special response was substituted below us; the body we
-           hold is no longer the one being sent. Must be checked
-           before handing anything on. */
-        if (header_rc > NGX_OK) {
-            *args->rc = header_rc;
             return NGX_HTTP_PACK_BROTLI_ERROR;
         }
 

@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Covers the one branch no stock nginx module can reach.
 
-ngx_http_zstd_filter_prepare calls send_headers only while the response
-length is still unknown, and handles three outcomes from it: NGX_ERROR,
-a status greater than NGX_OK, and success. The middle one needs a header
-filter below this module to return a status, which nothing in nginx's
-tree does on a response of unknown length - ngx_http_image_filter_module
-is the only stock header filter that returns a status at all, and only
-when Content-Length is known.
+Both filters' prepare functions call send_headers only while the
+response length is still unknown, and handle three outcomes from it:
+NGX_ERROR, a status greater than NGX_OK, and success. The middle one
+needs a header filter below this module to return a status, which
+nothing in nginx's tree does on a response of unknown length -
+ngx_http_image_filter_module is the only stock header filter that
+returns a status at all, and only when Content-Length is known.
 
 script/tests/header_status/fault_filter is a test-only module that does
 exactly that, and script/tests/header_status/test-header-status.sh
-builds an nginx carrying both.
+builds an nginx carrying both. It sits below whichever compression
+filter is on, so every check here runs against zstd and Brotli in turn -
+proving the branch fires for one codec says nothing about the other's
+copy of the same check ever having run.
 
 Reuses test_stream's fixtures, upstream and server plumbing so this file
 is only the part that differs.
@@ -84,17 +87,19 @@ def main() -> int:
         status, _, detail = results[-1]
         print(f"{status:<5} {name:<52} {detail}", flush=True)
 
-    def control_still_compresses() -> None:
+    def control_still_compresses(codec: T.Codec) -> None:
         """The same upstream without the fault filter must be unaffected."""
-        status, headers, _ = T.fetch(PORT, "/stream/big.html")
+        status, headers, _ = T.fetch(
+            PORT, codec.path("stream", "big.html"), codec.token
+        )
         check(status == 200, f"expected 200, got {status}")
         check(
-            headers.get("content-encoding") == "zstd",
+            headers.get("content-encoding") == codec.token,
             "control request was not compressed, so the fixture is wrong "
             "rather than the branch under test",
         )
 
-    def request_terminates_promptly() -> None:
+    def request_terminates_promptly(codec: T.Codec) -> None:
         """The request must end, rather than hang until the client gives up.
 
         The status itself cannot reach the client: it is a header
@@ -111,7 +116,7 @@ def main() -> int:
 
         started = time.time()
         try:
-            T.fetch(PORT, "/fault/big.html", timeout=8)
+            T.fetch(PORT, codec.path("fault", "big.html"), codec.token, timeout=8)
         except Exception:
             pass  # a reset or an empty reply is a fine way to end
         elapsed = time.time() - started
@@ -121,7 +126,7 @@ def main() -> int:
             f"rather than being finalized",
         )
 
-    def context_is_closed() -> None:
+    def context_is_closed(codec: T.Codec) -> None:
         """The encoder must not be left live behind the rejected response.
 
         With ctx left open, a later body filter call finds closed == 0,
@@ -133,10 +138,10 @@ def main() -> int:
             raise T.Failure("needs --with-debug to read the allocator trace")
         nginx.mark_log()
         try:
-            T.fetch(PORT, "/fault/big.html", timeout=8)
+            T.fetch(PORT, codec.path("fault", "big.html"), codec.token, timeout=8)
         except Exception:
             pass  # the connection closing without a reply is the point
-        stats = T.wait_for_encoder_release(nginx)
+        stats = T.wait_for_encoder_release(nginx, codec=codec)
         for conn, entry in stats.items():
             check(
                 entry["allocs"] == entry["frees"],
@@ -147,6 +152,13 @@ def main() -> int:
 
     def no_frame_reaches_the_wire() -> None:
         """The held body must not be emitted once the response is replaced.
+
+        zstd-only: the proof below reads a magic number out of the raw
+        bytes, and Brotli's stream carries nothing of the sort to read -
+        see Codec's docstring in test_stream.py. The other three checks
+        above already run for both codecs and cover the same branch;
+        this one is the sharper demonstration of the consequence, for
+        whichever codec can be asked for it.
 
         This is the sharp one. With the context left open, a later body
         filter call built an encoder for the replaced response and put
@@ -199,14 +211,21 @@ def main() -> int:
         )
 
     try:
-        record(
-            "control: the same stream without the fault compresses",
-            control_still_compresses,
-        )
-        record(
-            "a rejected response ends instead of hanging", request_terminates_promptly
-        )
-        record("the encoder does not outlive the rejected response", context_is_closed)
+        for codec in (T.ZSTD, T.BROTLI):
+            record(
+                f"[{codec.name}] control: the same stream without the "
+                f"fault compresses",
+                lambda codec=codec: control_still_compresses(codec),
+            )
+            record(
+                f"[{codec.name}] a rejected response ends instead of hanging",
+                lambda codec=codec: request_terminates_promptly(codec),
+            )
+            record(
+                f"[{codec.name}] the encoder does not outlive the rejected "
+                f"response",
+                lambda codec=codec: context_is_closed(codec),
+            )
         record(
             "no compressed frame reaches the wire after rejection",
             no_frame_reaches_the_wire,
