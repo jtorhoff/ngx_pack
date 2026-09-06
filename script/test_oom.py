@@ -69,7 +69,6 @@ def scenario(name):
                 passes += 1
                 print(f"PASS  {name}")
 
-        run.scenario = name  # type: ignore
         return run
 
     return wrap

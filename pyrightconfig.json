@@ -1,0 +1,6 @@
+{
+  "include": ["script"],
+  "exclude": ["script/test", "script/fuzz/out", "**/__pycache__"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard"
+}

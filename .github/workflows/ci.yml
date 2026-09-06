@@ -450,6 +450,46 @@ jobs:
           CLANG: clang
         run: script/analyze.sh
 
+  types:
+    name: Type-check the Python scripts
+    # One runner, as for shellcheck: pyright reads the sources and its
+    # verdict does not depend on the architecture underneath.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Pinned, and deliberately. pyright adds checks between releases, so
+      # an unpinned one turns this job red on somebody else's release day
+      # rather than on a change made here. NGINX_REF above is pinned for
+      # the same reason. Raise it on purpose, with the findings in hand.
+      - name: Install pyright
+        run: npm install -g pyright@1.1.413
+
+      # Settings come from pyrightconfig.json rather than flags, so the
+      # editor and this job check the same thing: Pylance is pyright
+      # underneath and reads that same file.
+      - name: Check the scripts
+        run: |
+          pyright --version
+          pyright --outputjson > /tmp/pyright.json || true
+          python3 - <<'EOF'
+          import json, sys
+          report = json.load(open("/tmp/pyright.json"))
+          summary = report["summary"]
+          for d in report["generalDiagnostics"]:
+              start = d["range"]["start"]
+              print(f"::error file={d['file']},line={start['line'] + 1}::"
+                    f"{d['rule'] if 'rule' in d else d['severity']}: {d['message']}")
+          print(f"{summary['filesAnalyzed']} files, "
+                f"{summary['errorCount']} errors, "
+                f"{summary['warningCount']} warnings")
+          sys.exit(1 if summary["errorCount"] or summary["warningCount"] else 0)
+          EOF
+
   shellcheck:
     name: Lint the shell scripts
     # One runner is enough: shellcheck reads the scripts, so the result

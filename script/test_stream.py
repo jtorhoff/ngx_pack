@@ -36,6 +36,8 @@ import tempfile
 import threading
 import time
 
+from collections.abc import Callable
+
 # One floor for every script here, stated once: the four others in
 # this directory import this module, so they inherit it. The runners
 # carry 3.12 and no job pins a version, so without this a script that
@@ -84,7 +86,10 @@ class Codec:
     codec support it" flag per assertion.
     """
 
-    def __init__(self, name, token, ext, directive, prefix, log_tag, superstrings):
+    def __init__(
+        self, name, token, ext, directive, prefix, log_tag, superstrings,
+        continue_step,
+    ):
         self.name = name
         self.token = token
         self.ext = ext
@@ -102,10 +107,19 @@ class Codec:
         # Brotli.
         self.superstrings = superstrings
 
+        # What this encoder's step enum calls "go round again", which the
+        # round trace logs as a number. The two are not the same: zstd's
+        # enum opens with a READY member Brotli has no use for, so its
+        # CONTINUE sits one later. Checked against the header by
+        # test_rounds_make_progress, so a reordered enum fails loudly
+        # rather than quietly making that assertion vacuous.
+        self.continue_step = continue_step
+
         # Filled in by main(). None when no decoder for this codec is
         # installed, which is what makes needs_decoder skip rather than
-        # fail.
-        self.decode = None
+        # fail - so it is declared optional rather than given a stub,
+        # the None being what the runner reads.
+        self.decode: Callable[[bytes], bytes] | None = None
 
         self.alloc_re = re.compile(
             rf"\*(\d+) {log_tag} alloc: (?:0x)?([0-9A-Fa-f]+), size: (\d+)"
@@ -153,15 +167,14 @@ class Codec:
         return self.name
 
 
-ZSTD = Codec("zstd", "zstd", ".zst", "pack_zstd", "", "zstd", ("zstdlib",))
-BROTLI = Codec("brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",))
-
-# What each encoder's step enum calls "go round again". The two are not
-# the same number: zstd's enum opens with a READY member that brotli's
-# has no use for, so CONTINUE sits one later. Read from the headers
-# rather than guessed, and asserted against them by the test below.
-ZSTD.continue_step = 1
-BROTLI.continue_step = 0
+ZSTD = Codec(
+    "zstd", "zstd", ".zst", "pack_zstd", "", "zstd", ("zstdlib",),
+    continue_step=1,
+)
+BROTLI = Codec(
+    "brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",),
+    continue_step=0,
+)
 
 
 # What a test line is prefixed with: the tag clipped to four characters
@@ -1432,7 +1445,19 @@ def check_corpus_roundtrip(ctx, name, path=None, codec=ZSTD):
         f"{path}: compressed body ({len(body)}) is not smaller than the "
         f"original ({len(original)})",
     )
-    check(codec.decode(body) == original, f"{path}: decoded body differs")  # type: ignore
+
+    # Every caller is registered needs_decoder, so the runner skips them
+    # when there is nothing to decode with and this cannot be None. Said
+    # out loud rather than assumed: if that ever stops holding, this
+    # names the reason instead of raising "NoneType is not callable" from
+    # the middle of an assertion.
+    decode = codec.decode
+    if decode is None:
+        raise Failure(
+            f"no {codec.name} decoder, so this test should have been skipped"
+        )
+
+    check(decode(body) == original, f"{path}: decoded body differs")
 
 
 @test("pack_static serves a pre-compressed sibling", needs_decoder=True, label="static")
@@ -2168,8 +2193,9 @@ def test_ttfb_on_buffered_stream(ctx, codec):
     finally:
         sock.close()
 
-    check(first_body is not None, "no body ever arrived")
-    ttfb = first_body - started  # type: ignore
+    if first_body is None:
+        raise Failure("no body ever arrived")
+    ttfb = first_body - started
     elapsed = finished - started
     check(
         ttfb < elapsed * 0.4,
@@ -3740,7 +3766,7 @@ def test_keepalive_allocation_balance(ctx, codec):
         ctx.nginx.mark_log()
         singles[path] = keepalive_soak(ctx, [path], 1, codec)["peak"]
 
-    dearest = max(singles, key=singles.get)  # type: ignore
+    dearest = max(singles, key=lambda path: singles[path])
     alone_peak = singles[dearest]
     check(
         alone_peak > 0,
@@ -4136,7 +4162,7 @@ def main():
     nginx_bin = locate_nginx(args.nginx)
     version, has_debug = nginx_build_info(nginx_bin)
     for codec in CODECS:
-        codec.decode = locate_decoder(codec)  # type: ignore
+        codec.decode = locate_decoder(codec)
 
     # The zstd one still has a name of its own: it is what ctx.decode
     # hands the tests that read the compressed bytes directly.
@@ -4207,7 +4233,7 @@ def main():
                 # A test that raises anything else - a socket timeout, a
                 # decoder failure - is a failed test, not a reason to abandon
                 # the run and leave nginx behind.
-                except Exception as error:  # noqa: BLE001
+                except Exception as error:
                     results.append((FAIL, name, f"{type(error).__name__}: {error}"))
             elapsed = time.time() - started
 

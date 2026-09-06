@@ -71,7 +71,7 @@ def main():
             results.append((T.PASS, name, ""))
         except T.Failure as failure:
             results.append((T.FAIL, name, str(failure)))
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             results.append((T.FAIL, name, f"{type(error).__name__}: {error}"))
         status, _, detail = results[-1]
         print(f"{status:<5} {name:<52} {detail}", flush=True)
@@ -104,7 +104,7 @@ def main():
         started = time.time()
         try:
             T.fetch(PORT, "/fault/big.html", timeout=8)
-        except Exception:  # noqa: BLE001, S110
+        except Exception:
             pass  # a reset or an empty reply is a fine way to end
         elapsed = time.time() - started
         check(
@@ -126,7 +126,7 @@ def main():
         nginx.mark_log()
         try:
             T.fetch(PORT, "/fault/big.html", timeout=8)
-        except Exception:  # noqa: BLE001, S110
+        except Exception:
             pass  # the connection closing without a reply is the point
         stats = T.wait_for_encoder_release(nginx)
         for conn, entry in stats.items():
