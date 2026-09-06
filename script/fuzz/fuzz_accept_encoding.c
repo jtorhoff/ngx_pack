@@ -1,36 +1,36 @@
 /*
- * Copyright (C) Google Inc.
- * Copyright (C) 2026 Juri Torhoff
+   Copyright (C) Google Inc.
+   Copyright (C) 2026 Juri Torhoff
  */
 
 /* libFuzzer target for the Accept-Encoding parser in
- * module/common/ngx_http_pack_headers.h.
- *
- * That parser is the only code in this repository that reads attacker
- * controlled bytes. It walks the header with ngx_strlcasestrn,
- * indexes backwards from a match (cursor[-1]), steps forwards past
- * it, and hands the remainder to a weight parser - all over a buffer
- * that is NOT NUL terminated, because nginx does not terminate header
- * values. The header's own comment records that the static module's
- * copy had once "lost the length guard", so this is a bug class the
- * file has seen before.
- *
- * The whole point of the harness is the allocation below: the header
- * value is a heap block sized to the input exactly, so a single byte
- * read past the end is a heap-buffer-overflow that AddressSanitizer
- * stops on. A static buffer would hide precisely the bug worth
- * finding.
- *
- * The real ngx_strlcasestrn is linked in rather than reimplemented -
- * the interaction between its bounds and ours is where a defect would
- * live, so a stand-in would test the wrong thing.
- *
- * What this does NOT cover: the filter module itself, which needs a
- * request, a pool and a buffer chain to do anything.
- * script/test_stream.py covers that at the integration level.
- *
- * Build and run: script/fuzz/build.sh, then
- * script/fuzz/out/fuzz_accept_encoding
+   module/common/ngx_http_pack_headers.h.
+
+   That parser is the only code in this repository that reads attacker
+   controlled bytes. It walks the header with ngx_strlcasestrn,
+   indexes backwards from a match (cursor[-1]), steps forwards past
+   it, and hands the remainder to a weight parser - all over a buffer
+   that is NOT NUL terminated, because nginx does not terminate header
+   values. The header's own comment records that the static module's
+   copy had once "lost the length guard", so this is a bug class the
+   file has seen before.
+
+   The whole point of the harness is the allocation below: the header
+   value is a heap block sized to the input exactly, so a single byte
+   read past the end is a heap-buffer-overflow that AddressSanitizer
+   stops on. A static buffer would hide precisely the bug worth
+   finding.
+
+   The real ngx_strlcasestrn is linked in rather than reimplemented -
+   the interaction between its bounds and ours is where a defect would
+   live, so a stand-in would test the wrong thing.
+
+   What this does NOT cover: the filter module itself, which needs a
+   request, a pool and a buffer chain to do anything.
+   script/test_stream.py covers that at the integration level.
+
+   Build and run: script/fuzz/build.sh, then
+   script/fuzz/out/fuzz_accept_encoding
  */
 
 #include <stddef.h>

@@ -1,11 +1,11 @@
 /*
- * Copyright (C) 2026 Juri Torhoff
+   Copyright (C) 2026 Juri Torhoff
  */
 
 /* Small helpers shared by the two filters, kept apart from
- * ngx_http_pack_headers.h so a module that wants neither includes
- * neither: a static function in a header is an unused-function error
- * in any translation unit that does not call it.
+   ngx_http_pack_headers.h so a module that wants neither includes
+   neither: a static function in a header is an unused-function error
+   in any translation unit that does not call it.
  */
 
 #ifndef NGX_HTTP_PACK_HELPERS_H_INCLUDED_

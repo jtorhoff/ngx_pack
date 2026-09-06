@@ -1,11 +1,11 @@
 /*
- * Copyright (C) Google Inc.
- * Copyright (C) 2026 Juri Torhoff
+   Copyright (C) Google Inc.
+   Copyright (C) 2026 Juri Torhoff
  */
 
 /* HTTP header handling shared by the filter and the static module:
- * reading Accept-Encoding to decide whether a client will take a
- * given encoding, and labelling a response that carries one.
+   reading Accept-Encoding to decide whether a client will take a
+   given encoding, and labelling a response that carries one.
  */
 
 #ifndef NGX_HTTP_PACK_HEADERS_H_INCLUDED_

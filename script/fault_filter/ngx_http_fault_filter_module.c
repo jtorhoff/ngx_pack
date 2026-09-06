@@ -1,25 +1,25 @@
 /*
- * Copyright (C) 2026 Juri Torhoff
+   Copyright (C) 2026 Juri Torhoff
  */
 
 /* Test-only header filter. It returns a configured HTTP status from
- * its header filter and does nothing else.
- *
- * It exists because that behaviour is otherwise unreachable here. A
- * header filter below the zstd filter returning a status - rather
- * than NGX_OK, NGX_AGAIN or NGX_ERROR - is what
- * ngx_http_zstd_filter_prepare's "header_rc > NGX_OK" branch handles,
- * and no stock nginx module can produce it on the path that branch
- * lives on: ngx_http_image_filter_module is the only one in the tree
- * that returns a status from a header filter at all, and it does so
- * only when Content-Length is known, while that branch is reachable
- * only while the length is still unknown.
- *
- * The config beside this file places the module below the zstd filter
- * in the chain, so what it returns is what zstd's send_headers sees.
- *
- * Never built into a shipping binary. script/build.sh does not add
- * it; only script/test-header-status.sh does.
+   its header filter and does nothing else.
+
+   It exists because that behaviour is otherwise unreachable here. A
+   header filter below the zstd filter returning a status - rather
+   than NGX_OK, NGX_AGAIN or NGX_ERROR - is what
+   ngx_http_zstd_filter_prepare's "header_rc > NGX_OK" branch handles,
+   and no stock nginx module can produce it on the path that branch
+   lives on: ngx_http_image_filter_module is the only one in the tree
+   that returns a status from a header filter at all, and it does so
+   only when Content-Length is known, while that branch is reachable
+   only while the length is still unknown.
+
+   The config beside this file places the module below the zstd filter
+   in the chain, so what it returns is what zstd's send_headers sees.
+
+   Never built into a shipping binary. script/build.sh does not add
+   it; only script/test-header-status.sh does.
  */
 
 #include <ngx_config.h>

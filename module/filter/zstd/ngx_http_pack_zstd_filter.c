@@ -1,8 +1,8 @@
 /*
- * Copyright (C) Igor Sysoev
- * Copyright (C) Nginx, Inc.
- * Copyright (C) Google Inc.
- * Copyright (C) 2026 Juri Torhoff
+   Copyright (C) Igor Sysoev
+   Copyright (C) Nginx, Inc.
+   Copyright (C) Google Inc.
+   Copyright (C) 2026 Juri Torhoff
  */
 
 #include <ngx_config.h>
