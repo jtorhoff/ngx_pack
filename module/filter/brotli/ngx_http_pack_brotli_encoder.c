@@ -717,6 +717,7 @@ ngx_http_pack_brotli_encoder_step(
     uint8_t           *next_out;
     BROTLI_BOOL        ok;
     ngx_uint_t         flush_done;
+    step_e             step;
 
     mode = ngx_http_pack_brotli_select_mode(&(select_mode_args) {
         .enc          = enc,
@@ -821,21 +822,36 @@ ngx_http_pack_brotli_encoder_step(
     }
 
     if (enc->state.stream_closed) {
-        return NGX_HTTP_PACK_BROTLI_STEP_DONE;
+        step = NGX_HTTP_PACK_BROTLI_STEP_DONE;
+
+    } else if (written > 0 || consumed > 0) {
+        step = NGX_HTTP_PACK_BROTLI_STEP_CONTINUE;
+
+    } else if (mode.operation == BROTLI_OPERATION_FINISH) {
+        /* Nothing moved. A finish that cannot finish would spin here,
+           so it is reported rather than retried. */
+        step = NGX_HTTP_PACK_BROTLI_STEP_FAILED;
+
+    } else {
+        /* Nothing moved either, but an encoder with no work left
+           until it is fed again rather than one that is stuck. */
+        step = NGX_HTTP_PACK_BROTLI_STEP_DONE;
     }
 
-    if (written > 0 || consumed > 0) {
-        return NGX_HTTP_PACK_BROTLI_STEP_CONTINUE;
-    }
+    /* One line per round, which is what makes the loop's own
+       invariant checkable from outside: a round answering CONTINUE
+       has to have moved something, or the next round repeats it. The
+       suite asserts exactly that. */
+    ngx_log_debug3(
+        NGX_LOG_DEBUG_HTTP,
+        enc->request->connection->log,
+        0,
+        "brotli round: consumed: %uz, written: %uz, step: %d",
+        consumed,
+        written,
+        (int32_t) step);
 
-    /* Nothing moved. A finish that cannot finish would spin here, so
-       it is reported rather than retried; anything else is simply an
-       encoder with no work left until it is fed again. */
-    if (mode.operation == BROTLI_OPERATION_FINISH) {
-        return NGX_HTTP_PACK_BROTLI_STEP_FAILED;
-    }
-
-    return NGX_HTTP_PACK_BROTLI_STEP_DONE;
+    return step;
 }
 
 

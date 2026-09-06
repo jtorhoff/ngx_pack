@@ -118,6 +118,14 @@ class Codec:
             rf"\*(\d+) {log_tag} buffer created: (?:0x)?[0-9A-Fa-f]+, "
             rf"total: (\d+)"
         )
+        # One line per turn of the encoder, whether or not it produced a
+        # buffer. The commit trace above cannot stand in for it: a round
+        # that writes nothing releases its buffer and logs nothing at
+        # all, which is exactly the round that would spin.
+        self.round_re = re.compile(
+            rf"\*(\d+) {log_tag} round: consumed: (\d+), written: (\d+), "
+            rf"step: (\d+)"
+        )
         self.init_re = re.compile(
             rf"\*(\d+) {log_tag} encoder instance created and configured"
         )
@@ -147,6 +155,13 @@ class Codec:
 
 ZSTD = Codec("zstd", "zstd", ".zst", "pack_zstd", "", "zstd", ("zstdlib",))
 BROTLI = Codec("brotli", "br", ".br", "pack_brotli", "br-", "brotli", ("brotli",))
+
+# What each encoder's step enum calls "go round again". The two are not
+# the same number: zstd's enum opens with a READY member that brotli's
+# has no use for, so CONTINUE sits one later. Read from the headers
+# rather than guessed, and asserted against them by the test below.
+ZSTD.continue_step = 1
+BROTLI.continue_step = 0
 
 
 # What a test line is prefixed with: the tag clipped to four characters
@@ -3908,6 +3923,103 @@ def test_table_sizing(ctx):
             f"{ceiling / 1024:.0f} KB ceiling - its tables are sized to "
             f"the level rather than to the window",
         )
+
+
+def continue_ordinal(codec):
+    """The value of this codec's STEP_CONTINUE, read out of its header.
+
+    The trace logs the step as a number, so a test that reads it has to
+    know which number means "go round again". Parsed rather than repeated
+    so that reordering the enum fails here, loudly, instead of quietly
+    making the assertion below vacuous.
+    """
+    header = os.path.join(
+        ROOT, "module", "filter", codec.name,
+        f"ngx_http_pack_{codec.name}_encoder.h",
+    )
+    with open(header) as handle:
+        body = handle.read()
+
+    block = re.search(r"typedef enum \{(.*?)\}", body, re.S)
+    if block is None:
+        raise Failure(f"no step enum found in {header}")
+
+    value, seen = 0, {}
+    for line in block.group(1).split("\n"):
+        m = re.match(r"\s*(NGX_HTTP_PACK_\w+?_STEP_(\w+))\s*(?:=\s*(\d+))?\s*,", line)
+        if not m:
+            continue
+        if m.group(3) is not None:
+            value = int(m.group(3))
+        seen[m.group(2)] = value
+        value += 1
+
+    if "CONTINUE" not in seen:
+        raise Failure(f"no STEP_CONTINUE in {header}, only {sorted(seen)}")
+    return seen["CONTINUE"]
+
+
+@test(
+    "every round that goes again has moved something",
+    needs_debug=True,
+    codecs=CODECS,
+)
+def test_rounds_make_progress(ctx, codec):
+    """The invariant the pump loop's termination rests on.
+
+    Both encoders answer CONTINUE to mean "go round again", and both loop
+    on that answer without counting. So a CONTINUE round that consumed no
+    input and wrote no byte would be repeated on identical state until the
+    worker was killed. Each encoder guards against it - zstd in
+    made_progress, Brotli by returning CONTINUE only after movement - but
+    a guard on a path nothing reaches is a guard nobody has seen work.
+
+    This is the other half: not that the guard fires, but that on ordinary
+    traffic it never needs to. Under script/test-small-buffer.sh the same
+    assertion covers thousands of rounds per response rather than a
+    handful, which is where it has real teeth.
+
+    A round that moves nothing is not always wrong - completing a flush of
+    an empty block moves neither input nor output, and is legitimate. What
+    makes it safe is that such a round does not answer CONTINUE, and that
+    is exactly what this checks.
+    """
+    expected = continue_ordinal(codec)
+    check(
+        expected == codec.continue_step,
+        f"{codec.name}'s STEP_CONTINUE is {expected} in the header but the "
+        f"suite was told {codec.continue_step}; the enum moved",
+    )
+
+    ctx.nginx.mark_log()
+    status, headers, _ = fetch(ctx.port, codec.file("medium.html"), codec.token)
+    check(status == 200, f"expected 200, got {status}")
+    check(
+        headers.get("content-encoding") == codec.token,
+        "response was not compressed, so no round ran",
+    )
+
+    rounds = codec.round_re.findall(ctx.nginx.read_log())
+    check(len(rounds) > 1, f"expected several rounds, traced {len(rounds)}")
+
+    going_again = [r for r in rounds if int(r[3]) == codec.continue_step]
+    check(
+        going_again,
+        f"none of the {len(rounds)} rounds answered CONTINUE, so the loop "
+        f"never went round and this proved nothing",
+    )
+
+    stalled = [
+        (conn, consumed, written)
+        for conn, consumed, written, _ in going_again
+        if int(consumed) == 0 and int(written) == 0
+    ]
+    check(
+        not stalled,
+        f"{len(stalled)} of {len(going_again)} CONTINUE rounds took no input "
+        f"and wrote no byte, so the loop would repeat them unchanged: "
+        f"{stalled[:3]}",
+    )
 
 
 @test(

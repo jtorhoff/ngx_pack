@@ -879,6 +879,7 @@ ngx_http_pack_zstd_compress(compress_args *const args)
     compress_buf_result  zresult;
     advance_input_result advanced;
     ngx_int_t            rc;
+    step_e               step;
 
     enc = args->enc;
 
@@ -975,16 +976,31 @@ ngx_http_pack_zstd_compress(compress_args *const args)
         };
     }
 
+    step = ngx_http_pack_zstd_dispose_buf(
+               &(dispose_buf_args) {
+                   .enc     = enc,
+                   .buf     = drawn.buf,
+                   .written = zresult.written,
+                   .mode    = input.mode,
+               })
+               .step;
+
+    /* One line per round, which is what makes the loop's own
+       invariant checkable from outside: a round answering CONTINUE
+       has to have moved something, or the next round repeats it. The
+       suite asserts exactly that. */
+    ngx_log_debug3(
+        NGX_LOG_DEBUG_HTTP,
+        enc->request->connection->log,
+        0,
+        "zstd round: consumed: %uz, written: %uz, step: %d",
+        zresult.consumed,
+        zresult.written,
+        (int32_t) step);
+
     return (compress_result) {
         .chain = advanced.chain,
-        .step  = ngx_http_pack_zstd_dispose_buf(
-                    &(dispose_buf_args) {
-                         .enc     = enc,
-                         .buf     = drawn.buf,
-                         .written = zresult.written,
-                         .mode    = input.mode,
-                    })
-                    .step,
+        .step  = step,
     };
 }
 
