@@ -653,6 +653,7 @@ ngx_http_pack_zstd_record_round(record_round_args *const args)
 typedef struct {
     encoder_t        *enc;
     ZSTD_EndDirective mode;
+    size_t            consumed;
     size_t            written;
     size_t            remaining;
     /* Read, never advanced. */
@@ -663,22 +664,62 @@ typedef struct {
     ngx_int_t status;
 } made_progress_result;
 
-/* Whether the round moved anything. The one case where it did not is
-   draining with no input left and a call that neither wrote a byte
-   nor finished: repeating that would leave every input unchanged and
-   the worker spinning. An error rather than anything retryable,
-   deliberately - retrying is the very thing that spins. */
+/* Whether the round moved anything, and the whole of why the loop
+   above it terminates. Called before the buffer is disposed of, which
+   is what lets it speak first: dispose_buf answers CONTINUE whenever
+   nothing was written, so without this a round that wrote nothing
+   would be repeated on identical inputs for as long as the worker
+   lives.
+ *
+ * Three things count as movement: input taken, a byte written, or a
+ * directive completed - the last because record_round then clears
+ * unflushed_input or sets frame_closed, so the next round differs
+ * whatever this one produced. An empty flush of an empty block is
+ * that third case, and legitimate.
+ *
+ * An error rather than anything retryable, deliberately: retrying is
+ * the very thing that spins. */
 static made_progress_result
 ngx_http_pack_zstd_made_progress(made_progress_args *const args)
 {
     ngx_chain_t *in;
+    size_t       consumed;
     size_t       written;
     size_t       remaining;
+    ngx_uint_t   completed_directive;
 
     in        = args->chain;
+    consumed  = args->consumed;
     written   = args->written;
     remaining = args->remaining;
 
+    completed_directive = args->mode != ZSTD_e_continue &&
+                          remaining == 0;
+
+    /* Nothing taken, nothing written, nothing settled. The chain
+       still holds what it held - advance_input moves it by "consumed"
+       and retires it only when empty - so the next round would be
+       this one again. */
+    if (consumed == 0 && written == 0 && !completed_directive) {
+        ngx_log_error(
+            NGX_LOG_ALERT,
+            args->enc->request->connection->log,
+            0,
+            "zstd compress moved nothing: mode: %d "
+            "remaining: %uz input: %s",
+            (int32_t) args->mode,
+            remaining,
+            in == NULL ? "none" : "waiting");
+
+        return (made_progress_result) {
+            .status = NGX_ERROR,
+        };
+    }
+
+    /* Draining with the input exhausted and a directive still
+       unfinished. Distinct from the above, which this does not cover:
+       the round may have consumed the last of the chain and still be
+       unable to finish. */
     if (in == NULL && written == 0 && remaining != 0) {
         ngx_log_error(
             NGX_LOG_ALERT,
@@ -930,6 +971,7 @@ ngx_http_pack_zstd_compress(compress_args *const args)
                  .chain     = advanced.chain,
                  .enc       = enc,
                  .mode      = input.mode,
+                 .consumed  = zresult.consumed,
                  .written   = zresult.written,
                  .remaining = zresult.remaining,
              })
