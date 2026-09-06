@@ -173,7 +173,7 @@ class Codec:
         """
         return f"/{name}" if not self.prefix else f"/{self.prefix}static/{name}"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.name
 
 
@@ -205,7 +205,21 @@ CODECS = [ZSTD, BROTLI]
 # Test registry
 # ---------------------------------------------------------------------------
 
-REGISTRY = []
+class RegistryEntry(TypedDict):
+    """One row of REGISTRY: what main() needs to run a test and report on
+    it. "fn" always takes just (ctx,) by the time it is stored here - a
+    codec-parameterised test is wrapped into that shape in register()
+    below, so main() never has to know which kind it is calling."""
+
+    name: str
+    fn: Callable[["Context"], None]
+    codec: Codec
+    needs_decoder: bool
+    needs_debug: bool
+    needs_corpus: bool
+
+
+REGISTRY: list[RegistryEntry] = []
 
 
 def test(
@@ -288,7 +302,7 @@ class Failure(Exception):
     pass
 
 
-def check(condition, message):
+def check(condition: object, message: str) -> None:
     if not condition:
         raise Failure(message)
 
@@ -298,7 +312,7 @@ def check(condition, message):
 # ---------------------------------------------------------------------------
 
 
-def locate_nginx(explicit):
+def locate_nginx(explicit: str | None) -> str:
     candidates = [
         explicit,
         os.environ.get("NGINX"),
@@ -315,7 +329,7 @@ def locate_nginx(explicit):
     )
 
 
-def nginx_build_info(nginx):
+def nginx_build_info(nginx: str) -> tuple[str, bool]:
     """Returns (version_line, has_debug). nginx -V reports on stderr."""
     done = subprocess.run([nginx, "-V"], capture_output=True, text=True, check=False)
     text = (done.stderr or "") + (done.stdout or "")
@@ -336,7 +350,7 @@ BUNDLED_DECODERS = {
 }
 
 
-def locate_decoder(codec=ZSTD):
+def locate_decoder(codec: Codec = ZSTD) -> Callable[[bytes], bytes] | None:
     """Returns a callable bytes->bytes, or None if `codec` cannot be decoded."""
     bundled = os.path.join(ROOT, *BUNDLED_DECODERS[codec.name])
     cli = shutil.which(codec.name)
@@ -345,7 +359,7 @@ def locate_decoder(codec=ZSTD):
     if not cli:
         return None
 
-    def decode_with_cli(data):
+    def decode_with_cli(data: bytes) -> bytes:
         # The CLI is happiest with a real file; this also keeps us clear of
         # stdin-buffering differences between zstd releases.
         with tempfile.NamedTemporaryFile(suffix=codec.ext, delete=False) as handle:
@@ -361,7 +375,7 @@ def locate_decoder(codec=ZSTD):
     return decode_with_cli
 
 
-def locate_encoder():
+def locate_encoder() -> Callable[[bytes], bytes] | None:
     """Returns a callable bytes->bytes, or None if zstd cannot be encoded.
 
     Only the pack_static tests need this: they have to lay down a real
@@ -375,7 +389,7 @@ def locate_encoder():
     if not cli:
         return None
 
-    def encode_with_cli(data):
+    def encode_with_cli(data: bytes) -> bytes:
         with tempfile.NamedTemporaryFile(delete=False) as handle:
             handle.write(data)
             path = handle.name
@@ -389,14 +403,14 @@ def locate_encoder():
     return encode_with_cli
 
 
-def encode_with_command(argv):
+def encode_with_command(argv: list[str]) -> Callable[[bytes], bytes] | None:
     """Returns a callable bytes->bytes running argv, or None if argv[0] is
     not on PATH."""
     cli = shutil.which(argv[0])
     if not cli:
         return None
 
-    def encode(data):
+    def encode(data: bytes) -> bytes:
         return subprocess.run(
             [cli, *argv[1:]], input=data, capture_output=True, check=True
         ).stdout
@@ -420,7 +434,9 @@ SIBLING_ENCODINGS = [
 ]
 
 
-def write_siblings(html, stem, body, encodings):
+def write_siblings(
+    html: str, stem: str, body: bytes, encodings: Sequence[str]
+) -> dict[str, bytes]:
     """Writes "stem" and a sibling per named encoding, returning a dict of
     the exact bytes each file received."""
     written = {stem: body}
@@ -445,7 +461,7 @@ def write_siblings(html, stem, body, encodings):
     return written
 
 
-def port_is_free(port):
+def port_is_free(port: int) -> bool:
     with socket.socket() as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -502,12 +518,12 @@ WORDS = [
 ]
 
 
-def make_text(word_count, seed):
+def make_text(word_count: int, seed: int) -> str:
     rng = random.Random(seed)
     return " ".join(rng.choice(WORDS) for _ in range(word_count))
 
 
-def make_dense_text(length, seed):
+def make_dense_text(length: int, seed: int) -> str:
     """`length` characters that barely compress.
 
     make_text() repeats a small vocabulary and so compresses away to almost
@@ -536,7 +552,7 @@ CORPUS_FILES = (
 )
 
 
-def load_corpus():
+def load_corpus() -> dict[str, bytes]:
     """Returns {name: bytes}, or {} if the corpus is not present."""
     corpus = {}
     for name in CORPUS_FILES:
@@ -549,7 +565,7 @@ def load_corpus():
     return corpus
 
 
-def build_fixtures(work):
+def build_fixtures(work: str) -> dict[str, bytes]:
     html = os.path.join(work, "html")
     os.makedirs(html, exist_ok=True)
     os.makedirs(os.path.join(work, "logs"), exist_ok=True)
@@ -669,7 +685,7 @@ def build_fixtures(work):
     return fixtures
 
 
-def render_conf(work, port, upstream_port):
+def render_conf(work: str, port: int, upstream_port: int) -> str:
     with open(CONF) as handle:
         conf = handle.read()
     conf = conf.replace(str(PORT), str(port)).replace(
@@ -698,7 +714,7 @@ class Upstream:
                     the path the pool cleanup handler exists for.
     """
 
-    def __init__(self, port, payloads):
+    def __init__(self, port: int, payloads: dict[str, bytes]) -> None:
         self.port = port
         self.payloads = payloads
         self.sock = socket.socket()
@@ -706,13 +722,13 @@ class Upstream:
         self.sock.bind(("127.0.0.1", port))
         self.sock.listen(16)
         self.stop = threading.Event()
-        self.clients = []
+        self.clients: list[socket.socket] = []
         self.thread = threading.Thread(target=self._serve, daemon=True)
 
-    def start(self):
+    def start(self) -> None:
         self.thread.start()
 
-    def _serve(self):
+    def _serve(self) -> None:
         while not self.stop.is_set():
             try:
                 conn, _ = self.sock.accept()
@@ -722,10 +738,10 @@ class Upstream:
             threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
 
     @staticmethod
-    def _chunk(payload):
+    def _chunk(payload: bytes) -> bytes:
         return b"%x\r\n" % len(payload) + payload + b"\r\n"
 
-    def _handle(self, conn):
+    def _handle(self, conn: socket.socket) -> None:
         try:
             request = conn.recv(65536).decode("latin-1")
             path = request.split(" ")[1] if " " in request else "/"
@@ -788,7 +804,7 @@ class Upstream:
     WIDE_CHUNKS = 128
     WIDE_CHUNK_SIZE = 1024
 
-    def _burst(self, conn, wide=False):
+    def _burst(self, conn: socket.socket, wide: bool = False) -> None:
         """Writes every chunk in a single send.
 
         nginx then reads them together and ngx_http_proxy_chunked_filter
@@ -811,7 +827,7 @@ class Upstream:
             b"Transfer-Encoding: chunked\r\n\r\n" + body + b"0\r\n\r\n"
         )
 
-    def _dribble(self, conn):
+    def _dribble(self, conn: socket.socket) -> None:
         """Sends a chunk every 50 ms without ever setting a flush marker, so
         the encoder decides on its own when to emit. Used to check that the
         filter does not sit on the whole response."""
@@ -825,7 +841,7 @@ class Upstream:
             time.sleep(0.05)
         conn.sendall(b"0\r\n\r\n")
 
-    def _status(self, conn, code):
+    def _status(self, conn: socket.socket, code: int) -> None:
         """Replies with `code`, in the shape that used to defeat the filter.
 
         204 and 304 are sent without a Content-Length, since with one the
@@ -853,7 +869,7 @@ class Upstream:
     # response declined here was declined for the header and not its size.
     TRANSFORM_BODY = b"<html><body>" + b"no-transform payload " * 60 + b"</body></html>"
 
-    def _cache_control(self, conn, directives):
+    def _cache_control(self, conn: socket.socket, directives: str) -> None:
         """Replies with the given Cache-Control, or none for "plain"."""
         extra = (
             ""
@@ -868,7 +884,7 @@ class Upstream:
             + self.TRANSFORM_BODY
         )
 
-    def _vary(self, conn, case):
+    def _vary(self, conn: socket.socket, case: str) -> None:
         """Replies carrying the header named by VARY_CASES[case], if any.
 
         Content-Length rather than chunked: what is under test is the header
@@ -885,7 +901,7 @@ class Upstream:
             + VARY_BODY
         )
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         self.stop.set()
         for conn in self.clients:
             with contextlib.suppress(OSError):
@@ -900,16 +916,16 @@ class Upstream:
 
 
 class Nginx:
-    def __init__(self, binary, work, conf, port):
+    def __init__(self, binary: str, work: str, conf: str, port: int) -> None:
         self.binary = binary
         self.work = work
         self.conf = conf
         self.port = port
-        self.proc = None
+        self.proc: subprocess.Popen[str] | None = None
         self.error_log = os.path.join(work, "logs", "error.log")
         self.log_mark = 0
 
-    def start(self):
+    def start(self) -> None:
         self.proc = subprocess.Popen(
             [self.binary, "-p", self.work, "-c", self.conf],
             stdout=subprocess.PIPE,
@@ -930,7 +946,7 @@ class Nginx:
                 time.sleep(0.1)
         raise SystemExit(f"error: nginx never listened on port {self.port}")
 
-    def stop(self):
+    def stop(self) -> None:
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:
@@ -939,7 +955,7 @@ class Nginx:
                 self.proc.kill()
                 self.proc.wait(timeout=5)
 
-    def mark_log(self):
+    def mark_log(self) -> None:
         """Remembers how far the log has got, so read_log() returns only
         what follows.
 
@@ -955,7 +971,7 @@ class Nginx:
         except FileNotFoundError:
             self.log_mark = 0
 
-    def read_log(self, whole=False):
+    def read_log(self, whole: bool = False) -> str:
         """Everything logged since the last mark_log(), or the lot."""
         try:
             with open(self.error_log, "rb") as handle:
@@ -965,7 +981,7 @@ class Nginx:
         except FileNotFoundError:
             return ""
 
-    def read_log_from(self, offset):
+    def read_log_from(self, offset: int) -> tuple[str, int]:
         """(text, next offset) for whole lines logged after "offset".
 
         For a caller reading the same growing log repeatedly. The tail is
@@ -1051,7 +1067,9 @@ def fetch_repeated(
         conn.close()
 
 
-def fetch_and_abort(port, path, accept_encoding="zstd", settle=1.5):
+def fetch_and_abort(
+    port: int, path: str, accept_encoding: str = "zstd", settle: float = 1.5
+) -> None:
     """Starts a request, reads a little, then resets the connection.
 
     SO_LINGER with a zero timeout makes close() emit an RST rather than a FIN,
@@ -1091,17 +1109,17 @@ OUT_RE = ZSTD.out_re
 BUF_RE = ZSTD.buf_re
 
 
-def buffers_created(log, codec=ZSTD):
+def buffers_created(log: str, codec: Codec = ZSTD) -> int:
     """Most output buffers any one response was seen to create."""
     return max((int(m.group(2)) for m in codec.buf_re.finditer(log)), default=0)
 
 
-def encoder_count(log, codec=ZSTD):
+def encoder_count(log: str, codec: Codec = ZSTD) -> int:
     """How many encoders were built, in this slice of the log."""
     return len(codec.init_re.findall(log))
 
 
-def frame_window(data):
+def frame_window(data: bytes) -> int:
     """The window size the encoder declared, read from the zstd frame header.
 
     RFC 8878 section 3.1.1. Deliberately taken from the frame rather than
@@ -1115,7 +1133,7 @@ def frame_window(data):
     return _frame_header(data)[0]
 
 
-def frame_blocks(data):
+def frame_blocks(data: bytes) -> int:
     """How many blocks the first frame is made of.
 
     This is the observable behind flush folding. A flush ends the block
@@ -1146,7 +1164,7 @@ def frame_blocks(data):
             return blocks
 
 
-def frame_declares_size(data):
+def frame_declares_size(data: bytes) -> bool:
     """Whether the frame header carries a Frame_Content_Size.
 
     zstd writes one when, and only when, it was told the size before the
@@ -1162,7 +1180,7 @@ def frame_declares_size(data):
     return bool(descriptor >> 6) or bool((descriptor >> 5) & 1)
 
 
-def _frame_header(data):
+def _frame_header(data: bytes) -> tuple[int, int]:
     """(window size, length of the frame header) for the frame at data[0]."""
     if data[:4] != ZSTD_MAGIC:
         raise Failure("response body does not start with a zstd frame")
@@ -1197,7 +1215,31 @@ def _frame_header(data):
     return window, pos
 
 
-def allocator_events(log, codec=ZSTD, into=None):
+class AllocatorEntry(TypedDict):
+    """One connection's slot in an allocator_events() result.
+
+    Named for the same reason Timeline is: the values are not one type,
+    and "live" is itself a dict, so nothing here can be indexed or
+    compared without the shape being stated somewhere.
+    """
+
+    allocs: int
+    frees: int
+    null_frees: int
+    live: dict[str, int]
+    live_bytes: int
+    peak_bytes: int
+    double_alloc: bool
+    unmatched_free: bool
+    closed: bool
+    frees_after_close: int
+
+
+def allocator_events(
+    log: str,
+    codec: Codec = ZSTD,
+    into: dict[str, AllocatorEntry] | None = None,
+) -> dict[str, AllocatorEntry]:
     """Replays the encoder's allocator trace, per connection.
 
     Tracks whether every pointer came back exactly once, the peak
@@ -1212,9 +1254,9 @@ def allocator_events(log, codec=ZSTD, into=None):
     what Nginx.read_log_from guarantees. wait_for_encoder_release uses
     it to avoid re-reading megabytes on every poll.
     """
-    stats = {} if into is None else into
+    stats: dict[str, AllocatorEntry] = {} if into is None else into
 
-    def slot(conn):
+    def slot(conn: str) -> AllocatorEntry:
         return stats.setdefault(
             conn,
             {
@@ -1346,10 +1388,12 @@ def allocator_timeline(log: str, codec: "Codec" = ZSTD) -> Timeline:
 # Every wait_for_encoder_release call that gave up, as (codec, timeout).
 # The runner reads the length either side of a test to tell whether that
 # test spent its time waiting rather than working.
-TEARDOWN_TIMEOUTS = []
+TEARDOWN_TIMEOUTS: list[tuple[str, float]] = []
 
 
-def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
+def wait_for_encoder_release(
+    nginx: Nginx, timeout: float = 10.0, codec: Codec = ZSTD
+) -> dict[str, AllocatorEntry]:
     """Polls the debug log until every traced request has been torn down.
 
     A client can hold the whole response before the worker has released the
@@ -1395,7 +1439,7 @@ def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
     # measuring - the reason this loop showed up as minutes on a slower
     # runner while taking a second here.
     offset = nginx.log_mark
-    stats = {}
+    stats: dict[str, AllocatorEntry] = {}
     delay = 0.02
     while True:
         chunk, offset = nginx.read_log_from(offset)
@@ -1422,7 +1466,9 @@ def wait_for_encoder_release(nginx, timeout=10.0, codec=ZSTD):
         delay = min(delay * 1.5, 0.25)
 
 
-def assert_balanced(stats, label):
+def assert_balanced(
+    stats: dict[str, AllocatorEntry], label: str
+) -> dict[str, AllocatorEntry]:
     active = {conn: entry for conn, entry in stats.items() if entry["allocs"]}
     check(active, f"{label}: no encoder allocations were traced at all")
     for conn, entry in sorted(active.items()):
@@ -1484,7 +1530,9 @@ def must_decode(carrier: Codec | Context) -> Callable[[bytes], bytes]:
     return carrier.decode
 
 
-def check_corpus_roundtrip(ctx, name, path=None, codec=ZSTD):
+def check_corpus_roundtrip(
+    ctx: Context, name: str, path: str | None = None, codec: Codec = ZSTD
+) -> None:
     """Fetches one corpus file, and checks it compressed and decodes back."""
     path = path or codec.file(name)
     original = ctx.fixtures[name]
@@ -1596,7 +1644,13 @@ def test_static_vary_is_unconditional(ctx: Context) -> None:
     )
 
 
-def check_sibling_served(ctx, stem, accept_encoding, encoding, prefix="static"):
+def check_sibling_served(
+    ctx: Context,
+    stem: str,
+    accept_encoding: str | None,
+    encoding: str | None,
+    prefix: str = "static",
+) -> dict[str, str]:
     """Fetches "stem" and asserts which sibling came back.
 
     The body is compared against the bytes actually written to that
@@ -1812,7 +1866,7 @@ def test_static_subrequest_declined(ctx: Context) -> None:
 AMBIGUOUS_WARNING = "serves whatever is found first"
 
 
-def ambiguity_warnings(ctx, http_block):
+def ambiguity_warnings(ctx: Context, http_block: str) -> int:
     """Runs "nginx -t" over a configuration and counts the ambiguity
     warnings it produced. Everything else in the suite drives a running
     server; this is the only thing that reads what nginx says at
@@ -1977,7 +2031,7 @@ def test_static_module_without_sibling(ctx: Context) -> None:
     )
 
 
-def check_vary_dedupe(ctx, case, expected):
+def check_vary_dedupe(ctx: Context, case: str, expected: int) -> list[str]:
     """Fetches /vary/<case> and returns every Vary line it came back with.
 
     The compression check is not incidental. set_vary runs only on a response
@@ -2730,7 +2784,7 @@ def test_head(ctx: Context, codec: Codec) -> None:
 # ---------------------------------------------------------------------------
 
 
-def config_accepted(ctx, directive):
+def config_accepted(ctx: Context, directive: str) -> tuple[bool, str]:
     """Whether "nginx -t" takes a configuration carrying one directive,
     and what it said about it.
 
@@ -2766,7 +2820,7 @@ def config_accepted(ctx, directive):
 # parser walks a loop from WINDOW_BITS_MIN to WINDOW_BITS_MAX comparing
 # against 1 << bits, so an off-by-one at either end is exactly the
 # mistake it can make.
-def window_sizes(ctx, codec=ZSTD):
+def window_sizes(ctx: Context, codec: Codec = ZSTD) -> list[str]:
     """The window sizes this nginx accepts, read out of its own refusal.
 
     The refusal is generated from NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN/MAX, so
@@ -2846,7 +2900,7 @@ def test_window_message(ctx: Context, codec: Codec) -> None:
 # out of the binary rather than written down: zstd starts at 1 because
 # it exposes none of libzstd's lower or negative levels, Brotli at 0
 # because quality 0 is a real setting with a fast path of its own.
-def level_bounds(ctx, codec):
+def level_bounds(ctx: Context, codec: Codec) -> tuple[int, int]:
     """(floor, ceiling) the level directive enforces, from its refusal."""
     _, text = config_accepted(ctx, f"{codec.directive}_level 99;")
     found = re.search(r"must be between (-?\d+) and (-?\d+)", text)
@@ -2920,7 +2974,7 @@ def test_hint_bounds(ctx: Context) -> None:
     )
 
 
-def parse_size(text):
+def parse_size(text: str) -> int:
     """ "16k" to 16384, the units ngx_parse_size accepts."""
     if text.endswith("k"):
         return int(text[:-1]) * 1024
@@ -2929,7 +2983,9 @@ def parse_size(text):
     return int(text)
 
 
-def buffer_bounds(ctx, codec=ZSTD):
+def buffer_bounds(
+    ctx: Context, codec: Codec = ZSTD
+) -> tuple[int, int, int, int]:
     """(count_min, count_max, size_min, size_max) this nginx enforces.
 
     Read out of the binary rather than spelled out here, so a bound that
@@ -3049,7 +3105,9 @@ def test_buffers_one_warns(ctx: Context, codec: Codec) -> None:
 # ---------------------------------------------------------------------------
 
 
-def stall_a_response(port, path, accept_encoding="zstd", seconds=0.6):
+def stall_a_response(
+    port: int, path: str, accept_encoding: str = "zstd", seconds: float = 0.6
+) -> None:
     """Asks for a rate-limited response and deliberately does not read it.
 
     Reading it would let the write filter drain, which is exactly what must
@@ -3618,7 +3676,7 @@ def test_alloc_balance_stream(ctx: Context, codec: Codec) -> None:
     assert_balanced(wait_for_encoder_release(ctx.nginx, codec=codec), "stream")
 
 
-def peak_encoder_bytes(ctx, path):
+def peak_encoder_bytes(ctx: Context, path: str) -> tuple[int, bytes]:
     """(peak simultaneously-live encoder bytes, body) for one request.
 
     The body comes back so the caller can read out of the frame which sizing
@@ -3915,7 +3973,7 @@ def test_cleanup_handler_on_abort(ctx: Context, codec: Codec) -> None:
 
 # One of each shape the encoder can be built on: a length known when the
 # headers were written, and one the filter had to wait for.
-def released_early_paths(codec):
+def released_early_paths(codec: Codec) -> tuple[str, str]:
     return (codec.file("big.html"), codec.path("stream", "big.html"))
 
 
@@ -4015,7 +4073,7 @@ def test_table_sizing(ctx: Context) -> None:
         )
 
 
-def continue_ordinal(codec):
+def continue_ordinal(codec: Codec) -> int:
     """The value of this codec's STEP_CONTINUE, read out of its header.
 
     The trace logs the step as a number, so a test that reads it has to
@@ -4203,7 +4261,7 @@ class Context:
         self.max_out_size = max_out_size
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
