@@ -642,7 +642,7 @@ def build_fixtures(work: str) -> dict[str, bytes]:
     # Siblings that exist but cannot be served. Each must be stepped over
     # like a missing one, leaving the plain file to be served - a stray
     # file with the right suffix must not take the resource down with it.
-    for stem in ("odd_dir.html", "odd_fifo.html", "odd_perm.html"):
+    for stem in ("odd_dir.html", "odd_fifo.html", "odd_perm.html", "odd_loop.html"):
         with open(os.path.join(html, stem), "wb") as handle:
             handle.write(body)
         fixtures[stem] = body
@@ -658,6 +658,12 @@ def build_fixtures(work: str) -> dict[str, bytes]:
     with open(perm, "wb") as handle:
         handle.write(b"unreadable")
     os.chmod(perm, 0o000)
+
+    # A symlink to itself: opening it fails ELOOP, the one open_sibling
+    # outcome none of the shapes above reach.
+    loop = os.path.join(html, "odd_loop.html.br")
+    if hasattr(os, "symlink") and not os.path.lexists(loop):
+        os.symlink(loop, loop)
 
     # The body of an SSI include is spliced into its parent, so it can
     # carry no Content-Encoding of its own.
@@ -764,6 +770,10 @@ class Upstream:
 
             if path.startswith("/cc/"):
                 self._cache_control(conn, path.rsplit("/", 1)[-1])
+                return
+
+            if path.startswith("/enc/"):
+                self._encoded(conn, path.rsplit("/", 1)[-1])
                 return
 
             if path.startswith("/vary/"):
@@ -882,6 +892,23 @@ class Upstream:
             (
                 f"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
                 f"{extra}Content-Length: {len(self.TRANSFORM_BODY)}\r\n\r\n"
+            ).encode()
+            + self.TRANSFORM_BODY
+        )
+
+    def _encoded(self, conn: socket.socket, value: str) -> None:
+        """Replies already carrying Content-Encoding: `value`.
+
+        An origin that compressed its own response first - or merely
+        claims to have - must be left alone: labelling it a second time
+        would hand the client a body claiming one encoding while
+        actually carrying two.
+        """
+        conn.sendall(
+            (
+                f"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                f"Content-Encoding: {value}\r\n"
+                f"Content-Length: {len(self.TRANSFORM_BODY)}\r\n\r\n"
             ).encode()
             + self.TRANSFORM_BODY
         )
@@ -1601,6 +1628,32 @@ def test_static_module_declines_plain_client(ctx: Context) -> None:
     )
 
 
+@test("pack_static ignores a method other than GET or HEAD", label="static")
+def test_static_method_guard(ctx: Context) -> None:
+    """POST and the rest are core's own static handler to answer for -
+    a location cannot decide whether a method is allowed, only whether
+    pack_static itself has anything to say about this response."""
+    status, headers, _ = fetch(ctx.port, "/static/multi.html", "br", method="POST")
+    check(status == 405, f"expected 405 for POST, got {status}")
+    check(
+        "content-encoding" not in headers,
+        f"a rejected method still got {headers.get('content-encoding')!r}",
+    )
+
+
+@test("pack_static declines a URI naming a directory", label="static")
+def test_static_directory_guard(ctx: Context) -> None:
+    """A trailing slash names a directory, not a file pack_static could
+    have a sibling for - core's own directory handling answers instead,
+    autoindex being off."""
+    status, headers, _ = fetch(ctx.port, "/static/", "br")
+    check(status == 403, f"expected 403 for a directory URI, got {status}")
+    check(
+        "content-encoding" not in headers,
+        f"a directory response still got {headers.get('content-encoding')!r}",
+    )
+
+
 @test("every response from a pack_static location says it varies", label="static")
 def test_static_vary_is_unconditional(ctx: Context) -> None:
     """ "pack_static on" is what makes the body depend on Accept-Encoding,
@@ -1813,7 +1866,11 @@ def test_static_odd_siblings(ctx: Context) -> None:
 
     Three shapes, each of which opens successfully or fails in its own
     way, and each of which must leave the plain file served."""
-    cases = [("odd_dir.html", "a directory"), ("odd_fifo.html", "a fifo")]
+    cases = [
+        ("odd_dir.html", "a directory"),
+        ("odd_fifo.html", "a fifo"),
+        ("odd_loop.html", "a symlink loop"),
+    ]
 
     # Root reads a mode-000 file regardless, so the sibling would be
     # served and the case would prove nothing.
@@ -1821,7 +1878,7 @@ def test_static_odd_siblings(ctx: Context) -> None:
         cases.append(("odd_perm.html", "unreadable"))
 
     for stem, shape in cases:
-        if not os.path.exists(os.path.join(ctx.nginx.work, "html", stem + ".br")):
+        if not os.path.lexists(os.path.join(ctx.nginx.work, "html", stem + ".br")):
             continue
         status, headers, body = fetch(ctx.port, f"/static/{stem}", "br")
         check(
@@ -2428,6 +2485,30 @@ def test_status_guard_not_too_broad(ctx: Context, codec: Codec) -> None:
         )
 
 
+@test(
+    "an upstream response already carrying Content-Encoding is left alone",
+    codecs=CODECS,
+)
+def test_content_encoding_guard(ctx: Context, codec: Codec) -> None:
+    """An origin that compressed its own response, or merely claims to
+    have, must not be compressed again: the client would be handed a
+    body claiming one encoding while actually carrying two.
+
+    A nonsense value proves the point more sharply than a real codec
+    name would: this module has to trust the header at face value
+    rather than checking whether it recognises what is in it."""
+    _, headers, body = fetch(ctx.port, "/enc/identity", codec.token)
+    check(
+        headers.get("content-encoding") == "identity",
+        f"expected the upstream's own Content-Encoding to survive, got "
+        f"{headers.get('content-encoding')!r}",
+    )
+    check(
+        body == Upstream.TRANSFORM_BODY,
+        "the body was altered although Content-Encoding was already set",
+    )
+
+
 @test("a MIME type outside the types directive is left alone", codecs=CODECS)
 def test_mime_filtering(ctx: Context, codec: Codec) -> None:
     _, headers, body = fetch(ctx.port, codec.file("data.bin"), codec.token)
@@ -2944,6 +3025,12 @@ HINT_CASES = [
     ("1m", True),
     ("8k", False),  # under the floor
     ("0", False),  # a size of zero is not the word, and is held to the floor
+    # Four characters, like "none", but not it - value->len == none.len is
+    # true and the strncmp still has to fail this one rather than match.
+    ("zero", False),
+    # Above NGX_MAX_INT32_VALUE: ZSTD_CCtx_setParameter takes the hint as
+    # a plain int, so anything wider is refused here rather than wrapped.
+    ("3000000000", False),
 ]
 
 
@@ -2966,6 +3053,16 @@ def test_hint_bounds(ctx: Context) -> None:
             f"{'accepted' if want else 'refused'}, got the opposite"
             f"{'' if want else chr(10) + text}",
         )
+
+    # Checked before the size/word split, the same way ngx_conf_set_size_slot
+    # itself refuses two sizes: the slot is still unset the second time
+    # around, so a second "none" has to be caught here instead.
+    accepted, text = config_accepted(ctx, "pack_zstd_hint 1m;\npack_zstd_hint 2m;")
+    check(not accepted, f"a duplicate pack_zstd_hint was accepted:\n{text}")
+    check(
+        "duplicate" in text,
+        f"a duplicate pack_zstd_hint was refused for the wrong reason:\n{text}",
+    )
 
     # The refusal is the only place an operator who wanted no hint
     # finds out the word exists.
