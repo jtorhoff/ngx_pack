@@ -20,6 +20,8 @@ script/build.sh puts it). Exits with the number of failed tests, so
 it can be chained after the existing suite.
 """
 
+from __future__ import annotations
+
 import argparse
 import contextlib
 import gzip
@@ -1446,7 +1448,7 @@ def assert_balanced(stats, label):
 
 
 @test("static file round-trips through the encoder", needs_decoder=True, only=ZSTD)
-def test_static_roundtrip(ctx):
+def test_static_roundtrip(ctx: Context) -> None:
     status, headers, body = fetch(ctx.port, "/big.html")
     check(status == 200, f"expected 200, got {status}")
     check(
@@ -1459,7 +1461,22 @@ def test_static_roundtrip(ctx):
         f"compressed body ({len(body)}) is not smaller than the original "
         f"({len(original)})",
     )
-    check(ctx.decode(body) == original, "decoded body differs from the original")
+    decode = must_decode(ctx)
+    check(decode(body) == original, "decoded body differs from the original")
+
+
+def must_decode(carrier: Codec | Context) -> Callable[[bytes], bytes]:
+    """Narrows an optional decoder to a callable.
+
+    Every caller of this is registered needs_decoder, so the runner skips a
+    test rather than run it when there is nothing to decode with - "decode"
+    cannot really be None here. Said out loud rather than assumed: if that
+    ever stops holding, this names the reason instead of raising "NoneType
+    is not callable" from the middle of an assertion.
+    """
+    if carrier.decode is None:
+        raise Failure("no decoder available; this test should have been skipped")
+    return carrier.decode
 
 
 def check_corpus_roundtrip(ctx, name, path=None, codec=ZSTD):
@@ -1480,22 +1497,12 @@ def check_corpus_roundtrip(ctx, name, path=None, codec=ZSTD):
         f"original ({len(original)})",
     )
 
-    # Every caller is registered needs_decoder, so the runner skips them
-    # when there is nothing to decode with and this cannot be None. Said
-    # out loud rather than assumed: if that ever stops holding, this
-    # names the reason instead of raising "NoneType is not callable" from
-    # the middle of an assertion.
-    decode = codec.decode
-    if decode is None:
-        raise Failure(
-            f"no {codec.name} decoder, so this test should have been skipped"
-        )
-
+    decode = must_decode(codec)
     check(decode(body) == original, f"{path}: decoded body differs")
 
 
 @test("pack_static serves a pre-compressed sibling", needs_decoder=True, label="static")
-def test_static_module_serves_zst(ctx):
+def test_static_module_serves_zst(ctx: Context) -> None:
     if "precompressed.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the .zst fixture")
 
@@ -1505,8 +1512,9 @@ def test_static_module_serves_zst(ctx):
         headers.get("content-encoding") == "zstd",
         f"pack_static did not serve the .zst sibling; headers: {headers!r}",
     )
+    decode = must_decode(ctx)
     check(
-        ctx.decode(body) == ctx.fixtures["precompressed.html"],
+        decode(body) == ctx.fixtures["precompressed.html"],
         "the served .zst did not decode back to the original",
     )
     # Twice, so the second request is answered from open_file_cache. That is
@@ -1514,13 +1522,13 @@ def test_static_module_serves_zst(ctx):
     status, headers, body = fetch(ctx.port, "/static/precompressed.html")
     check(status == 200, f"cached request: expected 200, got {status}")
     check(
-        ctx.decode(body) == ctx.fixtures["precompressed.html"],
+        decode(body) == ctx.fixtures["precompressed.html"],
         "the cached .zst did not decode back to the original",
     )
 
 
 @test("pack_static declines a client that will not take zstd", label="static")
-def test_static_module_declines_plain_client(ctx):
+def test_static_module_declines_plain_client(ctx: Context) -> None:
     if "precompressed.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the .zst fixture")
 
@@ -1539,7 +1547,7 @@ def test_static_module_declines_plain_client(ctx):
 
 
 @test("every response from a pack_static location says it varies", label="static")
-def test_static_vary_is_unconditional(ctx):
+def test_static_vary_is_unconditional(ctx: Context) -> None:
     """ "pack_static on" is what makes the body depend on Accept-Encoding,
     and that is a property of the location rather than of the file, so the
     header goes out whether or not this client is served a sibling and
@@ -1622,7 +1630,7 @@ SIBLING_EXTS = {name: ext for name, ext, _ in SIBLING_ENCODINGS}
 
 
 @test("pack_static serves every encoding the default config allows", label="static")
-def test_static_all_encodings(ctx):
+def test_static_all_encodings(ctx: Context) -> None:
     """The default pack_static_encodings is br, gzip and zstd together, and
     the /static/ location does not narrow it. A client naming exactly one of
     them must get that one."""
@@ -1631,7 +1639,7 @@ def test_static_all_encodings(ctx):
 
 
 @test("pack_static probes in the order pack_static_encodings named", label="static")
-def test_static_directive_order(ctx):
+def test_static_directive_order(ctx: Context) -> None:
     """Two locations list the same three encodings in opposite orders. A
     client offering all three gets the first one the directive named, so the
     same request is answered differently by each - which is only possible if
@@ -1645,7 +1653,7 @@ def test_static_directive_order(ctx):
 
 
 @test("the client's own order does not override the directive's", label="static")
-def test_static_client_order_ignored(ctx):
+def test_static_client_order_ignored(ctx: Context) -> None:
     """Accept-Encoding is read as a set of what the client will take, not as
     a ranking. Whatever order it lists them in, the directive decides."""
     # The same two encodings offered in either order. br is not among
@@ -1657,7 +1665,7 @@ def test_static_client_order_ignored(ctx):
 
 
 @test("pack_static serves only the encodings the directive named", label="static")
-def test_static_directive_subset(ctx):
+def test_static_directive_subset(ctx: Context) -> None:
     """A narrowed list still keeps its order, and an encoding left out of it
     is not served even when the client asks for it and the sibling is on
     disk."""
@@ -1669,7 +1677,7 @@ def test_static_directive_subset(ctx):
 
 
 @test("pack_static defaults to every encoding it knows, in table order", label="static")
-def test_static_default_order(ctx):
+def test_static_default_order(ctx: Context) -> None:
     """/static/ leaves pack_static_encodings unwritten, so the default
     stands: all three, in the order the module's table lists them."""
     for accept, expected in [
@@ -1685,7 +1693,7 @@ def test_static_default_order(ctx):
 
 
 @test("pack_static steps over the candidates that have no sibling", label="static")
-def test_static_probe_fallthrough(ctx):
+def test_static_probe_fallthrough(ctx: Context) -> None:
     """Only one sibling exists, and the client accepts all three, so the
     module has to miss on the candidates ahead of it and keep going rather
     than decline at the first ENOENT."""
@@ -1698,7 +1706,7 @@ def test_static_probe_fallthrough(ctx):
 
 
 @test("pack_static skips an encoding the client refused with q=0", label="static")
-def test_static_zero_weight(ctx):
+def test_static_zero_weight(ctx: Context) -> None:
     """A zero weight takes that encoding out of the running without taking
     the request with it: the probe carries on to the next candidate."""
     check_sibling_served(ctx, "multi.html", "br;q=0, gzip, zstd", "gzip")
@@ -1707,7 +1715,7 @@ def test_static_zero_weight(ctx):
 
 
 @test("pack_static ignores encodings it does not know", label="static")
-def test_static_unknown_encodings(ctx):
+def test_static_unknown_encodings(ctx: Context) -> None:
     for accept in ["deflate", "compress", "identity", "*", "x-gzip", "brotli"]:
         check_sibling_served(ctx, "multi.html", accept, None)
 
@@ -1715,7 +1723,7 @@ def test_static_unknown_encodings(ctx):
 @test(
     "every sibling is served byte for byte and cached by its own name", label="static"
 )
-def test_static_siblings_distinct(ctx):
+def test_static_siblings_distinct(ctx: Context) -> None:
     """Each encoding names a different file, and the three differ in length,
     so this also covers the constructed path being hashed over the right
     length: open_file_cache is on for this location, and ".br" and ".zst"
@@ -1735,7 +1743,7 @@ def test_static_siblings_distinct(ctx):
 
 
 @test("a sibling that cannot be served is stepped over, not fatal", label="static")
-def test_static_odd_siblings(ctx):
+def test_static_odd_siblings(ctx: Context) -> None:
     """A sibling is an optimization, so anything wrong with one means only
     that it is not taken. gzip_static answers 404 for a file that is not
     regular, which is right where the odd file IS the resource asked for
@@ -1771,7 +1779,7 @@ def test_static_odd_siblings(ctx):
 
 
 @test("a subrequest is never served a sibling", label="static")
-def test_static_subrequest_declined(ctx):
+def test_static_subrequest_declined(ctx: Context) -> None:
     """An SSI include splices the child's body into the parent, so a
     sibling served there would put compressed bytes mid-page under a
     Content-Type that says text.
@@ -1907,7 +1915,7 @@ AMBIGUITY_CASES = [
 
 
 @test("the ambiguous combination is warned about exactly once", label="static")
-def test_static_ambiguity_warned_once(ctx):
+def test_static_ambiguity_warned_once(ctx: Context) -> None:
     """merge_conf runs once per block, so an ambiguous setting written in
     an enclosing block is seen again by every block that inherits it. The
     warning has to land where the combination takes effect and stay quiet
@@ -1922,7 +1930,7 @@ def test_static_ambiguity_warned_once(ctx):
 
 
 @test("a block that re-creates the ambiguity is warned about again", label="static")
-def test_static_ambiguity_recreated(ctx):
+def test_static_ambiguity_recreated(ctx: Context) -> None:
     """Suppressing the repeat cannot be done by marking a block reported
     and trusting that mark further down: a location can turn the
     combination off and one nested inside it can write it again, which is
@@ -1948,7 +1956,7 @@ def test_static_ambiguity_recreated(ctx):
 
 
 @test("pack_static falls through when there is no .zst sibling", label="static")
-def test_static_module_without_sibling(ctx):
+def test_static_module_without_sibling(ctx: Context) -> None:
     if "plain_only.html" not in ctx.fixtures:
         raise Failure("no zstd encoder available to build the fixtures")
 
@@ -1986,7 +1994,7 @@ def check_vary_dedupe(ctx, case, expected):
 
 
 @test("an upstream Vary: Accept-Encoding is not duplicated", only=ZSTD)
-def test_vary_not_duplicated(ctx):
+def test_vary_not_duplicated(ctx: Context) -> None:
     vary = check_vary_dedupe(ctx, "ae", 1)
     check(
         vary[0].lower() == "accept-encoding",
@@ -1995,12 +2003,12 @@ def test_vary_not_duplicated(ctx):
 
 
 @test("an upstream Vary is recognised whatever its case", only=ZSTD)
-def test_vary_case_insensitive(ctx):
+def test_vary_case_insensitive(ctx: Context) -> None:
     check_vary_dedupe(ctx, "mixed", 1)
 
 
 @test("an unrelated Vary is kept and ours added beside it", only=ZSTD)
-def test_vary_unrelated_kept(ctx):
+def test_vary_unrelated_kept(ctx: Context) -> None:
     vary = check_vary_dedupe(ctx, "lang", 2)
     lowered = [v.lower() for v in vary]
     check(
@@ -2014,17 +2022,17 @@ def test_vary_unrelated_kept(ctx):
 
 
 @test("a Vary one character short of ours is not treated as a match", only=ZSTD)
-def test_vary_near_miss_short(ctx):
+def test_vary_near_miss_short(ctx: Context) -> None:
     check_vary_dedupe(ctx, "short", 2)
 
 
 @test("a Vary one character long is not treated as a match", only=ZSTD)
-def test_vary_near_miss_long(ctx):
+def test_vary_near_miss_long(ctx: Context) -> None:
     check_vary_dedupe(ctx, "long", 2)
 
 
 @test("a same-shaped header that is not Vary does not suppress ours", only=ZSTD)
-def test_vary_lookalike_header(ctx):
+def test_vary_lookalike_header(ctx: Context) -> None:
     # ETag's key is four characters and this value fifteen, so both length
     # guards pass and only the string comparison stands between it and a
     # false match. When that comparison was once inverted, this response
@@ -2038,24 +2046,24 @@ def test_vary_lookalike_header(ctx):
 
 
 @test("a response with no upstream Vary still gets exactly one", only=ZSTD)
-def test_vary_added_when_absent(ctx):
+def test_vary_added_when_absent(ctx: Context) -> None:
     check_vary_dedupe(ctx, "none", 1)
 
 
 @test("real HTML round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
-def test_corpus_html(ctx, codec):
+def test_corpus_html(ctx: Context, codec: Codec) -> None:
     check_corpus_roundtrip(ctx, "wiki.html", codec=codec)
 
 
 @test("real CSS round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
-def test_corpus_css(ctx, codec):
+def test_corpus_css(ctx: Context, codec: Codec) -> None:
     check_corpus_roundtrip(ctx, "site.css", codec=codec)
 
 
 @test(
     "real JavaScript round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS
 )
-def test_corpus_js(ctx, codec):
+def test_corpus_js(ctx: Context, codec: Codec) -> None:
     check_corpus_roundtrip(ctx, "app.js", codec=codec)
 
 
@@ -2065,12 +2073,12 @@ def test_corpus_js(ctx, codec):
     needs_corpus=True,
     codecs=CODECS,
 )
-def test_corpus_min_js(ctx, codec):
+def test_corpus_min_js(ctx: Context, codec: Codec) -> None:
     check_corpus_roundtrip(ctx, "app.min.js", codec=codec)
 
 
 @test("real prose round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
-def test_corpus_prose(ctx, codec):
+def test_corpus_prose(ctx: Context, codec: Codec) -> None:
     check_corpus_roundtrip(ctx, "prose.txt", codec=codec)
 
 
@@ -2078,7 +2086,7 @@ def test_corpus_prose(ctx, codec):
 # through pack_*_types rather than through the always-compressed text/html
 # the text fixtures lean on. feed.pb below covers the same ground in binary.
 @test("real JSON round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
-def test_corpus_json(ctx, codec):
+def test_corpus_json(ctx: Context, codec: Codec) -> None:
     check_corpus_roundtrip(ctx, "api.json", codec=codec)
 
 
@@ -2087,7 +2095,7 @@ def test_corpus_json(ctx, codec):
 # decode; this is protobuf wire format, so the round-trip is checked
 # against bytes that have no such slack.
 @test("real protobuf round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
-def test_corpus_protobuf(ctx, codec):
+def test_corpus_protobuf(ctx: Context, codec: Codec) -> None:
     check_corpus_roundtrip(ctx, "feed.pb", codec=codec)
 
 
@@ -2097,7 +2105,7 @@ def test_corpus_protobuf(ctx, codec):
     needs_corpus=True,
     only=ZSTD,
 )
-def test_corpus_streamed(ctx):
+def test_corpus_streamed(ctx: Context) -> None:
     # The static path above sizes the window from a known Content-Length and
     # feeds the encoder whole buffers. Unknown-length responses take neither
     # route, so real content has to cross that path too.
@@ -2108,7 +2116,7 @@ def test_corpus_streamed(ctx):
 @test(
     "streamed response of unknown length round-trips", needs_decoder=True, codecs=CODECS
 )
-def test_stream_roundtrip(ctx, codec):
+def test_stream_roundtrip(ctx: Context, codec: Codec) -> None:
     path = codec.path("stream", "big.html")
     status, headers, body = fetch(ctx.port, path, codec.token)
     check(status == 200, f"expected 200, got {status}")
@@ -2121,27 +2129,29 @@ def test_stream_roundtrip(ctx, codec):
         "content-length" not in headers,
         "a streamed response should not carry a Content-Length",
     )
+    decode = must_decode(codec)
     check(
-        codec.decode(body) == ctx.fixtures["big.html"],
+        decode(body) == ctx.fixtures["big.html"],
         "decoded stream differs from the original",
     )
 
 
 @test("small-but-eligible response round-trips", needs_decoder=True, codecs=CODECS)
-def test_small_roundtrip(ctx, codec):
+def test_small_roundtrip(ctx: Context, codec: Codec) -> None:
     _, headers, body = fetch(ctx.port, codec.file("small.html"), codec.token)
     check(
         headers.get("content-encoding") == codec.token,
         "small.html was not compressed",
     )
+    decode = must_decode(codec)
     check(
-        codec.decode(body) == ctx.fixtures["small.html"],
+        decode(body) == ctx.fixtures["small.html"],
         "decoded small.html differs from the original",
     )
 
 
 @test("a response below the min_length default is left alone", codecs=CODECS)
-def test_min_length(ctx, codec):
+def test_min_length(ctx: Context, codec: Codec) -> None:
     _, headers, body = fetch(ctx.port, codec.file("tiny.html"), codec.token)
     check(
         "content-encoding" not in headers,
@@ -2152,7 +2162,7 @@ def test_min_length(ctx, codec):
 
 
 @test("the min_length default leaves a 200 byte response alone", codecs=CODECS)
-def test_min_length_default_lower(ctx, codec):
+def test_min_length_default_lower(ctx: Context, codec: Codec) -> None:
     """Guards the compiled-in default, which the test config deliberately does
     not override. A response this small costs more to compress than it saves."""
     body_len = len(ctx.fixtures["under_min.html"])
@@ -2170,7 +2180,7 @@ def test_min_length_default_lower(ctx, codec):
     needs_decoder=True,
     only=ZSTD,
 )
-def test_min_length_default_upper(ctx):
+def test_min_length_default_upper(ctx: Context) -> None:
     body_len = len(ctx.fixtures["over_min.html"])
     _, headers, body = fetch(ctx.port, "/over_min.html")
     check(
@@ -2178,8 +2188,9 @@ def test_min_length_default_upper(ctx):
         f"a {body_len} byte response was not compressed; pack_zstd_min_length has "
         f"risen above it",
     )
+    decode = must_decode(ctx)
     check(
-        ctx.decode(body) == ctx.fixtures["over_min.html"],
+        decode(body) == ctx.fixtures["over_min.html"],
         "decoded over_min.html differs from the original",
     )
 
@@ -2188,7 +2199,7 @@ def test_min_length_default_upper(ctx):
     "a slowly-produced response starts arriving before it finishes",
     codecs=CODECS,
 )
-def test_ttfb_on_buffered_stream(ctx, codec):
+def test_ttfb_on_buffered_stream(ctx: Context, codec: Codec) -> None:
     """With proxy_buffering on nothing sets a flush marker, so left alone the
     encoder holds everything until a 64 KB block fills - which for a trickling
     upstream means the client waits. The filter asks the encoder to flush when
@@ -2240,7 +2251,7 @@ def test_ttfb_on_buffered_stream(ctx, codec):
 
 
 @test("min_length applies to a buffered stream of unknown length", codecs=CODECS)
-def test_min_length_on_stream(ctx, codec):
+def test_min_length_on_stream(ctx: Context, codec: Codec) -> None:
     """The header filter cannot compare against min_length when it has no
     Content-Length, so it holds the headers until the body has answered
     the question. Without that, a tiny chunked response still builds a
@@ -2266,7 +2277,7 @@ def test_min_length_on_stream(ctx, codec):
 
 
 @test("min_length is bypassed when a buffer asks to be flushed", codecs=CODECS)
-def test_min_length_not_applied_when_urgent(ctx, codec):
+def test_min_length_not_applied_when_urgent(ctx: Context, codec: Codec) -> None:
     """The same body as the buffered case above, and the opposite outcome.
 
     With proxy_buffering off every buffer carries a flush marker, which
@@ -2300,7 +2311,7 @@ def test_min_length_not_applied_when_urgent(ctx, codec):
     needs_decoder=True,
     codecs=CODECS,
 )
-def test_min_length_on_stream_upper(ctx, codec):
+def test_min_length_on_stream_upper(ctx: Context, codec: Codec) -> None:
     """The counterweight to the two above: the deferral has to release the
     response as well as hold it back."""
     _, headers, body = fetch(
@@ -2311,14 +2322,15 @@ def test_min_length_on_stream_upper(ctx, codec):
         f"a {len(ctx.fixtures['over_min.html'])} byte streamed response should "
         f"be compressed, got {headers.get('content-encoding')!r}",
     )
+    decode = must_decode(codec)
     check(
-        codec.decode(body) == ctx.fixtures["over_min.html"],
+        decode(body) == ctx.fixtures["over_min.html"],
         "decoded streamed body differs from the original",
     )
 
 
 @test("bodyless and ranged statuses are not given a Content-Encoding", codecs=CODECS)
-def test_status_guard(ctx, codec):
+def test_status_guard(ctx: Context, codec: Codec) -> None:
     """204 and 304 have no body to encode, and a 206 body is a byte range whose
     Content-Range still describes the uncompressed entity. Labelling any of
     them corrupts the response."""
@@ -2335,7 +2347,7 @@ def test_status_guard(ctx, codec):
 
 
 @test("other statuses are still compressed", needs_decoder=True, codecs=CODECS)
-def test_status_guard_not_too_broad(ctx, codec):
+def test_status_guard_not_too_broad(ctx: Context, codec: Codec) -> None:
     """The guard replaced an allow list that also excluded these. They are
     ordinary compressible responses and must stay compressed."""
     for code in (200, 201, 403, 404, 422, 500):
@@ -2348,14 +2360,15 @@ def test_status_guard_not_too_broad(ctx, codec):
             f"a {code} response should still be compressed, got "
             f"{headers.get('content-encoding')!r}",
         )
+        decode = must_decode(codec)
         check(
-            codec.decode(body) == STATUS_BODY,
+            decode(body) == STATUS_BODY,
             f"the {code} body did not decode back to the original",
         )
 
 
 @test("a MIME type outside the types directive is left alone", codecs=CODECS)
-def test_mime_filtering(ctx, codec):
+def test_mime_filtering(ctx: Context, codec: Codec) -> None:
     _, headers, body = fetch(ctx.port, codec.file("data.bin"), codec.token)
     check(
         "content-encoding" not in headers,
@@ -2365,7 +2378,7 @@ def test_mime_filtering(ctx, codec):
 
 
 @test("client without Accept-Encoding gets plain bytes", codecs=CODECS)
-def test_no_accept_encoding(ctx, codec):
+def test_no_accept_encoding(ctx: Context, codec: Codec) -> None:
     _, headers, body = fetch(ctx.port, codec.file("big.html"), accept_encoding=None)
     check(
         "content-encoding" not in headers,
@@ -2375,7 +2388,7 @@ def test_no_accept_encoding(ctx, codec):
 
 
 @test("a zero weight on the token is honoured", codecs=CODECS)
-def test_q_zero(ctx, codec):
+def test_q_zero(ctx: Context, codec: Codec) -> None:
     tok = codec.token
     for value in [
         f"{tok};q=0",
@@ -2394,7 +2407,7 @@ def test_q_zero(ctx, codec):
 
 
 @test("tokens that merely contain the token do not select it", codecs=CODECS)
-def test_partial_token(ctx, codec):
+def test_partial_token(ctx: Context, codec: Codec) -> None:
     """The near misses are built from the token, except the superstrings,
     which cannot be derived - see Codec. "brotli" is the one that matters:
     it is a word a client may really send, and "br" is a prefix of it."""
@@ -2412,7 +2425,7 @@ def test_partial_token(ctx, codec):
 @test(
     "Accept-Encoding lists that do select the token", needs_decoder=True, codecs=CODECS
 )
-def test_encoding_lists(ctx, codec):
+def test_encoding_lists(ctx: Context, codec: Codec) -> None:
     tok = codec.token
     for value in [
         tok,
@@ -2440,8 +2453,9 @@ def test_encoding_lists(ctx, codec):
             headers.get("content-encoding") == tok,
             f"{value!r} should select {tok}, got {headers.get('content-encoding')!r}",
         )
+        decode = must_decode(codec)
         check(
-            codec.decode(body) == ctx.fixtures["small.html"],
+            decode(body) == ctx.fixtures["small.html"],
             f"{value!r} produced a body that does not decode to the original",
         )
 
@@ -2493,7 +2507,7 @@ DELIVERY_SIZES = ("1k", "4k", "16k")
     needs_decoder=True,
     codecs=CODECS,
 )
-def test_delivery_shape(ctx, codec):
+def test_delivery_shape(ctx: Context, codec: Codec) -> None:
     """How a proxied body is cut into buffers must not change what the
     client receives.
 
@@ -2523,7 +2537,8 @@ def test_delivery_shape(ctx, codec):
             f"proxy_buffer_size {size} answered "
             f"{headers.get('content-encoding')!r}, so this compared nothing",
         )
-        decoded[size] = codec.decode(body)
+        decode = must_decode(codec)
+        decoded[size] = decode(body)
         check(
             decoded[size] == expected,
             f"proxy_buffer_size {size} produced {len(decoded[size])} bytes "
@@ -2540,7 +2555,7 @@ def test_delivery_shape(ctx, codec):
 
 
 @test("no-transform on the response is honoured", codecs=CODECS)
-def test_no_transform(ctx, codec):
+def test_no_transform(ctx: Context, codec: Codec) -> None:
     """RFC 9111 section 5.2.2.6: an origin sending "no-transform" is
     saying its payload must reach the client as it left, and
     compressing it is exactly the transformation that forbids.
@@ -2565,7 +2580,7 @@ def test_no_transform(ctx, codec):
 
 
 @test("a proxied request is declined unless proxied is any", codecs=CODECS)
-def test_proxied_gate(ctx, codec):
+def test_proxied_gate(ctx: Context, codec: Codec) -> None:
     """A "Via" header means another proxy already handled this request.
 
     gzip_proxied defaults to off and declines those, so an operator
@@ -2610,7 +2625,7 @@ def test_proxied_gate(ctx, codec):
 
 
 @test("zstd, then br, then gzip claims a response", label="all")
-def test_codec_precedence(ctx):
+def test_codec_precedence(ctx: Context) -> None:
     """Which filter takes a response several would accept is settled by
     chain order, not by the client and not by configuration.
 
@@ -2641,7 +2656,7 @@ def test_codec_precedence(ctx):
 
 
 @test("HTTP/1.0 clients are not served a compressed body", codecs=CODECS)
-def test_http_version_gate(ctx, codec):
+def test_http_version_gate(ctx: Context, codec: Codec) -> None:
     """Mirrors gzip_http_version, whose default is 1.1. Declining still leaves
     Vary advertised, as the gzip filter does, so a cache in front keeps the
     responses apart."""
@@ -2685,7 +2700,7 @@ def test_http_version_gate(ctx, codec):
 
 
 @test("Vary: Accept-Encoding is advertised to every client", codecs=CODECS)
-def test_vary(ctx, codec):
+def test_vary(ctx: Context, codec: Codec) -> None:
     for accept in [codec.token, "gzip", None]:
         _, headers, _ = fetch(ctx.port, codec.file("big.html"), accept_encoding=accept)
         vary = headers.get("vary", "")
@@ -2697,7 +2712,7 @@ def test_vary(ctx, codec):
 
 
 @test("HEAD request produces headers and no body", codecs=CODECS)
-def test_head(ctx, codec):
+def test_head(ctx: Context, codec: Codec) -> None:
     status, _, body = fetch(
         ctx.port, codec.file("big.html"), codec.token, method="HEAD"
     )
@@ -2769,7 +2784,7 @@ def window_sizes(ctx, codec=ZSTD):
 @test(
     "the window directive takes every power of two it lists, and no more", codecs=CODECS
 )
-def test_window_bounds(ctx, codec):
+def test_window_bounds(ctx: Context, codec: Codec) -> None:
     """The directive has a parser of its own rather than
     ngx_conf_num_bounds_t, so nothing checks it but this. Both ends matter:
     the floor and the ceiling are what keep a window from costing more
@@ -2800,7 +2815,7 @@ def test_window_bounds(ctx, codec):
 @test(
     "the window directive names the sizes it takes when it refuses one", codecs=CODECS
 )
-def test_window_message(ctx, codec):
+def test_window_message(ctx: Context, codec: Codec) -> None:
     """The refusal is all the operator gets, so it has to list the values
     rather than say the size was wrong. Every one it names has to be a
     power of two, in ascending order, and none may be past the ceiling."""
@@ -2836,7 +2851,7 @@ def level_bounds(ctx, codec):
 
 
 @test("the level directive is held to the range it reports", codecs=CODECS)
-def test_level_bounds(ctx, codec):
+def test_level_bounds(ctx: Context, codec: Codec) -> None:
     """Both ends, and both sides of both ends. The ceiling is the half
     that had nothing checking it: pack_brotli_level's was moved to 5
     and no test would have noticed had it been wrong."""
@@ -2872,7 +2887,7 @@ HINT_CASES = [
 
 
 @test('pack_zstd_hint takes a size at or above its floor, or "none"', only=ZSTD)
-def test_hint_bounds(ctx):
+def test_hint_bounds(ctx: Context) -> None:
     """The word and the floor are separate rules, and the point is that
     they stay separate.
 
@@ -2944,7 +2959,7 @@ def buffer_bounds(ctx, codec=ZSTD):
     "the buffers directive holds both parameters to the bounds it reports",
     codecs=CODECS,
 )
-def test_buffers_bounds(ctx, codec):
+def test_buffers_bounds(ctx: Context, codec: Codec) -> None:
     """One buffer is enough to be correct - the filter stalls until the
     filters below take it - so the count floor is 1. Every case here is
     built from the bounds the binary names in its own refusals, so what
@@ -2990,7 +3005,7 @@ ONE_BUFFER_WARNING = "multiple buffers are recommended"
     "the buffers directive warns when a count of 1 gives up the run-ahead",
     codecs=CODECS,
 )
-def test_buffers_one_warns(ctx, codec):
+def test_buffers_one_warns(ctx: Context, codec: Codec) -> None:
     """A count of 1 is legal, and costs the thing the directive
     exists to buy: the encoder stops after each buffer until the filters
     below give it back. Nothing else says so - the configuration is
@@ -3053,7 +3068,7 @@ def stall_a_response(port, path, accept_encoding="zstd", seconds=0.6):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_multiple_output_buffers(ctx, codec):
+def test_multiple_output_buffers(ctx: Context, codec: Codec) -> None:
     """With one buffer the encoder had to stop until it came back, so a slow
     client throttled compression as well as delivery. Several buffers let it
     run on, and the first parameter of the buffers directive is the bound on
@@ -3086,7 +3101,7 @@ def test_multiple_output_buffers(ctx, codec):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_buffers_directive_is_honoured(ctx, codec):
+def test_buffers_directive_is_honoured(ctx: Context, codec: Codec) -> None:
     """The same stall against a location that allows only one buffer. This is
     what tells a failure of the test above apart: if this one also reports
     more than one, the directive is being ignored rather than the stall
@@ -3115,7 +3130,7 @@ DEFAULT_BUFFER_SIZE = 16 * 1024
     needs_debug=True,
     only=ZSTD,
 )
-def test_buffer_size_is_honoured(ctx):
+def test_buffer_size_is_honoured(ctx: Context) -> None:
     """The second parameter, checked by what the encoder does with it.
 
     A round can commit at most one buffer's worth, so a location asking for
@@ -3169,7 +3184,7 @@ FOLD_COST_LIMIT = 1.25
     needs_decoder=True,
     codecs=CODECS,
 )
-def test_flush_folding_cost(ctx, codec):
+def test_flush_folding_cost(ctx: Context, codec: Codec) -> None:
     """Flush folding, measured the one way both encoders allow.
 
     nginx's chunked proxy filter marks every upstream chunk with
@@ -3196,8 +3211,9 @@ def test_flush_folding_cost(ctx, codec):
         f"burst was not compressed, got {headers.get('content-encoding')!r}",
     )
 
+    decode = must_decode(codec)
     check(
-        codec.decode(body) == ctx.fixtures["burst.html"],
+        decode(body) == ctx.fixtures["burst.html"],
         "the burst did not decode to the same bytes as the file",
     )
     check(
@@ -3220,7 +3236,7 @@ BROTLI_FOLD_LINE = "brotli flush folded"
     needs_debug=True,
     only=BROTLI,
 )
-def test_brotli_flush_folding(ctx):
+def test_brotli_flush_folding(ctx: Context) -> None:
     """The Brotli half of what test_flush_folding asserts for zstd, and
     it has to be asserted differently.
 
@@ -3273,7 +3289,7 @@ def test_brotli_flush_folding(ctx):
     needs_decoder=True,
     only=ZSTD,
 )
-def test_flush_folding(ctx):
+def test_flush_folding(ctx: Context) -> None:
     """The upstream writes every chunk in one send, so the chunked filter
     hands the module a single chain of flush markers - one per chunk. Only
     the last of a fold has to cut a block.
@@ -3308,7 +3324,7 @@ def test_flush_folding(ctx):
     needs_decoder=True,
     only=ZSTD,
 )
-def test_flush_folding_bounded(ctx):
+def test_flush_folding_bounded(ctx: Context) -> None:
     """The other end of the fold, and the one a count of buffers could not
     express: a chain carrying more than FLUSH_AFTER has to be cut, however
     many buffers those bytes arrive in.
@@ -3327,9 +3343,10 @@ def test_flush_folding_bounded(ctx):
         headers.get("content-encoding") == "zstd",
         f"wide burst was not compressed, got {headers.get('content-encoding')!r}",
     )
+    decode = must_decode(ctx)
     check(
-        len(ctx.decode(body)) == raw,
-        f"expected {raw} bytes back, got {len(ctx.decode(body))}",
+        len(decode(body)) == raw,
+        f"expected {raw} bytes back, got {len(decode(body))}",
     )
 
     blocks = frame_blocks(body)
@@ -3349,7 +3366,7 @@ def test_flush_folding_bounded(ctx):
 
 
 @test("a folded flush still delivers every byte", needs_decoder=True, codecs=CODECS)
-def test_flush_folding_roundtrip(ctx, codec):
+def test_flush_folding_roundtrip(ctx: Context, codec: Codec) -> None:
     """Folding may not lose or reorder anything: the point is that only the
     framing changes. Both encoders fold, each with its own chain walk, and
     dropping bytes is exactly what that operation can do wrong.
@@ -3367,8 +3384,9 @@ def test_flush_folding_roundtrip(ctx, codec):
         f"the burst came back {headers.get('content-encoding')!r}, so this "
         f"decoded nothing the encoder produced",
     )
+    decode = must_decode(codec)
     check(
-        codec.decode(body) == expected,
+        decode(body) == expected,
         "decoded burst differs from what the upstream sent",
     )
 
@@ -3383,7 +3401,7 @@ def test_flush_folding_roundtrip(ctx, codec):
     needs_debug=True,
     only=ZSTD,
 )
-def test_deferred_window_for_buffered_stream(ctx):
+def test_deferred_window_for_buffered_stream(ctx: Context) -> None:
     """A small response of unknown length still reaches the filter whole, just
     without last_buf on the first call. Holding it briefly lets the filter size
     the window from the real total instead of falling back to pack_zstd_window."""
@@ -3402,21 +3420,22 @@ def test_deferred_window_for_buffered_stream(ctx):
 
 
 @test("buffered stream still round-trips", needs_decoder=True, only=ZSTD)
-def test_buffered_stream_roundtrip(ctx):
+def test_buffered_stream_roundtrip(ctx: Context) -> None:
     status, headers, body = fetch(ctx.port, "/buffered/big.html")
     check(status == 200, f"expected 200, got {status}")
     check(
         headers.get("content-encoding") == "zstd",
         f"expected Content-Encoding: zstd, got {headers.get('content-encoding')!r}",
     )
+    decode = must_decode(ctx)
     check(
-        ctx.decode(body) == ctx.fixtures["big.html"],
+        decode(body) == ctx.fixtures["big.html"],
         "decoded buffered stream differs from the original",
     )
 
 
 @test("large buffered stream still uses the full window", needs_debug=True, only=ZSTD)
-def test_deferred_falls_back_for_large(ctx):
+def test_deferred_falls_back_for_large(ctx: Context) -> None:
     """Deferral must give up once enough input has accumulated: the response
     may be huge, and a window sized from a partial prefix would cost ratio."""
     ctx.nginx.mark_log()
@@ -3433,7 +3452,7 @@ def test_deferred_falls_back_for_large(ctx):
 
 
 @test("known Content-Length shrinks the encoder window", needs_debug=True, only=ZSTD)
-def test_window_tuning(ctx):
+def test_window_tuning(ctx: Context) -> None:
     """Asserts the property, not the mechanism, and cannot tell the two apart.
 
     Both fixtures reach the filter whole, so zstd derives a pledged size from
@@ -3474,7 +3493,7 @@ def test_window_tuning(ctx):
     needs_debug=True,
     only=ZSTD,
 )
-def test_stream_uses_full_window(ctx):
+def test_stream_uses_full_window(ctx: Context) -> None:
     """Same payload as test_window_tuning's small case, but delivered chunked.
     With no Content-Length to tune from, the filter must use pack_zstd_window -
     which is also what proves this really is the unknown-length path."""
@@ -3509,7 +3528,7 @@ DEADLOCK_TIMEOUT = 8
     needs_decoder=True,
     codecs=CODECS,
 )
-def test_small_window_does_not_deadlock(ctx, codec):
+def test_small_window_does_not_deadlock(ctx: Context, codec: Codec) -> None:
     """A regression test for a deadlock between the encoder and the write
     filter, at the smallest window each codec allows.
 
@@ -3565,8 +3584,9 @@ def test_small_window_does_not_deadlock(ctx, codec):
         f"{headers.get('content-encoding')!r}, so nothing was compressed "
         f"and the deadlock could not have been reached either way",
     )
+    decode = must_decode(codec)
     check(
-        codec.decode(body) == ctx.fixtures["big.html"],
+        decode(body) == ctx.fixtures["big.html"],
         f"{path}: decoded body differs from the original",
     )
 
@@ -3576,7 +3596,7 @@ def test_small_window_does_not_deadlock(ctx, codec):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_alloc_balance_static(ctx, codec):
+def test_alloc_balance_static(ctx: Context, codec: Codec) -> None:
     ctx.nginx.mark_log()
     fetch(ctx.port, codec.file("big.html"), codec.token)
     assert_balanced(wait_for_encoder_release(ctx.nginx, codec=codec), "static")
@@ -3587,7 +3607,7 @@ def test_alloc_balance_static(ctx, codec):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_alloc_balance_stream(ctx, codec):
+def test_alloc_balance_stream(ctx: Context, codec: Codec) -> None:
     ctx.nginx.mark_log()
     fetch(ctx.port, codec.path("stream", "big.html"), codec.token)
     assert_balanced(wait_for_encoder_release(ctx.nginx, codec=codec), "stream")
@@ -3616,7 +3636,7 @@ def peak_encoder_bytes(ctx, path):
     needs_debug=True,
     only=ZSTD,
 )
-def test_stream_memory_ceiling(ctx):
+def test_stream_memory_ceiling(ctx: Context) -> None:
     """Pins ZSTD_c_srcSizeHint, which nothing else here would notice.
 
     A known Content-Length reaches ZSTD_CCtx_setPledgedSrcSize, which sizes
@@ -3672,7 +3692,7 @@ def test_stream_memory_ceiling(ctx):
 
 
 @test("pack_zstd_hint reaches the encoder", needs_debug=True, only=ZSTD)
-def test_hint_directive_reaches_encoder(ctx):
+def test_hint_directive_reaches_encoder(ctx: Context) -> None:
     """/small-hint/ is /big-hint/ with pack_zstd_hint pulled to its floor.
 
     Both take the same unknown-length path through the same upstream, so a
@@ -3701,7 +3721,7 @@ def test_hint_directive_reaches_encoder(ctx):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_alloc_soak(ctx, codec):
+def test_alloc_soak(ctx: Context, codec: Codec) -> None:
     # What this asks is whether identical requests allocate identically
     # and give it all back, which any repetition answers - drift shows
     # between the first two that differ. The count is a cost, not a
@@ -3758,7 +3778,7 @@ def keepalive_soak(
     needs_debug=True,
     codecs=CODECS,
 )
-def test_keepalive_allocation_balance(ctx, codec):
+def test_keepalive_allocation_balance(ctx: Context, codec: Codec) -> None:
     """The encoder's lifetime is the request, not the connection.
 
     Every other memory test here opens a fresh connection per request,
@@ -3868,7 +3888,7 @@ def test_keepalive_allocation_balance(ctx, codec):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_cleanup_handler_on_abort(ctx, codec):
+def test_cleanup_handler_on_abort(ctx: Context, codec: Codec) -> None:
     ctx.nginx.mark_log()
     fetch_and_abort(ctx.port, codec.path("slow", ""), codec.token)
     # Polls rather than sleeping a fixed 2.5s for nginx to notice the reset:
@@ -3899,7 +3919,7 @@ def released_early_paths(codec):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_encoder_released_before_close(ctx, codec):
+def test_encoder_released_before_close(ctx: Context, codec: Codec) -> None:
     """The mirror of the abort test above, and the only cover for the close
     in ngx_http_pack_zstd_finish.
 
@@ -3964,7 +3984,7 @@ TABLE_CEILINGS = (
     needs_debug=True,
     only=ZSTD,
 )
-def test_table_sizing(ctx):
+def test_table_sizing(ctx: Context) -> None:
     """Nothing in the frame says what tables made it, so this measures
     the only thing visible from outside - what the encoder allocated -
     against ceilings a build without the cap exceeds. The 256k level 3
@@ -4029,7 +4049,7 @@ def continue_ordinal(codec):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_rounds_make_progress(ctx, codec):
+def test_rounds_make_progress(ctx: Context, codec: Codec) -> None:
     """The invariant the pump loop's termination rests on.
 
     Both encoders answer CONTINUE to mean "go round again", and both loop
@@ -4092,7 +4112,7 @@ def test_rounds_make_progress(ctx, codec):
     needs_debug=True,
     codecs=CODECS,
 )
-def test_output_rounds_account_for_the_body(ctx, codec):
+def test_output_rounds_account_for_the_body(ctx: Context, codec: Codec) -> None:
     """The filter refills its output buffers round after round.
 
     Every refill is logged with the size committed, so the trace says exactly
