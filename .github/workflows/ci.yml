@@ -450,6 +450,39 @@ jobs:
           CLANG: clang
         run: script/build/analyze.sh
 
+  coverage:
+    name: Report test coverage (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { name: linux/amd64, runner: ubuntu-24.04 }
+          - { name: linux/arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # libclang-rt-dev carries the profiling runtime
+      # -fprofile-instr-generate links against, the same package the
+      # fuzz job needs for its sanitizer runtimes; llvm carries
+      # llvm-profdata and llvm-cov.
+      - name: Install build dependencies
+        uses: ./.github/actions/build-deps
+        with:
+          extra: clang libclang-rt-dev llvm
+
+      - name: Build the vendored libraries
+        uses: ./.github/actions/build-libs
+
+      # Report-only: nothing here fails the build. See the script for
+      # why a coverage floor is not what this is building toward yet.
+      - name: Build an instrumented nginx and report coverage
+        env:
+          CC: clang
+        run: script/build/coverage.sh
+
   types:
     name: Type-check the Python scripts
     # One runner, as for shellcheck: pyright reads the sources and its

@@ -6,6 +6,7 @@ nginx/
 nginx-small-buffer/
 nginx-fault/
 nginx-oom/
+nginx-coverage/
 # And the ones built by hand rather than by a suite: a release
 # build for the benchmarks, whose timings a --with-debug binary
 # would swamp, and whatever a comparison against another library
@@ -37,3 +38,7 @@ compile_commands.json
 # Artifacts left behind by script/tests/basic/run-tests.sh: response bodies and
 # the decompressed copies it compares them against.
 tmp/
+# Raw and merged profiles from script/build/coverage.sh.
+coverage-data/
+*.profraw
+*.profdata
