@@ -29,10 +29,13 @@ Reuses test_stream's fixtures and server plumbing, so this file is only
 the part that differs.
 """
 
+from __future__ import annotations
+
 import os
 import socket
 import sys
 import time
+from collections.abc import Callable
 
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stream")
@@ -49,18 +52,20 @@ PORT = T.PORT
 REFUSED = "zstd fault injection: refusing"
 NO_ENCODER = "encoder instance creation failed"
 
-failures = []
+failures: list[str] = []
 passes = 0
 
 
-def check(condition, message):
+def check(condition: bool, message: str) -> None:
     if not condition:
         raise T.Failure(message)
 
 
-def scenario(name):
-    def wrap(fn):
-        def run(nginx):
+def scenario(
+    name: str,
+) -> Callable[[Callable[[T.Nginx], None]], Callable[[T.Nginx], None]]:
+    def wrap(fn: Callable[[T.Nginx], None]) -> Callable[[T.Nginx], None]:
+        def run(nginx: T.Nginx) -> None:
             global passes
             try:
                 fn(nginx)
@@ -76,7 +81,7 @@ def scenario(name):
     return wrap
 
 
-def raw_get(path, timeout=10):
+def raw_get(path: str, timeout: float = 10) -> bytes:
     """One request over a fresh connection, returning whatever came back.
 
     Not T.fetch: http.client raises when the peer closes without a
@@ -89,7 +94,7 @@ def raw_get(path, timeout=10):
             f"GET {path} HTTP/1.1\r\nHost: localhost\r\n"
             f"Connection: close\r\nAccept-Encoding: zstd\r\n\r\n".encode()
         )
-        chunks = []
+        chunks: list[bytes] = []
         while True:
             try:
                 data = sock.recv(65536)
@@ -104,7 +109,7 @@ def raw_get(path, timeout=10):
     return b"".join(chunks)
 
 
-def assert_worker_healthy(nginx):
+def assert_worker_healthy(nginx: T.Nginx) -> None:
     """The control: a location needing no encoder still answers."""
     check(
         nginx.proc is not None and nginx.proc.poll() is None,
@@ -119,7 +124,7 @@ def assert_worker_healthy(nginx):
     )
 
 
-def assert_no_leak(nginx):
+def assert_no_leak(nginx: T.Nginx) -> None:
     """Whatever libzstd did get hold of came back.
 
     The refusal itself allocates nothing, so the interesting case is a
@@ -143,7 +148,7 @@ def assert_no_leak(nginx):
 
 
 @scenario("a refused first allocation drops the response, not the worker")
-def test_refuse_creation(nginx):
+def test_refuse_creation(nginx: T.Nginx) -> None:
     """PACK_ZSTD_FAULT_AFTER=1: the context cannot be built at all."""
     nginx.mark_log()
     body = raw_get("/zstd/a.html")
@@ -165,7 +170,7 @@ def test_refuse_creation(nginx):
 
 
 @scenario("a refused later allocation frees the context it already had")
-def test_refuse_workspace(nginx):
+def test_refuse_workspace(nginx: T.Nginx) -> None:
     """PACK_ZSTD_FAULT_AFTER=2: the context exists, and then cannot
     grow. The path that matters is the one out - what libzstd already
     holds has to be released rather than stranded."""
@@ -184,7 +189,7 @@ def test_refuse_workspace(nginx):
 
 
 @scenario("the hook is inert when nothing asks it to refuse")
-def test_inert(nginx):
+def test_inert(nginx: T.Nginx) -> None:
     """The control on the control: with PACK_ZSTD_FAULT_AFTER unset the
     binary has to behave exactly like a shipping one, or the two
     scenarios above prove nothing about the module."""
@@ -200,14 +205,14 @@ def test_inert(nginx):
     )
 
 
-SCENARIOS = (
+SCENARIOS: tuple[tuple[Callable[[T.Nginx], None], str | None], ...] = (
     (test_inert, None),
     (test_refuse_creation, "1"),
     (test_refuse_workspace, "2"),
 )
 
 
-def main():
+def main() -> int:
     nginx_bin = T.locate_nginx(sys.argv[1] if len(sys.argv) > 1 else None)
     version, has_debug = T.nginx_build_info(nginx_bin)
     if not has_debug:
