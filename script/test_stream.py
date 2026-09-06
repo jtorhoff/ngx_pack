@@ -154,7 +154,7 @@ class Codec:
             rf"\*(\d+) {log_tag} encoder instance created and configured"
         )
 
-    def path(self, location, name=""):
+    def path(self, location: str, name: str = "") -> str:
         """Where this codec's twin of `location` lives.
 
         zstd carries no prefix, so every path it has always used is
@@ -163,7 +163,7 @@ class Codec:
         """
         return f"/{self.prefix}{location}/{name}"
 
-    def file(self, name):
+    def file(self, name: str) -> str:
         """A plain static file this codec's filter compresses.
 
         zstd's is the server root, which the http block already has
