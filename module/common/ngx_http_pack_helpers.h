@@ -27,6 +27,9 @@ ngx_http_pack_format_size(ngx_pool_t *const pool, size_t const bytes)
     /* nginx's own bound on how many characters a size_t can need. */
     enum { max_str_len = NGX_SIZE_T_LEN + sizeof("k") - 1 };
 
+    static size_t const mega = 1024 * 1024;
+    static size_t const kilo = 1024;
+
     size_t  value;
     u_char  unit;
     u_char *buf;
@@ -37,11 +40,11 @@ ngx_http_pack_format_size(ngx_pool_t *const pool, size_t const bytes)
         return (ngx_str_t) ngx_null_string;
     }
 
-    if (bytes != 0 && bytes % (1024 * 1024) == 0) {
-        value = bytes / (1024 * 1024);
+    if (bytes > 0 && bytes % mega == 0) {
+        value = bytes / mega;
         unit  = 'm';
-    } else if (bytes != 0 && bytes % 1024 == 0) {
-        value = bytes / 1024;
+    } else if (bytes > 0 && bytes % kilo == 0) {
+        value = bytes / kilo;
         unit  = 'k';
     } else {
         value = bytes;
