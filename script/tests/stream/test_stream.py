@@ -2619,6 +2619,28 @@ def test_content_encoding_guard(ctx: Context, codec: Codec) -> None:
     )
 
 
+@test(
+    "an empty Content-Encoding value does not count as already encoded",
+    needs_decoder=True,
+    codecs=CODECS,
+)
+def test_empty_content_encoding_not_guarded(ctx: Context, codec: Codec) -> None:
+    """The guard above checks value.len as well as the header's presence:
+    an origin that sent "Content-Encoding:" with nothing after it is not
+    claiming an encoding, so the response is still ours to compress."""
+    _, headers, body = fetch(ctx.port, "/enc/", codec.token)
+    check(
+        headers.get("content-encoding") == codec.token,
+        f"expected the response to still be compressed, got "
+        f"{headers.get('content-encoding')!r}",
+    )
+    decode = must_decode(codec)
+    check(
+        decode(body) == Upstream.TRANSFORM_BODY,
+        "the decoded body does not match the upstream's",
+    )
+
+
 @test("a MIME type outside the types directive is left alone", codecs=CODECS)
 def test_mime_filtering(ctx: Context, codec: Codec) -> None:
     _, headers, body = fetch(ctx.port, codec.file("data.bin"), codec.token)
