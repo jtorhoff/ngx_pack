@@ -61,6 +61,19 @@
 
 typedef ngx_http_pack_zstd_encoder_conf_t conf_t;
 
+/* build_plan below sets every field of conf_t by name, and memset
+   zeroes the rest of plan_t first - so a field this file has not
+   caught up with would silently fuzz as zero rather than across its
+   real range. A size change is the compile-time proxy for that: it
+   cannot tell a rename from an addition, but nothing here can pass
+   unnoticed either way. Re-derive the number with sizeof(conf_t)
+   after checking whether build_plan needs to grow to cover what
+   changed, then update it here alongside that fix. */
+_Static_assert(
+    sizeof(conf_t) == 48,
+    "ngx_http_pack_zstd_encoder_conf_t changed shape - see the "
+    "comment above this assertion");
+
 #define MAX_ROUNDS 32
 #define MAX_BUFS_PER_RND 4
 #define MAX_BUF_SIZE 4096

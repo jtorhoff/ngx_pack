@@ -69,6 +69,13 @@
 
 typedef ngx_http_pack_brotli_encoder_conf_t conf_t;
 
+/* See fuzz_zstd_encoder.c's sibling assertion for why this exists and
+   what to do when it trips. */
+_Static_assert(
+    sizeof(conf_t) == 40,
+    "ngx_http_pack_brotli_encoder_conf_t changed shape - see "
+    "fuzz_zstd_encoder.c's sibling assertion");
+
 #define MAX_ROUNDS 32
 #define MAX_BUFS_PER_RND 4
 #define MAX_BUF_SIZE 4096
