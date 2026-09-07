@@ -319,6 +319,13 @@ jobs:
   fuzz:
     name: Fuzz the parser and the encoders (${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}
+    # The workflow-level block above restricts the default token to
+    # contents: read. actions/cache saves through the Actions cache
+    # API, which needs actions: write on top of that - the one job
+    # here that caches anything.
+    permissions:
+      contents: read
+      actions: write
     strategy:
       # Neither architecture should hide the other.
       fail-fast: false
@@ -370,6 +377,33 @@ jobs:
           script/fuzz/out/fuzz_accept_encoding -runs=0 \
             script/fuzz/corpus
 
+      # Each scratch corpus below is where a one-minute run keeps what
+      # it found, and one minute a day is not enough time to rediscover
+      # the same ground from nothing every run. Restoring it here and
+      # letting the three "for one minute" steps add to it in place is
+      # what lets exploration compound across runs instead of resetting
+      # every time - the two encoder targets have no seed corpus to
+      # replay at all (see their own steps below), so this is the only
+      # continuity they get.
+      #
+      # The key ends in the run id, which this run cannot have written
+      # yet, so the post-job save always creates a new cache entry
+      # rather than silently declining because the key already exists.
+      # restore-keys then falls back to the most recent entry with the
+      # same prefix. No explicit size cap: libFuzzer only keeps inputs
+      # that add coverage, so growth tracks the code's own complexity
+      # rather than wall-clock time and does not run away on its own.
+      - name: Restore the scratch fuzz corpora
+        uses: actions/cache@v4
+        with:
+          path: |
+            script/fuzz/out/corpus
+            script/fuzz/out/corpus-zstd
+            script/fuzz/out/corpus-brotli
+          key: fuzz-corpus-${{ matrix.platform.name }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.platform.name }}-
+
       # Exploratory, and time-boxed. New inputs go to a scratch
       # directory given first, so a run cannot rewrite the seeds.
       - name: Fuzz for one minute
@@ -383,8 +417,9 @@ jobs:
       # Neither encoder target has a checked-in corpus - see their
       # own file comments for what they are reaching that no
       # HTTP-level suite can (may_fold_flush's last_buf-without-
-      # flush lookahead, chiefly) - so there is nothing to replay
-      # deterministically first, only this exploratory run.
+      # flush lookahead, chiefly) - so there is no seed replay step
+      # for either, only this exploratory run against whatever the
+      # cache step above restored.
       - name: Fuzz the zstd encoder for one minute
         run: |
           mkdir -p script/fuzz/out/corpus-zstd
