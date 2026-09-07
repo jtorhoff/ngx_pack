@@ -129,6 +129,10 @@ ENCODER_SRCS="$ROOT/module/filter/zstd/ngx_http_pack_zstd_encoder.c"
 ENCODER_SRCS="$ENCODER_SRCS $ROOT/module/filter/brotli/ngx_http_pack_brotli_encoder.c"
 ENCODER_LIBS="$ROOT/deps/zstd/out/lib/libzstd.a"
 ENCODER_LIBS="$ENCODER_LIBS $ROOT/deps/brotli/out/libbrotlienc.a"
+# libbrotlidec.a: nothing the filter itself links, only
+# fuzz_brotli_encoder.c's round-trip oracle - see that file and
+# script/build/build.sh for why this is the one place it is built.
+ENCODER_LIBS="$ENCODER_LIBS $ROOT/deps/brotli/out/libbrotlidec.a"
 ENCODER_LIBS="$ENCODER_LIBS $ROOT/deps/brotli/out/libbrotlicommon.a"
 
 # These come from nginx's own build rather than from the headers, so

@@ -67,15 +67,18 @@ cmake --build "$ROOT/deps/zstd/out" --target zstd -j "$JOBS"
 # Brotli, on the same terms as zstd above: static, release, and no
 # command line tools, since nothing here shells out to one. Building
 # "brotlienc" pulls in brotlicommon, which is the other half of what
-# the filter links; the decoder is not built because this module only
-# ever compresses.
+# the filter links. "brotlidec" is not something the filter itself
+# ever needs - this module only ever compresses - but
+# script/fuzz/fuzz_brotli_encoder.c's round-trip oracle does, the
+# same way the "zstd" target above carries the CLI the shell suite
+# decompresses with.
 cmake -S "$ROOT/deps/brotli" -B "$ROOT/deps/brotli/out" \
 	"${CMAKE_ARCH[@]}" \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DBUILD_SHARED_LIBS=OFF \
 	-DBROTLI_BUILD_TOOLS=OFF \
 	-DBROTLI_DISABLE_TESTS=ON
-cmake --build "$ROOT/deps/brotli/out" --target brotlienc -j "$JOBS"
+cmake --build "$ROOT/deps/brotli/out" --target brotlienc brotlidec -j "$JOBS"
 
 if [ "$DEPS_ONLY" = 1 ]; then
 	exit 0

@@ -3,46 +3,52 @@
  */
 
 /* libFuzzer target for the round loop in
-   module/filter/zstd/ngx_http_pack_zstd_encoder.c: encoder_create,
+   module/filter/brotli/ngx_http_pack_brotli_encoder.c: encoder_create,
    repeated encoder_step, and the pending/drained/busy/has_free/
-   frame_closed bookkeeping around it. Modelled directly on the loop
-   in ngx_http_pack_zstd_filter.c's ngx_http_pack_zstd_pump.
+   stream_closed bookkeeping around it. Modelled directly on the loop
+   in ngx_http_pack_brotli_filter.c's ngx_http_pack_brotli_pump - and
+   fuzz_zstd_encoder.c's sibling of that same loop, structurally close
+   enough that the two files should be read together rather than
+   this one re-explaining what the other already covers in full.
 
    What this reaches that script/tests/stream/test_stream.py cannot:
    the encoder only ever sees what a real proxied response happens to
    produce, one round's worth of buffers at a time as they arrive off
    the wire. This harness can hand it several buffers at once with any
    combination of "flush" and "last_buf" set, which is what
-   ngx_http_pack_zstd_may_fold_flush's lookahead needs to take its
+   ngx_http_pack_brotli_may_fold_flush's lookahead needs to take its
    "last_buf without flush" branch - a shape ordinary HTTP timing
-   essentially never produces.
+   essentially never produces. Confirmed against fuzz_zstd_encoder.c's
+   copy of the same branch, which a coverage build showed this shape
+   of harness reaches in the tens of thousands over a million runs,
+   versus zero under every HTTP-level suite including the small-buffer
+   stress test.
 
    What it does NOT reach: everything gated behind an nginx pool
-   allocation failing, or libzstd rejecting a parameter this module's
+   allocation failing, or Brotli rejecting a parameter this module's
    own directive validation already guarantees is legal. Both need
    fault injection on a success path, which varying the input cannot
-   produce - see NGX_HTTP_PACK_ZSTD_FAULT_INJECT and test_oom.py for
-   the one allocator this module does own.
+   produce.
 
    The encoder is opaque by design (see its header) and touches
    exactly two things through the request it is handed: r->pool and
-   r->connection->log. Confirmed by grep, not assumed - nothing else
-   here is a real nginx request. ngx_palloc.c, ngx_buf.c and
-   ngx_alloc.c are linked in for real (see build.sh) rather than
-   stubbed, the same reasoning script/fuzz/build.sh already gives for
-   linking ngx_string.c into fuzz_accept_encoding: an uninstrumented
-   stand-in would test the wrong thing. ngx_log_stub.c is the one
-   exception - see that file for why linking the real ngx_log.c would
-   pull in far more than this needs.
+   r->connection->log - the same footprint fuzz_zstd_encoder.c found
+   for its encoder, confirmed here by the same grep. ngx_palloc.c,
+   ngx_buf.c, ngx_alloc.c and ngx_log_stub.c are linked in for real
+   rather than stubbed here too; see that file's comment and
+   ngx_log_stub.c itself for why.
 
    The oracle is two-fold: ASan and UBSan catch memory bugs and UB the
    same way they do for fuzz_accept_encoding, and every round's output
-   is fed to a real ZSTD_DCtx and compared against what went in - a
-   silent correctness bug (dropped bytes, a corrupted frame) fails the
-   round-trip even when nothing crashes.
+   is fed to a real BrotliDecoderState and compared against what went
+   in - a silent correctness bug (dropped bytes, a corrupted stream)
+   fails the round-trip even when nothing crashes. This is the one
+   reason libbrotlidec.a exists in this tree at all - see
+   script/build/build.sh - since the filter itself only ever
+   compresses.
 
    Build and run: script/fuzz/build.sh, then
-   script/fuzz/out/fuzz_zstd_encoder
+   script/fuzz/out/fuzz_brotli_encoder
  */
 
 #include <ngx_config.h>
@@ -55,11 +61,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <zstd.h>
+#include <brotli/decode.h>
+#include <brotli/encode.h>
 
-#include "ngx_http_pack_zstd_encoder.h"
+#include "ngx_http_pack_brotli_encoder.h"
 
-typedef ngx_http_pack_zstd_encoder_conf_t conf_t;
+typedef ngx_http_pack_brotli_encoder_conf_t conf_t;
 
 #define MAX_ROUNDS       32
 #define MAX_BUFS_PER_RND 4
@@ -67,7 +74,7 @@ typedef ngx_http_pack_zstd_encoder_conf_t conf_t;
 /* Generous rather than exact: total input across every round is
    bounded well under this by MAX_ROUNDS * MAX_BUFS_PER_RND *
    MAX_BUF_SIZE, and output can only be larger than input in
-   pathological cases libzstd itself bounds. */
+   pathological cases Brotli itself bounds. */
 #define ACCUM_CAP (MAX_ROUNDS * MAX_BUFS_PER_RND * MAX_BUF_SIZE + 65536)
 
 /* Bytes consumed off the front of the fuzz input to make decisions -
@@ -102,7 +109,11 @@ next_bit(cursor_t *c)
     return next_byte(c) & 1;
 }
 
-static const ngx_int_t LEVELS[]       = {1, 2, 3, 4, 5, 6};
+/* BROTLI_MIN_QUALITY/BROTLI_MAX_QUALITY themselves, rather than a
+   handful of picked values as fuzz_zstd_encoder.c's LEVELS does: the
+   quality directive is bounded to exactly this range (see
+   ngx_http_pack_brotli_level_bounds), and there are few enough
+   settings that every one of them is worth reaching directly. */
 static const size_t    WINDOW_BITS[]  = {14, 15, 16, 17, 18, 19, 20};
 static const size_t    BUFFER_SIZES[] = {64, 256, 1024, 4096, 16384};
 static const ngx_int_t NBUFFERS[]     = {1, 2, 4, 8};
@@ -148,17 +159,14 @@ build_plan(cursor_t *c, plan_t *plan)
 
     memset(plan, 0, sizeof(*plan));
 
-    plan->conf.level = LEVELS[next_range(c, 0, ARRAY_LEN(LEVELS) - 1)];
+    plan->conf.quality = (ngx_int_t) next_range(
+        c, BROTLI_MIN_QUALITY, BROTLI_MAX_QUALITY);
     plan->conf.window_bits =
         WINDOW_BITS[next_range(c, 0, ARRAY_LEN(WINDOW_BITS) - 1)];
     plan->conf.nbuffers =
         NBUFFERS[next_range(c, 0, ARRAY_LEN(NBUFFERS) - 1)];
     plan->conf.buffer_size =
         BUFFER_SIZES[next_range(c, 0, ARRAY_LEN(BUFFER_SIZES) - 1)];
-    /* NGX_HTTP_PACK_ZSTD_HINT_MIN is 16k; 0 is "no hint", which is
-       what conf->hint defaults to when the directive is unset. */
-    plan->conf.src_size_hint =
-        next_bit(c) ? 0 : next_range(c, 16 * 1024, 1024 * 1024);
 
     plan->nrounds = (ngx_uint_t) next_range(c, 1, MAX_ROUNDS);
 
@@ -175,8 +183,8 @@ build_plan(cursor_t *c, plan_t *plan)
     }
 
     /* At least one round must carry at least one buffer, or there is
-       nothing to close the frame - back the last round's count up to
-       1 if the fuzzer chose all zeros. */
+       nothing to close the stream - back the last round's count up
+       to 1 if the fuzzer chose all zeros. */
     last_round = plan->nrounds - 1;
     if (plan->rounds[last_round].nbufs == 0) {
         plan->rounds[last_round].nbufs = 1;
@@ -191,8 +199,10 @@ build_plan(cursor_t *c, plan_t *plan)
        matches its own Content-Length), or deliberately wrong - not
        reachable through this module's own contract, but cheap
        insurance that a future miscount elsewhere fails safely rather
-       than corrupting output. Decided from the total now that every
-       round's sizes are fixed. */
+       than corrupting output. Narrows nothing on its own (see the
+       header: Brotli bounds its buffers by the input it is given
+       either way), unlike zstd's pledged size, but the encoder still
+       has to accept it without complaint. */
     {
         size_t total = 0;
         for (ngx_uint_t ri = 0; ri < plan->nrounds; ri++) {
@@ -239,25 +249,23 @@ fake_request_init(fake_request_t *fr, ngx_pool_t *pool)
 }
 
 /* The round-trip oracle: every byte the encoder ever emitted, fed to
-   a real ZSTD_DCtx once the run is over, compared against every byte
-   it was fed. A streaming decoder rather than one-shot decompression,
-   for the same reason the encoder is streaming - nothing here should
-   assume the frame arrived as a single block. Traps rather than
-   returning a bool: that is what turns a mismatch into a libFuzzer
-   finding the same way ASan or UBSan would. */
+   a real BrotliDecoderState once the run is over, compared against
+   every byte it was fed. Traps rather than returning a bool: that is
+   what turns a mismatch into a libFuzzer finding the same way ASan
+   or UBSan would. */
 static void
 check_roundtrip(
     uint8_t const *compressed, size_t compressed_len,
     uint8_t const *original, size_t original_len)
 {
-    ZSTD_DStream  *dctx;
-    ZSTD_inBuffer  in;
-    ZSTD_outBuffer out;
-    uint8_t        outbuf[65536];
-    uint8_t       *decoded;
-    size_t         decoded_cap;
-    size_t         decoded_len;
-    size_t         rc;
+    BrotliDecoderState *dec;
+    uint8_t const      *next_in;
+    size_t               available_in;
+    uint8_t             *decoded;
+    size_t               decoded_cap;
+    size_t               decoded_len;
+    uint8_t              outbuf[65536];
+    BrotliDecoderResult   rc;
 
     if (compressed_len == 0) {
         if (original_len != 0) {
@@ -266,54 +274,69 @@ check_roundtrip(
         return;
     }
 
-    dctx = ZSTD_createDStream();
-    if (dctx == NULL) {
+    dec = BrotliDecoderCreateInstance(NULL, NULL, NULL);
+    if (dec == NULL) {
         return;
     }
 
     decoded_cap = original_len + 1;
     decoded     = malloc(decoded_cap);
     if (decoded == NULL) {
-        ZSTD_freeDStream(dctx);
+        BrotliDecoderDestroyInstance(dec);
         return;
     }
     decoded_len = 0;
 
-    in.src  = compressed;
-    in.size = compressed_len;
-    in.pos  = 0;
+    next_in      = compressed;
+    available_in = compressed_len;
 
     for (;;) {
-        out.dst  = outbuf;
-        out.size = sizeof(outbuf);
-        out.pos  = 0;
+        uint8_t *next_out      = outbuf;
+        size_t   available_out = sizeof(outbuf);
 
-        rc = ZSTD_decompressStream(dctx, &out, &in);
-        if (ZSTD_isError(rc)) {
+        rc = BrotliDecoderDecompressStream(
+            dec, &available_in, &next_in, &available_out, &next_out,
+            NULL);
+
+        if (rc == BROTLI_DECODER_RESULT_ERROR) {
             free(decoded);
-            ZSTD_freeDStream(dctx);
+            BrotliDecoderDestroyInstance(dec);
             __builtin_trap();
         }
 
-        if (out.pos > 0) {
-            if (decoded_len + out.pos > decoded_cap) {
-                /* More decoded bytes than were ever fed in: zstd
-                   invented data, or nothing should have grown past
-                   what was fed. Either way, a real bug. */
-                free(decoded);
-                ZSTD_freeDStream(dctx);
-                __builtin_trap();
+        {
+            size_t produced = sizeof(outbuf) - available_out;
+            if (produced > 0) {
+                if (decoded_len + produced > decoded_cap) {
+                    /* More decoded bytes than were ever fed in:
+                       Brotli invented data, or nothing should have
+                       grown past what was fed. Either way, a real
+                       bug. */
+                    free(decoded);
+                    BrotliDecoderDestroyInstance(dec);
+                    __builtin_trap();
+                }
+                memcpy(decoded + decoded_len, outbuf, produced);
+                decoded_len += produced;
             }
-            memcpy(decoded + decoded_len, outbuf, out.pos);
-            decoded_len += out.pos;
         }
 
-        if (rc == 0 || (in.pos == in.size && out.pos == 0)) {
+        if (rc == BROTLI_DECODER_RESULT_SUCCESS) {
             break;
         }
+        if (rc == BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT) {
+            /* Every byte this harness ever produced was already
+               handed over in one call - nothing left to feed. A
+               frame that still wants more here is truncated. */
+            free(decoded);
+            BrotliDecoderDestroyInstance(dec);
+            __builtin_trap();
+        }
+        /* NEEDS_MORE_OUTPUT: loop again with the same input
+           position and a freshly emptied outbuf. */
     }
 
-    ZSTD_freeDStream(dctx);
+    BrotliDecoderDestroyInstance(dec);
 
     if (decoded_len != original_len ||
         (original_len > 0 && memcmp(decoded, original, original_len) != 0))
@@ -344,7 +367,7 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     ngx_log_t    boot_log;
     ngx_pool_t  *pool;
     fake_request_t fr;
-    ngx_http_pack_zstd_encoder_t *enc;
+    ngx_http_pack_brotli_encoder_t *enc;
     uint8_t     *fed;
     size_t       fed_len;
     uint8_t     *produced;
@@ -362,7 +385,7 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     }
     fake_request_init(&fr, pool);
 
-    enc = ngx_http_pack_zstd_encoder_create(&fr.request, &plan.conf);
+    enc = ngx_http_pack_brotli_encoder_create(&fr.request, &plan.conf);
     if (enc == NULL) {
         ngx_destroy_pool(pool);
         return 0;
@@ -373,7 +396,7 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     if (fed == NULL || produced == NULL) {
         free(fed);
         free(produced);
-        ngx_http_pack_zstd_encoder_close(enc);
+        ngx_http_pack_brotli_encoder_close(enc);
         ngx_destroy_pool(pool);
         return 0;
     }
@@ -388,10 +411,10 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
     in = NULL;
 
     for (ngx_uint_t ri = 0; ri < plan.nrounds; ri++) {
-        planned_round_t          *round = &plan.rounds[ri];
-        ngx_chain_t               *pending;
-        ngx_http_pack_zstd_step_e  step;
-        ngx_chain_t              **tail;
+        planned_round_t            *round = &plan.rounds[ri];
+        ngx_chain_t                 *pending;
+        ngx_http_pack_brotli_step_e  step;
+        ngx_chain_t                **tail;
 
         /* Appends this round's planned buffers after whatever the
            previous round left unconsumed, rather than after the
@@ -439,17 +462,18 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         }
 
         do {
-            step = ngx_http_pack_zstd_encoder_step(enc, &in, in == NULL);
-        } while (step == NGX_HTTP_PACK_ZSTD_STEP_CONTINUE);
+            step = ngx_http_pack_brotli_encoder_step(
+                enc, &in, in == NULL);
+        } while (step == NGX_HTTP_PACK_BROTLI_STEP_CONTINUE);
 
-        if (step == NGX_HTTP_PACK_ZSTD_STEP_FAILED) {
+        if (step == NGX_HTTP_PACK_BROTLI_STEP_FAILED) {
             /* Reachable only through a pool allocation failing or
-               libzstd rejecting an already-validated parameter - see
+               Brotli rejecting an already-validated parameter - see
                the file comment. Not a finding on its own. */
             goto out;
         }
 
-        pending = ngx_http_pack_zstd_encoder_pending(enc);
+        pending = ngx_http_pack_brotli_encoder_pending(enc);
         for (ngx_chain_t *l = pending; l != NULL; l = l->next) {
             size_t n_out = (size_t) ngx_buf_size(l->buf);
             if (n_out > 0 && produced_len + n_out <= ACCUM_CAP) {
@@ -460,10 +484,10 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
                 l->buf->pos = l->buf->last;
             }
         }
-        ngx_http_pack_zstd_encoder_drained(enc);
+        ngx_http_pack_brotli_encoder_drained(enc);
 
-        if (ngx_http_pack_zstd_encoder_frame_closed(enc) &&
-            !ngx_http_pack_zstd_encoder_busy(enc))
+        if (ngx_http_pack_brotli_encoder_stream_closed(enc) &&
+            !ngx_http_pack_brotli_encoder_busy(enc))
         {
             break;
         }
@@ -475,7 +499,7 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
        once it is out of planned rounds. One last unconditional drain
        is that final call. */
     {
-        ngx_chain_t *pending = ngx_http_pack_zstd_encoder_pending(enc);
+        ngx_chain_t *pending = ngx_http_pack_brotli_encoder_pending(enc);
         for (ngx_chain_t *l = pending; l != NULL; l = l->next) {
             size_t n_out = (size_t) ngx_buf_size(l->buf);
             if (n_out > 0 && produced_len + n_out <= ACCUM_CAP) {
@@ -484,20 +508,20 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
             }
             l->buf->pos = l->buf->last;
         }
-        ngx_http_pack_zstd_encoder_drained(enc);
+        ngx_http_pack_brotli_encoder_drained(enc);
     }
 
-    if (ngx_http_pack_zstd_encoder_frame_closed(enc)) {
+    if (ngx_http_pack_brotli_encoder_stream_closed(enc)) {
         check_roundtrip(produced, produced_len, fed, fed_len);
     }
-    /* Not closed: a round budget cut the run short before the frame
+    /* Not closed: a round budget cut the run short before the stream
        ended, same as a real response a client aborted mid-stream -
-       nothing to check a partial frame against. */
+       nothing to check a partial stream against. */
 
 out:
     free(fed);
     free(produced);
-    ngx_http_pack_zstd_encoder_close(enc);
+    ngx_http_pack_brotli_encoder_close(enc);
     ngx_destroy_pool(pool);
     return 0;
 }
