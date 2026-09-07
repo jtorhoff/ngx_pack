@@ -35,9 +35,6 @@ compile_commands.json
 # rather than a property of the project.
 .vscode/
 
-# Artifacts left behind by script/tests/basic/run-tests.sh: response bodies and
-# the decompressed copies it compares them against.
-tmp/
 # Raw and merged profiles from script/build/coverage.sh.
 coverage-data/
 *.profraw
