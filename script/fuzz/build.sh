@@ -105,7 +105,31 @@ fi
 INCS="-I $NGX_OBJS \
  -I $NGX/src/core -I $NGX/src/event -I $NGX/src/event/modules \
  -I $NGX/src/event/quic -I $NGX/src/os/unix -I $NGX/src/http \
- -I $NGX/src/http/modules -I $NGX/src/http/v2"
+ -I $NGX/src/http/modules -I $NGX/src/http/v2 \
+ -I $ROOT/module/filter/zstd -I $ROOT/module/filter/brotli \
+ -I $ROOT/deps/zstd/lib -I $ROOT/deps/brotli/c/include"
+
+# ngx_palloc.c, ngx_buf.c and ngx_alloc.c: what
+# fuzz_zstd_encoder.c and fuzz_brotli_encoder.c need for a real pool
+# and real buffer chains around the two encoders - see those files'
+# own comments for why a stand-in pool would test the wrong thing,
+# the same reasoning ngx_string.c below already follows.
+# ngx_log_stub.c stands in for ngx_log.c itself: the real
+# ngx_log_error_core is one function in a file whose others
+# (ngx_log_set_log, ngx_log_open_default) reach ngx_conf_file.c and
+# ngx_syslog.c, and the linker cannot take one function without the
+# rest - see ngx_log_stub.c for why never actually calling it is
+# fine. Built into every target rather than picked per target:
+# nothing here references what it does not use, and it keeps this
+# loop the one place a new fuzz_*.c has to be dropped to build.
+CORE_SRCS="$NGX/src/core/ngx_palloc.c $NGX/src/core/ngx_buf.c"
+CORE_SRCS="$CORE_SRCS $NGX/src/os/unix/ngx_alloc.c"
+CORE_SRCS="$CORE_SRCS $ROOT/script/fuzz/ngx_log_stub.c"
+ENCODER_SRCS="$ROOT/module/filter/zstd/ngx_http_pack_zstd_encoder.c"
+ENCODER_SRCS="$ENCODER_SRCS $ROOT/module/filter/brotli/ngx_http_pack_brotli_encoder.c"
+ENCODER_LIBS="$ROOT/deps/zstd/out/lib/libzstd.a"
+ENCODER_LIBS="$ENCODER_LIBS $ROOT/deps/brotli/out/libbrotlienc.a"
+ENCODER_LIBS="$ENCODER_LIBS $ROOT/deps/brotli/out/libbrotlicommon.a"
 
 # These come from nginx's own build rather than from the headers, so
 # a target compiled with its own flags has to repeat them. Without
@@ -138,14 +162,43 @@ done
 SAN="-fsanitize=fuzzer,address,undefined"
 SAN="$SAN -fno-sanitize-recover=undefined"
 
+# macOS's newer linker (default since Xcode 15) rejects some debug
+# info a sufficiently new Homebrew clang emits when several
+# translation units are linked together - "invalid r_symbolnum=N" at
+# link time, nothing wrong in any one object file on its own. The
+# classic linker still accepts it; deprecated, but there is no other
+# workaround short of stripping -g. A no-op everywhere else, since
+# only Apple's linker understands the flag at all.
+LD_WORKAROUND=""
+if [ "$UNAME" = "Darwin" ]; then
+	LD_WORKAROUND="-Wl,-ld_classic"
+fi
+
 mkdir -p "$OUT"
 for src in "$ROOT"/script/fuzz/fuzz_*.c; do
 	name="$(basename "$src" .c)"
+
+	# CORE_SRCS and friends are for the encoder targets alone:
+	# fuzz_accept_encoding.c predates them and carries its own
+	# minimal ngx_alloc/ngx_pnalloc stand-ins, which would collide
+	# with the real ones these link in ("duplicate symbol"). Matched
+	# by name rather than linking both into everything, so a target
+	# that does not want this stays exactly as it was.
+	EXTRA_SRCS=""
+	EXTRA_LIBS=""
+	case "$name" in
+	*_encoder)
+		EXTRA_SRCS="$CORE_SRCS $ENCODER_SRCS"
+		EXTRA_LIBS="$ENCODER_LIBS"
+		;;
+	esac
+
 	echo "building $name with $CC"
 	# shellcheck disable=SC2086
 	"$CC" $SAN -g -O1 -fno-omit-frame-pointer $PLATFORM_DEFS $INCS \
-		-Wno-deprecated-declarations \
-		-o "$OUT/$name" "$src" "$STRING_C" $EXTRA_LDFLAGS
+		-Wno-deprecated-declarations $LD_WORKAROUND \
+		-o "$OUT/$name" "$src" "$STRING_C" $EXTRA_SRCS $EXTRA_LIBS \
+		$EXTRA_LDFLAGS
 done
 
 echo
