@@ -145,9 +145,10 @@ transit data under CC BY, and none of the OSM-derived APIs are used here.
 `prose.txt` had the Project Gutenberg header and footer stripped, so what
 remains is the public-domain text alone with no Project Gutenberg branding,
 licence text or trademark. That is the arrangement Project Gutenberg's own
-licence describes for works already in the US public domain. The same ebook is
-what `prepare-tests.sh` downloads for the shell suite, so the choice is not new
-here - only the vendoring is.
+licence describes for works already in the US public domain. The same ebook
+was, before the suite it served was folded into `test_stream.py`, downloaded
+at test time rather than vendored - so the choice of book is not new here,
+only the vendoring is.
 
 `wiki.html` is **CC BY-SA 4.0**, which is a share-alike licence and the only
 file here that is not permissive. Attribution: text by Wikipedia contributors,

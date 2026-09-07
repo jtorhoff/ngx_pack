@@ -43,6 +43,16 @@ sys.path.insert(
 
 import test_stream as T
 
+
+def tag_for(text: str) -> str:
+    pad = 4 - len(text)
+    return f"{' ' * (pad)}[{text[:4]}]"
+
+
+# Every scenario here drives zstd alone - PACK_ZSTD_FAULT_AFTER has no
+# Brotli equivalent - so the tag is fixed rather than read per-test.
+TAG = tag_for(T.ZSTD.log_tag)
+
 CONF = os.path.join(T.ROOT, "script", "tests", "oom", "test_oom.conf")
 PORT = T.PORT
 
@@ -147,7 +157,7 @@ def assert_no_leak(nginx: T.Nginx) -> None:
         )
 
 
-@scenario("a refused first allocation drops the response, not the worker")
+@scenario(f"{TAG} a refused first allocation drops the response, not the worker")
 def test_refuse_creation(nginx: T.Nginx) -> None:
     """PACK_ZSTD_FAULT_AFTER=1: the context cannot be built at all."""
     nginx.mark_log()
@@ -169,7 +179,7 @@ def test_refuse_creation(nginx: T.Nginx) -> None:
     assert_no_leak(nginx)
 
 
-@scenario("a refused later allocation frees the context it already had")
+@scenario(f"{TAG} a refused later allocation frees the context it already had")
 def test_refuse_workspace(nginx: T.Nginx) -> None:
     """PACK_ZSTD_FAULT_AFTER=2: the context exists, and then cannot
     grow. The path that matters is the one out - what libzstd already
@@ -188,7 +198,7 @@ def test_refuse_workspace(nginx: T.Nginx) -> None:
     assert_no_leak(nginx)
 
 
-@scenario("the hook is inert when nothing asks it to refuse")
+@scenario(f"{TAG} the hook is inert when nothing asks it to refuse")
 def test_inert(nginx: T.Nginx) -> None:
     """The control on the control: with PACK_ZSTD_FAULT_AFTER unset the
     binary has to behave exactly like a shipping one, or the two

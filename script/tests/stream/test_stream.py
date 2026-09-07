@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Regression harness for the ngx_zstd filter module.
 
-script/tests/basic/run-tests.sh already covers Accept-Encoding parsing against static
-files. This harness covers the two areas it does not:
+Covers Accept-Encoding parsing, static file serving, and the areas a
+plain curl-and-cmp suite cannot reach:
 
   * streaming responses, where Content-Length is unknown and the body reaches
-    the filter as a chunked stream (the proxy_pass case), and
+    the filter as a chunked stream (the proxy_pass case),
   * the lifetime of the ZSTD_CCtx instance, which owns heap memory
-    that the request pool does not release on its own.
+    that the request pool does not release on its own, and
+  * one HTTP/2 smoke check, so the --with-http_v2_module path every
+    build compiles in is not left completely unexercised.
 
 The memory tests read the encoder's own allocator tracing out of the debug
 log, so they need an nginx built --with-debug; they are skipped otherwise.
+The HTTP/2 check shells out to curl, since neither http.client nor
+anything else already in use here speaks HTTP/2; it is skipped when
+curl is not on PATH.
 
 Usage:
     python3 script/tests/stream/test_stream.py [--nginx PATH] [--keep] [-v]
@@ -217,6 +222,7 @@ class RegistryEntry(TypedDict):
     needs_decoder: bool
     needs_debug: bool
     needs_corpus: bool
+    needs_curl: bool
 
 
 REGISTRY: list[RegistryEntry] = []
@@ -227,6 +233,7 @@ def test(
     needs_decoder: bool = False,
     needs_debug: bool = False,
     needs_corpus: bool = False,
+    needs_curl: bool = False,
     codecs: list[Codec] | None = None,
     only: Codec | None = None,
     label: str | None = None,
@@ -275,6 +282,7 @@ def test(
                     "needs_decoder": needs_decoder,
                     "needs_debug": needs_debug,
                     "needs_corpus": needs_corpus,
+                    "needs_curl": needs_curl,
                 }
             )
             return fn
@@ -291,6 +299,7 @@ def test(
                     "needs_decoder": needs_decoder,
                     "needs_debug": needs_debug,
                     "needs_corpus": needs_corpus,
+                    "needs_curl": needs_curl,
                 }
             )
         return fn
@@ -1654,6 +1663,65 @@ def test_static_directory_guard(ctx: Context) -> None:
     )
 
 
+@test("a request carrying Via is not served a sibling under \"on\"", label="static")
+def test_static_proxied_guard(ctx: Context) -> None:
+    """"Via" means another proxy already handled this request - the same
+    signal test_proxied_gate checks for the two filters, but pack_static's
+    own accepts() has no pack_*_proxied of its own to relax it with yet, so
+    "on" declines every proxied request outright."""
+    via = {"Via": "1.1 upstream-cache"}
+    _, headers, _ = fetch(ctx.port, "/static/multi.html", "br", headers=via)
+    check(
+        "content-encoding" not in headers,
+        f"a request carrying Via was served a sibling anyway: {headers!r}",
+    )
+
+    # Same request without Via: proves the decline above is the header's
+    # doing and not the file lacking a sibling.
+    _, headers, _ = fetch(ctx.port, "/static/multi.html", "br")
+    check(
+        headers.get("content-encoding") == "br",
+        f"the same request without Via was not served a sibling: {headers!r}",
+    )
+
+
+@test("HEAD on a sibling gets its headers and no body", label="static")
+def test_static_head_request(ctx: Context) -> None:
+    status, headers, body = fetch(ctx.port, "/static/multi.html", "br", method="HEAD")
+    check(status == 200, f"expected 200, got {status}")
+    check(
+        headers.get("content-encoding") == "br",
+        f"HEAD was not served the sibling: {headers!r}",
+    )
+    check(body == b"", f"HEAD returned a {len(body)} byte body")
+
+
+@test("a broken path below a sibling is declined, not a failure", label="static")
+def test_static_sibling_broken_path(ctx: Context) -> None:
+    """open_sibling's ENOTDIR and ENAMETOOLONG cases: a path component
+    that names a plain file rather than a directory, and one longer than
+    the filesystem allows. Neither is this module's problem to solve -
+    both are declines, the same as a sibling that is simply missing, and
+    core's own static handler is what turns either into the 404."""
+    cases = [
+        (
+            "/static/multi.html/x.html",
+            "a path component that is a file, not a directory",
+        ),
+        (
+            "/static/" + "a" * 300 + ".html",
+            "a path component past the filesystem's name limit",
+        ),
+    ]
+    for path, shape in cases:
+        status, headers, _ = fetch(ctx.port, path, "br")
+        check(status == 404, f"{shape}: expected 404, got {status}")
+        check(
+            "content-encoding" not in headers,
+            f"{shape}: served a sibling anyway: {headers.get('content-encoding')!r}",
+        )
+
+
 @test("every response from a pack_static location says it varies", label="static")
 def test_static_vary_is_unconditional(ctx: Context) -> None:
     """ "pack_static on" is what makes the body depend on Accept-Encoding,
@@ -2071,6 +2139,48 @@ def test_static_ambiguity_recreated(ctx: Context) -> None:
 
     got = ambiguity_warnings(ctx, control)
     check(got == 1, f"the nested location alone: expected 1, got {got}")
+
+
+@test("pack_static_encodings cannot be written twice in one block", label="static")
+def test_static_encodings_duplicate_directive(ctx: Context) -> None:
+    """Written twice in the same block, the setter's own conf pointer sees
+    the first call's count and refuses the second - the "is duplicate" nginx
+    reports back is this module's own string, not core's."""
+    accepted, text = config_accepted(
+        ctx, "pack_static_encodings br;\n  pack_static_encodings gzip;"
+    )
+    check(not accepted, f"a directive repeated in one block was accepted:\n{text}")
+    check(
+        "is duplicate" in text,
+        f"expected the duplicate-directive refusal, got:\n{text}",
+    )
+
+
+@test("pack_static_encodings refuses a name none of the three rows carry", label="static")
+def test_static_encodings_unknown_value(ctx: Context) -> None:
+    accepted, text = config_accepted(ctx, "pack_static_encodings bogus;")
+    check(not accepted, f"an unknown encoding was accepted:\n{text}")
+    check(
+        'invalid value "bogus"' in text,
+        f"expected the unknown-value refusal, got:\n{text}",
+    )
+
+
+@test(
+    "pack_static_encodings warns about and skips a name repeated within "
+    "one directive",
+    label="static",
+)
+def test_static_encodings_duplicate_value(ctx: Context) -> None:
+    """Unlike the same directive written twice, the same name written
+    twice within one directive is only a warning: the second "br" is
+    dropped and the first stands."""
+    accepted, text = config_accepted(ctx, "pack_static_encodings br br;")
+    check(accepted, f"a value repeated within one directive should only warn:\n{text}")
+    check(
+        'duplicate value "br"' in text,
+        f"expected the duplicate-value warning, got:\n{text}",
+    )
 
 
 @test("pack_static falls through when there is no .zst sibling", label="static")
@@ -2534,6 +2644,7 @@ def test_q_zero(ctx: Context, codec: Codec) -> None:
     tok = codec.token
     for value in [
         f"{tok};q=0",
+        f"{tok};q=0.",
         f"{tok};q=0.0",
         f"{tok};q=0.00",
         f"{tok};q=0.000",
@@ -2795,6 +2906,66 @@ def test_codec_precedence(ctx: Context) -> None:
             f"the filters have changed places in the chain, or one of "
             f"them is not enabled at /all/",
         )
+
+
+@test(
+    "a response is compressed correctly over HTTP/2 too",
+    needs_decoder=True,
+    needs_curl=True,
+    codecs=CODECS,
+)
+def test_http2_smoke(ctx: Context, codec: Codec) -> None:
+    """Every other check here goes through http.client, which cannot
+    speak HTTP/2 - so nothing in the suite has ever run a request
+    through the --with-http_v2_module path every build compiles in.
+    Accept-Encoding parsing and filter registration are protocol-
+    agnostic code already exercised in depth over HTTP/1.1 above; this
+    is only the proof that the same code runs at all when nginx is
+    talking HTTP/2, via curl since nothing already in use here can.
+    """
+    fd, out = tempfile.mkstemp(prefix="ngx-zstd-h2-")
+    os.close(fd)
+    try:
+        done = subprocess.run(
+            [
+                "curl",
+                "--http2-prior-knowledge",
+                "-s",
+                "-D",
+                "-",
+                "-o",
+                out,
+                "-H",
+                f"Accept-Encoding: {codec.token}",
+                f"http://127.0.0.1:{ctx.port}/all/small.html",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        check(
+            done.returncode == 0,
+            f"curl failed (exit {done.returncode}): {done.stderr}",
+        )
+        header_text = done.stdout.lower()
+        check(
+            "http/2 200" in header_text,
+            f"expected an HTTP/2 200 status line, got:\n{done.stdout}",
+        )
+        check(
+            f"content-encoding: {codec.token}" in header_text,
+            f"expected content-encoding: {codec.token}, got:\n{done.stdout}",
+        )
+        with open(out, "rb") as handle:
+            body = handle.read()
+        decode = must_decode(codec)
+        check(
+            decode(body) == ctx.fixtures["small.html"],
+            "the HTTP/2 response body did not decode back to the original",
+        )
+    finally:
+        os.remove(out)
 
 
 @test("HTTP/1.0 clients are not served a compressed body", codecs=CODECS)
@@ -4396,6 +4567,7 @@ def main() -> int:
     # hands the tests that read the compressed bytes directly.
     decode = ZSTD.decode
     has_corpus = bool(load_corpus())
+    has_curl = shutil.which("curl") is not None
 
     for port in (args.port, args.upstream_port):
         if not port_is_free(port):
@@ -4452,6 +4624,8 @@ def main() -> int:
                 results.append((SKIP, name, "nginx lacks --with-debug"))
             elif entry["needs_corpus"] and not has_corpus:
                 results.append((SKIP, name, "script/corpus is missing"))
+            elif entry["needs_curl"] and not has_curl:
+                results.append((SKIP, name, "curl not found"))
             else:
                 try:
                     entry["fn"](ctx)

@@ -32,6 +32,11 @@ sys.path.insert(
 
 import test_stream as T
 
+
+def tag_for(text: str) -> str:
+    pad = 4 - len(text)
+    return f"{' ' * (pad)}[{text[:4]}]"
+
 CONF = os.path.join(
     T.ROOT, "script", "tests", "header_status", "test_header_status.conf"
 )
@@ -212,22 +217,24 @@ def main() -> int:
 
     try:
         for codec in (T.ZSTD, T.BROTLI):
+            tag = tag_for(codec.log_tag)
             record(
-                f"[{codec.name}] control: the same stream without the "
+                f"{tag} control: the same stream without the "
                 f"fault compresses",
                 lambda codec=codec: control_still_compresses(codec),
             )
             record(
-                f"[{codec.name}] a rejected response ends instead of hanging",
+                f"{tag} a rejected response ends instead of hanging",
                 lambda codec=codec: request_terminates_promptly(codec),
             )
             record(
-                f"[{codec.name}] the encoder does not outlive the rejected "
+                f"{tag} the encoder does not outlive the rejected "
                 f"response",
                 lambda codec=codec: context_is_closed(codec),
             )
         record(
-            "no compressed frame reaches the wire after rejection",
+            f"{tag_for(T.ZSTD.log_tag)} no compressed frame reaches the "
+            f"wire after rejection",
             no_frame_reaches_the_wire,
         )
     finally:

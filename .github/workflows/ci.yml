@@ -43,13 +43,7 @@ jobs:
       - name: Build nginx
         run: script/build/build.sh
 
-      - name: Prepare fixtures
-        run: script/tests/basic/prepare-tests.sh
-
-      - name: Static files and Accept-Encoding
-        run: script/tests/basic/run-tests.sh
-
-      - name: Streaming responses and encoder lifetime
+      - name: Accept-Encoding parsing, static files, streaming, encoder lifetime
         run: python3 script/tests/stream/test_stream.py --nginx nginx/objs/nginx
 
       # Builds a second nginx of its own, carrying
@@ -212,17 +206,11 @@ jobs:
           WITH_DEBUG: "0"
         run: script/build/build.sh
 
-      - name: Prepare fixtures
-        run: script/tests/basic/prepare-tests.sh
-
-      - name: Static files and Accept-Encoding
-        run: script/tests/basic/run-tests.sh
-
-      # Also the only run of these against optimised, non-debug code.
+      # Also the only run of this against optimised, non-debug code.
       # The nine window and memory tests read the encoder's allocator
       # tracing out of the debug log, so the driver skips them here
       # and reports them as skipped rather than passing.
-      - name: Streaming responses and encoder lifetime
+      - name: Accept-Encoding parsing, static files, streaming, encoder lifetime
         run: python3 script/tests/stream/test_stream.py --nginx nginx/objs/nginx
 
       - name: Collect logs on failure
@@ -252,7 +240,7 @@ jobs:
       - name: Install build dependencies
         uses: ./.github/actions/build-deps
 
-      # For libzstd and the zstd CLI the suites decompress with;
+      # For libzstd and the zstd CLI the suite decompresses with;
       # test-small-buffer.sh builds only its own nginx tree.
       - name: Build the vendored libraries
         uses: ./.github/actions/build-libs
@@ -260,22 +248,16 @@ jobs:
       # No "script/build/build.sh" step here, deliberately: it would build an
       # ordinary nginx that nothing in this job ever runs.
       # test-small-buffer.sh clones and builds nginx-small-buffer of its
-      # own and points both suites at that binary, by NGINX_BIN for the
-      # shell suite and --nginx for the streaming one, so neither can
-      # fall back to nginx/objs/nginx. The libraries it does need come
-      # from the cached step above.
-      #
-      # The fixtures below are not the same story: test-small-buffer.sh
-      # runs the shell suite, which serves them.
-      - name: Prepare fixtures
-        run: script/tests/basic/prepare-tests.sh
+      # own and points the suite at that binary with --nginx, so it
+      # cannot fall back to nginx/objs/nginx. The libraries it does need
+      # come from the cached step above, and it builds its own fixtures.
 
       # Under AddressSanitizer, since the point of the tiny buffer is
       # to make the partial-drain and resend paths dense and those are
       # where a buffer overrun would live. Leaks are nginx's pools
       # rather than anything this module owns, and the module's own
       # balance is asserted by the suite itself.
-      - name: Both suites at a 64-byte output buffer
+      - name: The suite at a 64-byte output buffer
         env:
           SANITIZE: "1"
           ASAN_OPTIONS: detect_leaks=0
@@ -313,12 +295,11 @@ jobs:
       - name: Build the vendored libraries
         uses: ./.github/actions/build-libs
 
-      # Neither a "script/build/build.sh" nor a "prepare-tests.sh" step here,
-      # deliberately. test-oom.sh builds nginx-oom and hands that binary
-      # to test_oom.py, which calls build_fixtures() for a fixture tree
-      # of its own - so an ordinary nginx and the shell suite's fixtures
-      # are both dead weight, the latter including a download from
-      # gutenberg.org this job would otherwise have to survive.
+      # No "script/build/build.sh" step here, deliberately: it would
+      # build an ordinary nginx that nothing in this job runs.
+      # test-oom.sh builds nginx-oom and hands that binary to
+      # test_oom.py, which calls build_fixtures() for a fixture tree of
+      # its own.
 
       # The branches taken when libzstd cannot get memory. Nothing else
       # reaches them: a test cannot make malloc fail for one module and

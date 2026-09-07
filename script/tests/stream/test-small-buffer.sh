@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Re-runs both suites against a build whose output buffers are far
+# Re-runs the suite against a build whose output buffers are far
 # smaller than anything either filter would ship with.
 #
 # The filters refill their output buffers round after round, so how
@@ -10,8 +10,8 @@
 # resend and mid-flush paths are reached rarely; at 64 bytes the same
 # response takes ~1500 and almost every round is a partial one. Same
 # code, roughly two hundred times the density of the states that are
-# hardest to get right - which is why this runs the suites unchanged
-# rather than asserting anything new: their round-trip and
+# hardest to get right - which is why this runs the suite unchanged
+# rather than asserting anything new: its round-trip and
 # allocator-balance checks are the assertions, and this only changes
 # the conditions they run under.
 #
@@ -120,7 +120,6 @@ cd "$BUILD"
 make -j "$JOBS"
 
 cd "$ROOT"
-NGINX_BIN="$BUILD/objs/nginx" script/tests/basic/run-tests.sh
 # --max-out-size turns "the -D reached the compiler" into a checked
 # precondition. Without it a plumbing regression would silently
 # degrade this whole script into a second run of the normal suite.

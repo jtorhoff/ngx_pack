@@ -89,12 +89,6 @@ make -j "$JOBS"
 cd "$ROOT"
 NGINX_BIN="$BUILD/objs/nginx"
 
-script/tests/basic/prepare-tests.sh
-
-echo "### static files and Accept-Encoding"
-LLVM_PROFILE_FILE="$COV/basic-%p.profraw" NGINX_BIN="$NGINX_BIN" \
-	script/tests/basic/run-tests.sh
-
 echo "### streaming responses and encoder lifetime"
 LLVM_PROFILE_FILE="$COV/stream-%p.profraw" \
 	python3 script/tests/stream/test_stream.py --nginx "$NGINX_BIN"
