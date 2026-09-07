@@ -317,7 +317,7 @@ jobs:
           done
 
   fuzz:
-    name: Fuzz the Accept-Encoding parser (${{ matrix.platform.name }})
+    name: Fuzz the parser and the encoders (${{ matrix.platform.name }})
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       # Neither architecture should hide the other.
@@ -345,8 +345,11 @@ jobs:
       # The targets include nginx's headers and compile its
       # ngx_string.c, so they need a configured tree. Reusing
       # build.sh keeps this job on the same nginx as the rest of the
-      # workflow, at the cost of also building zstd, which the
-      # fuzzers do not link.
+      # workflow. zstd and Brotli are both needed now too:
+      # fuzz_zstd_encoder.c and fuzz_brotli_encoder.c link the
+      # encoders themselves, and libbrotlidec.a - not something the
+      # filter ever links - exists in this tree only for the
+      # Brotli target's round-trip oracle.
       - name: Build the vendored libraries
         uses: ./.github/actions/build-libs
 
@@ -376,6 +379,25 @@ jobs:
             -max_total_time=60 -print_final_stats=1 \
             -dict=script/fuzz/accept_encoding.dict \
             script/fuzz/out/corpus script/fuzz/corpus
+
+      # Neither encoder target has a checked-in corpus - see their
+      # own file comments for what they are reaching that no
+      # HTTP-level suite can (may_fold_flush's last_buf-without-
+      # flush lookahead, chiefly) - so there is nothing to replay
+      # deterministically first, only this exploratory run.
+      - name: Fuzz the zstd encoder for one minute
+        run: |
+          mkdir -p script/fuzz/out/corpus-zstd
+          script/fuzz/out/fuzz_zstd_encoder \
+            -max_total_time=60 -print_final_stats=1 \
+            script/fuzz/out/corpus-zstd
+
+      - name: Fuzz the Brotli encoder for one minute
+        run: |
+          mkdir -p script/fuzz/out/corpus-brotli
+          script/fuzz/out/fuzz_brotli_encoder \
+            -max_total_time=60 -print_final_stats=1 \
+            script/fuzz/out/corpus-brotli
 
       # A finding is only useful if it can be reproduced, and
       # libFuzzer writes the input beside the binary as
