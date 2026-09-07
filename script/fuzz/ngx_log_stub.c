@@ -23,11 +23,15 @@
    coalescing does, which this harness's in-memory-only buffers never
    drive), but the symbol still has to resolve. NULL rather than a
    real cycle, on the same "never actually called" footing. */
-volatile ngx_cycle_t *ngx_cycle;
+ngx_cycle_t volatile *ngx_cycle;
 
 void
 ngx_log_error_core(
-    ngx_uint_t level, ngx_log_t *log, ngx_err_t err, const char *fmt, ...)
+    ngx_uint_t  level,
+    ngx_log_t  *log,
+    ngx_err_t   err,
+    char const *fmt,
+    ...)
 {
     (void) level;
     (void) log;

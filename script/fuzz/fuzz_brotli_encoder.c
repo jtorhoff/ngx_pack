@@ -3,13 +3,14 @@
  */
 
 /* libFuzzer target for the round loop in
-   module/filter/brotli/ngx_http_pack_brotli_encoder.c: encoder_create,
-   repeated encoder_step, and the pending/drained/busy/has_free/
-   stream_closed bookkeeping around it. Modelled directly on the loop
-   in ngx_http_pack_brotli_filter.c's ngx_http_pack_brotli_pump - and
-   fuzz_zstd_encoder.c's sibling of that same loop, structurally close
-   enough that the two files should be read together rather than
-   this one re-explaining what the other already covers in full.
+   module/filter/brotli/ngx_http_pack_brotli_encoder.c:
+   encoder_create, repeated encoder_step, and the
+   pending/drained/busy/has_free/ stream_closed bookkeeping around it.
+   Modelled directly on the loop in ngx_http_pack_brotli_filter.c's
+   ngx_http_pack_brotli_pump - and fuzz_zstd_encoder.c's sibling of
+   that same loop, structurally close enough that the two files should
+   be read together rather than this one re-explaining what the other
+   already covers in full.
 
    What this reaches that script/tests/stream/test_stream.py cannot:
    the encoder only ever sees what a real proxied response happens to
@@ -68,20 +69,21 @@
 
 typedef ngx_http_pack_brotli_encoder_conf_t conf_t;
 
-#define MAX_ROUNDS       32
+#define MAX_ROUNDS 32
 #define MAX_BUFS_PER_RND 4
-#define MAX_BUF_SIZE     4096
+#define MAX_BUF_SIZE 4096
 /* Generous rather than exact: total input across every round is
    bounded well under this by MAX_ROUNDS * MAX_BUFS_PER_RND *
    MAX_BUF_SIZE, and output can only be larger than input in
    pathological cases Brotli itself bounds. */
-#define ACCUM_CAP (MAX_ROUNDS * MAX_BUFS_PER_RND * MAX_BUF_SIZE + 65536)
+#define ACCUM_CAP                                                    \
+    (MAX_ROUNDS * MAX_BUFS_PER_RND * MAX_BUF_SIZE + 65536)
 
 /* Bytes consumed off the front of the fuzz input to make decisions -
    never randomness of our own, so a crash replays byte for byte. */
 typedef struct {
-    const uint8_t *pos;
-    const uint8_t *end;
+    uint8_t const *pos;
+    uint8_t const *end;
 } cursor_t;
 
 static uint8_t
@@ -114,9 +116,9 @@ next_bit(cursor_t *c)
    quality directive is bounded to exactly this range (see
    ngx_http_pack_brotli_level_bounds), and there are few enough
    settings that every one of them is worth reaching directly. */
-static const size_t    WINDOW_BITS[]  = {14, 15, 16, 17, 18, 19, 20};
-static const size_t    BUFFER_SIZES[] = {64, 256, 1024, 4096, 16384};
-static const ngx_int_t NBUFFERS[]     = {1, 2, 4, 8};
+static size_t const    WINDOW_BITS[]  = {14, 15, 16, 17, 18, 19, 20};
+static size_t const    BUFFER_SIZES[] = {64, 256, 1024, 4096, 16384};
+static ngx_int_t const NBUFFERS[]     = {1, 2, 4, 8};
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -173,7 +175,8 @@ build_plan(cursor_t *c, plan_t *plan)
     for (ngx_uint_t ri = 0; ri < plan->nrounds; ri++) {
         planned_round_t *round = &plan->rounds[ri];
 
-        round->nbufs = (ngx_uint_t) next_range(c, 0, MAX_BUFS_PER_RND);
+        round->nbufs = (ngx_uint_t) next_range(
+            c, 0, MAX_BUFS_PER_RND);
         round->drain_immediately = next_bit(c);
 
         for (ngx_uint_t bi = 0; bi < round->nbufs; bi++) {
@@ -187,8 +190,8 @@ build_plan(cursor_t *c, plan_t *plan)
        to 1 if the fuzzer chose all zeros. */
     last_round = plan->nrounds - 1;
     if (plan->rounds[last_round].nbufs == 0) {
-        plan->rounds[last_round].nbufs = 1;
-        plan->rounds[last_round].bufs[0].size  = next_range(c, 0, 256);
+        plan->rounds[last_round].nbufs        = 1;
+        plan->rounds[last_round].bufs[0].size = next_range(c, 0, 256);
         plan->rounds[last_round].bufs[0].flush = 0;
     }
     last_buf_idx = plan->rounds[last_round].nbufs - 1;
@@ -206,7 +209,8 @@ build_plan(cursor_t *c, plan_t *plan)
     {
         size_t total = 0;
         for (ngx_uint_t ri = 0; ri < plan->nrounds; ri++) {
-            for (ngx_uint_t bi = 0; bi < plan->rounds[ri].nbufs; bi++) {
+            for (ngx_uint_t bi = 0; bi < plan->rounds[ri].nbufs;
+                 bi++) {
                 total += plan->rounds[ri].bufs[bi].size;
             }
         }
@@ -218,8 +222,8 @@ build_plan(cursor_t *c, plan_t *plan)
                 plan->conf.content_length = (off_t) total;
                 break;
             default:
-                plan->conf.content_length =
-                    (off_t) next_range(c, 0, 2 * ACCUM_CAP);
+                plan->conf.content_length = (off_t) next_range(
+                    c, 0, 2 * ACCUM_CAP);
                 break;
         }
     }
@@ -229,9 +233,9 @@ build_plan(cursor_t *c, plan_t *plan)
    See the file comment: r->pool and r->connection->log are the only
    two fields the encoder ever reaches through r. */
 typedef struct {
-    ngx_log_t           log;
-    ngx_connection_t    connection;
-    ngx_http_request_t  request;
+    ngx_log_t          log;
+    ngx_connection_t   connection;
+    ngx_http_request_t request;
 } fake_request_t;
 
 static void
@@ -255,17 +259,19 @@ fake_request_init(fake_request_t *fr, ngx_pool_t *pool)
    or UBSan would. */
 static void
 check_roundtrip(
-    uint8_t const *compressed, size_t compressed_len,
-    uint8_t const *original, size_t original_len)
+    uint8_t const *compressed,
+    size_t         compressed_len,
+    uint8_t const *original,
+    size_t         original_len)
 {
     BrotliDecoderState *dec;
     uint8_t const      *next_in;
-    size_t               available_in;
-    uint8_t             *decoded;
-    size_t               decoded_cap;
-    size_t               decoded_len;
-    uint8_t              outbuf[65536];
-    BrotliDecoderResult   rc;
+    size_t              available_in;
+    uint8_t            *decoded;
+    size_t              decoded_cap;
+    size_t              decoded_len;
+    uint8_t             outbuf[65536];
+    BrotliDecoderResult rc;
 
     if (compressed_len == 0) {
         if (original_len != 0) {
@@ -295,7 +301,11 @@ check_roundtrip(
         size_t   available_out = sizeof(outbuf);
 
         rc = BrotliDecoderDecompressStream(
-            dec, &available_in, &next_in, &available_out, &next_out,
+            dec,
+            &available_in,
+            &next_in,
+            &available_out,
+            &next_out,
             NULL);
 
         if (rc == BROTLI_DECODER_RESULT_ERROR) {
@@ -339,15 +349,22 @@ check_roundtrip(
     BrotliDecoderDestroyInstance(dec);
 
     if (decoded_len != original_len ||
-        (original_len > 0 && memcmp(decoded, original, original_len) != 0))
-    {
-        fprintf(stderr, "MISMATCH decoded_len=%zu original_len=%zu\n",
-                decoded_len, original_len);
+        (original_len > 0 &&
+         memcmp(decoded, original, original_len) != 0)) {
+        fprintf(
+            stderr,
+            "MISMATCH decoded_len=%zu original_len=%zu\n",
+            decoded_len,
+            original_len);
         if (decoded_len == original_len) {
             for (size_t i = 0; i < original_len; i++) {
                 if (decoded[i] != original[i]) {
-                    fprintf(stderr, "  first diff at %zu: got %02x want %02x\n",
-                            i, decoded[i], original[i]);
+                    fprintf(
+                        stderr,
+                        "  first diff at %zu: got %02x want %02x\n",
+                        i,
+                        decoded[i],
+                        original[i]);
                     break;
                 }
             }
@@ -362,30 +379,31 @@ check_roundtrip(
 int
 LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 {
-    cursor_t     cursor;
-    plan_t       plan;
-    ngx_log_t    boot_log;
-    ngx_pool_t  *pool;
-    fake_request_t fr;
+    cursor_t                        cursor;
+    plan_t                          plan;
+    ngx_log_t                       boot_log;
+    ngx_pool_t                     *pool;
+    fake_request_t                  fr;
     ngx_http_pack_brotli_encoder_t *enc;
-    uint8_t     *fed;
-    size_t       fed_len;
-    uint8_t     *produced;
-    size_t       produced_len;
-    ngx_chain_t *in;
+    uint8_t                        *fed;
+    size_t                          fed_len;
+    uint8_t                        *produced;
+    size_t                          produced_len;
+    ngx_chain_t                    *in;
 
     cursor.pos = data;
     cursor.end = data + size;
     build_plan(&cursor, &plan);
 
     boot_log.log_level = 0;
-    pool = ngx_create_pool(16384, &boot_log);
+    pool               = ngx_create_pool(16384, &boot_log);
     if (pool == NULL) {
         return 0;
     }
     fake_request_init(&fr, pool);
 
-    enc = ngx_http_pack_brotli_encoder_create(&fr.request, &plan.conf);
+    enc = ngx_http_pack_brotli_encoder_create(
+        &fr.request, &plan.conf);
     if (enc == NULL) {
         ngx_destroy_pool(pool);
         return 0;
@@ -412,9 +430,9 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
 
     for (ngx_uint_t ri = 0; ri < plan.nrounds; ri++) {
         planned_round_t            *round = &plan.rounds[ri];
-        ngx_chain_t                 *pending;
-        ngx_http_pack_brotli_step_e  step;
-        ngx_chain_t                **tail;
+        ngx_chain_t                *pending;
+        ngx_http_pack_brotli_step_e step;
+        ngx_chain_t               **tail;
 
         /* Appends this round's planned buffers after whatever the
            previous round left unconsumed, rather than after the
@@ -450,15 +468,15 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
             }
 
             buf->start = buf->pos = content;
-            buf->end = buf->last  = content + pb->size;
-            buf->temporary = 1;
-            buf->flush     = pb->flush;
-            buf->last_buf  = pb->last_buf;
+            buf->end = buf->last = content + pb->size;
+            buf->temporary       = 1;
+            buf->flush           = pb->flush;
+            buf->last_buf        = pb->last_buf;
 
             link->buf  = buf;
             link->next = NULL;
-            *tail = link;
-            tail  = &link->next;
+            *tail      = link;
+            tail       = &link->next;
         }
 
         do {
@@ -487,8 +505,7 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
         ngx_http_pack_brotli_encoder_drained(enc);
 
         if (ngx_http_pack_brotli_encoder_stream_closed(enc) &&
-            !ngx_http_pack_brotli_encoder_busy(enc))
-        {
+            !ngx_http_pack_brotli_encoder_busy(enc)) {
             break;
         }
     }
@@ -499,7 +516,8 @@ LLVMFuzzerTestOneInput(uint8_t const *data, size_t size)
        once it is out of planned rounds. One last unconditional drain
        is that final call. */
     {
-        ngx_chain_t *pending = ngx_http_pack_brotli_encoder_pending(enc);
+        ngx_chain_t *pending = ngx_http_pack_brotli_encoder_pending(
+            enc);
         for (ngx_chain_t *l = pending; l != NULL; l = l->next) {
             size_t n_out = (size_t) ngx_buf_size(l->buf);
             if (n_out > 0 && produced_len + n_out <= ACCUM_CAP) {
