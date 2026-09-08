@@ -97,8 +97,8 @@ static ngx_str_t const ENCODING = ngx_string("br");
 
 
 /* Module configuration. Whether Brotli is enabled at all, and
-   whether it is "=always", now live in the "pack" directive instead
-   of here - see ngx_http_pack_status. */
+   whether it is "=always", are properties of the "pack" directive,
+   not this struct - see ngx_http_pack_status. */
 typedef struct {
     /* Minimal required length for compression (if known). */
     ssize_t min_length;

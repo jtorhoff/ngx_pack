@@ -2951,7 +2951,7 @@ def test_codec_precedence(ctx: Context) -> None:
         )
 
 
-@test("pack_brotli always yields only to zstd, never to the client", label="all")
+@test("\"br=always\" yields only to zstd, never to the client", label="all")
 def test_brotli_always_precedence(ctx: Context) -> None:
     """/always/ is "pack zstd br=always;": zstd ranked first still
     only claims a response a client actually asked for, but Brotli's
@@ -2995,7 +2995,7 @@ BROTLI_ALWAYS_IGNORES = [
 ]
 
 
-@test("pack_brotli always ignores Accept-Encoding entirely", label="all")
+@test("\"br=always\" ignores Accept-Encoding entirely", label="all")
 def test_brotli_always_ignores_accept_encoding(ctx: Context) -> None:
     """/brotli-always/ is "pack br=always;" - zstd not named at
     all, gzip at its default off - so Brotli's own "always" claim is
@@ -3034,7 +3034,7 @@ ZSTD_ALWAYS_IGNORES = [
 ]
 
 
-@test("pack_zstd always ignores Accept-Encoding entirely", label="all")
+@test("\"zstd=always\" ignores Accept-Encoding entirely", label="all")
 def test_zstd_always_ignores_accept_encoding(ctx: Context) -> None:
     """zstd's mirror of test_brotli_always_ignores_accept_encoding:
     /zstd-always/ is "pack zstd=always;" - Brotli not named at all -
@@ -3139,16 +3139,15 @@ def test_zstd_precedence_reversed(ctx: Context) -> None:
 
 @test("pack refuses what it cannot mean", label="all")
 def test_pack_grammar_refused(ctx: Context) -> None:
-    """Unlike the old pack_zstd/pack_brotli pair, "pack" cannot even be
-    written into the ambiguous "both always" state a request handler
-    once had to catch at merge time - there is nowhere in its grammar
-    for a second "=always" to go. What is left to check is that the
-    parser actually enforces its own grammar rather than silently
-    accepting something it cannot carry out: a codec named twice, a
-    second "=always", an unknown codec name, a third codec (nothing
-    this module ships has one), and "=always" on the first of two
-    codecs rather than the last - each ought to refuse outright rather
-    than pick a meaning API callers did not ask for.
+    """"pack" cannot be written into an ambiguous "both always" state -
+    there is nowhere in its grammar for a second "=always" to go. What
+    is left to check is that the parser enforces its own grammar
+    rather than silently accepting something it cannot carry out: a
+    codec named twice, a second "=always", an unknown codec name, a
+    third codec (nothing this module ships has one), and "=always" on
+    the first of two codecs rather than the last - each ought to
+    refuse outright rather than pick a meaning API callers did not ask
+    for.
     """
     accepted, text = config_accepted(ctx, "pack zstd zstd;")
     check(not accepted, f"a codec named twice was accepted:\n{text}")

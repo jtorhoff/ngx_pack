@@ -164,8 +164,8 @@ ngx_http_pack_merge_conf(
         conf->always_slot = prev->always_slot;
     }
 
-    /* Never written anywhere in the chain up to here: off, matching
-       pack_zstd's and pack_brotli's own prior default. */
+    /* Never written anywhere in the chain up to here: off, as gzip
+       itself defaults to no compression. */
     if (conf->codecs[0] == NGX_CONF_UNSET) {
         conf->codecs[0]   = NGX_HTTP_PACK_CONF_NONE;
         conf->codecs[1]   = NGX_HTTP_PACK_CONF_NONE;
