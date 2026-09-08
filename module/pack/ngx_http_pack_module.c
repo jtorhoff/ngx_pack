@@ -29,6 +29,12 @@ typedef struct {
 
     /* Which slot is "=always", or -1 for neither. */
     ngx_int_t always_slot;
+
+    /* pack_types: MIME types eligible for either codec. One list
+       rather than one per filter - a response either is or is not
+       worth compressing, regardless of which codec would do it. */
+    ngx_hash_t   types;
+    ngx_array_t *types_keys;
 } conf_t;
 
 
@@ -48,6 +54,15 @@ static ngx_command_t const ngx_http_pack_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         0,
         NULL,
+    },
+    {
+        ngx_string("pack_types"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_1MORE,
+        ngx_http_types_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, types_keys),
+        &ngx_http_html_default_types[0],
     },
     ngx_null_command,
 };
@@ -106,8 +121,13 @@ ngx_http_pack_merge_conf(
     conf_t *prev = parent;
     conf_t *conf = child;
 
+    /* Field-wise, not "*conf = *prev": pack_types can be set here
+       independently of "pack", and a whole-struct copy would discard
+       it whenever "pack" itself was left to inherit. */
     if (conf->codecs[0] == NGX_CONF_UNSET) {
-        *conf = *prev;
+        conf->codecs[0]   = prev->codecs[0];
+        conf->codecs[1]   = prev->codecs[1];
+        conf->always_slot = prev->always_slot;
     }
 
     /* Never written anywhere in the chain up to here: off, matching
@@ -116,6 +136,16 @@ ngx_http_pack_merge_conf(
         conf->codecs[0]   = NGX_HTTP_PACK_CONF_NONE;
         conf->codecs[1]   = NGX_HTTP_PACK_CONF_NONE;
         conf->always_slot = -1;
+    }
+
+    if (ngx_http_merge_types(
+            cf,
+            &conf->types_keys,
+            &conf->types,
+            &prev->types_keys,
+            &prev->types,
+            ngx_http_html_default_types) != NGX_CONF_OK) {
+        return NGX_CONF_ERROR;
     }
 
     return NGX_CONF_OK;
@@ -300,4 +330,15 @@ ngx_http_pack_status(
     }
 
     return status;
+}
+
+
+u_char *
+ngx_http_pack_test_content_type(ngx_http_request_t *const r)
+{
+    conf_t *conf;
+
+    conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_module);
+
+    return ngx_http_test_content_type(r, &conf->types);
 }

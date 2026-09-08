@@ -41,4 +41,9 @@ typedef struct {
 ngx_http_pack_status_t ngx_http_pack_status(
     ngx_http_request_t *r, ngx_http_pack_codec_e codec);
 
+/* Wraps ngx_http_test_content_type against pack_types, so neither
+   filter keeps a MIME hash of its own - one list decides whether a
+   response is worth compressing, before either codec is chosen. */
+u_char *ngx_http_pack_test_content_type(ngx_http_request_t *r);
+
 #endif /* NGX_HTTP_PACK_MODULE_H_INCLUDED_ */

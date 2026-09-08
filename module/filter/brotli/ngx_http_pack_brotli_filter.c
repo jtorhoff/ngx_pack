@@ -111,10 +111,6 @@ enum {
    whether it is "=always", now live in the "pack" directive instead
    of here - see ngx_http_pack_status. */
 typedef struct {
-    /* Supported MIME types. */
-    ngx_hash_t   types;
-    ngx_array_t *types_keys;
-
     /* Minimal required length for compression (if known). */
     ssize_t min_length;
 
@@ -251,16 +247,6 @@ static ngx_conf_post_handler_pt ngx_http_pack_brotli_parse_window_p =
     ngx_http_pack_brotli_parse_window;
 
 static ngx_command_t ngx_http_pack_brotli_commands[] = {
-    {
-        ngx_string("pack_brotli_types"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_CONF_1MORE,
-        ngx_http_types_slot,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(conf_t, types_keys),
-        &ngx_http_html_default_types[0],
-    },
-
     {
         ngx_string("pack_brotli_level"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -458,7 +444,7 @@ ngx_http_pack_brotli_preflight(ngx_http_request_t *const r)
     }
 
     /* Compress only certain MIME-typed responses. */
-    if (ngx_http_test_content_type(r, &conf->types) == NULL) {
+    if (ngx_http_pack_test_content_type(r) == NULL) {
         return NGX_DECLINED;
     }
 
@@ -900,10 +886,6 @@ ngx_http_pack_brotli_create_conf(ngx_conf_t *const cf)
         return NULL;
     }
 
-    /* ngx_pcalloc fills the result with zeros ->
-         conf->types = { NULL };
-         conf->types_keys = NULL; */
-
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
     conf->min_length  = NGX_CONF_UNSET;
@@ -919,7 +901,6 @@ ngx_http_pack_brotli_merge_conf(
 {
     conf_t *prev = parent;
     conf_t *conf = child;
-    char   *rc;
 
     /* Off, as gzip_proxied is: a response reached through another
        proxy is not this server's to transform by default. */
@@ -951,17 +932,6 @@ ngx_http_pack_brotli_merge_conf(
         prev->bufs,
         NGX_HTTP_PACK_BROTLI_BUFFER_NUM_DEFAULT,
         NGX_HTTP_PACK_BROTLI_BUFFER_SIZE_DEFAULT);
-
-    rc = ngx_http_merge_types(
-        cf,
-        &conf->types_keys,
-        &conf->types,
-        &prev->types_keys,
-        &prev->types,
-        ngx_http_html_default_types);
-    if (rc != NGX_CONF_OK) {
-        return NGX_CONF_ERROR;
-    }
 
     return NGX_CONF_OK;
 }

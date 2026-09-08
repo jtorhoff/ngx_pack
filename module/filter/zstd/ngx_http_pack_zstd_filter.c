@@ -115,10 +115,6 @@ enum {
    live in the "pack" directive instead of here - see
    ngx_http_pack_status. */
 typedef struct {
-    /* Supported MIME types. */
-    ngx_hash_t   types;
-    ngx_array_t *types_keys;
-
     /* Minimal required length for compression (if known). */
     ssize_t min_length;
 
@@ -281,15 +277,6 @@ static ngx_conf_post_handler_pt const
     ngx_http_pack_zstd_check_hint_p = ngx_http_pack_zstd_check_hint;
 
 static ngx_command_t const ngx_http_pack_zstd_commands[] = {
-    {
-        ngx_string("pack_zstd_types"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_CONF_1MORE,
-        ngx_http_types_slot,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(conf_t, types_keys),
-        &ngx_http_html_default_types[0],
-    },
     {
         ngx_string("pack_zstd_level"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -534,7 +521,7 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
     }
 
     /* Compress only certain MIME-typed responses. */
-    if (ngx_http_test_content_type(r, &conf->types) == NULL) {
+    if (ngx_http_pack_test_content_type(r) == NULL) {
         return (preflight_result) {
             .status = NGX_DECLINED,
         };
@@ -1109,11 +1096,10 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *const cf)
         return NULL;
     }
 
-    /* ngx_pcalloc zeroes types, types_keys and bufs. "bufs" has no
-       NGX_CONF_UNSET of its own: a zero count is what both
-       ngx_conf_set_bufs_slot and ngx_conf_merge_bufs_value read as
-       "not set here", and the slot rejects a configured 0 before it
-       can be confused with one. */
+    /* ngx_pcalloc zeroes bufs. It has no NGX_CONF_UNSET of its own: a
+       zero count is what both ngx_conf_set_bufs_slot and
+       ngx_conf_merge_bufs_value read as "not set here", and the slot
+       rejects a configured 0 before it can be confused with one. */
 
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
@@ -1182,16 +1168,6 @@ ngx_http_pack_zstd_merge_conf(
         conf->min_length,
         prev->min_length,
         NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT);
-
-    if (ngx_http_merge_types(
-            cf,
-            &conf->types_keys,
-            &conf->types,
-            &prev->types_keys,
-            &prev->types,
-            ngx_http_html_default_types) != NGX_CONF_OK) {
-        return NGX_CONF_ERROR;
-    }
 
     return NGX_CONF_OK;
 }

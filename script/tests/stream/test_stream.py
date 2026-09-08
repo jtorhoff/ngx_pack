@@ -604,7 +604,7 @@ def build_fixtures(work: str) -> dict[str, bytes]:
         # too small to be worth compressing, the second comfortably worth it.
         "under_min.html": ("<html><body>" + "x" * 176 + "</body></html>"),
         "over_min.html": ("<html><body>" + "y" * 376 + "</body></html>"),
-        # Not in pack_zstd_types.
+        # Not in pack_types.
         "data.bin": make_text(500, 3),
         # Deliberately close to incompressible, unlike everything above:
         # make_text() draws on a small vocabulary and compresses ~130x, so
@@ -2311,7 +2311,7 @@ def test_corpus_prose(ctx: Context, codec: Codec) -> None:
 
 
 # Not text/*, so it is also what checks that a type reaches the filter
-# through pack_*_types rather than through the always-compressed text/html
+# through pack_types rather than through the always-compressed text/html
 # the text fixtures lean on. feed.pb below covers the same ground in binary.
 @test("real JSON round-trips", needs_decoder=True, needs_corpus=True, codecs=CODECS)
 def test_corpus_json(ctx: Context, codec: Codec) -> None:
@@ -2646,7 +2646,7 @@ def test_mime_filtering(ctx: Context, codec: Codec) -> None:
     _, headers, body = fetch(ctx.port, codec.file("data.bin"), codec.token)
     check(
         "content-encoding" not in headers,
-        f"data.bin is not in {codec.directive}_types but was compressed",
+        "data.bin is not in pack_types but was compressed",
     )
     check(body == ctx.fixtures["data.bin"], "data.bin body was altered")
 
