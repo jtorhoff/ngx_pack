@@ -123,7 +123,7 @@ ngx_http_pack_merge_conf(
 
 
 /* Parses one token into a codec id, and reports whether it carried
-   "=always" - splitting "brotli=always" is this function's job so
+   "=always" - splitting "br=always" is this function's job so
    ngx_http_pack_set only ever compares whole names. */
 static ngx_int_t
 ngx_http_pack_parse_token(
@@ -162,8 +162,8 @@ ngx_http_pack_parse_token(
         return NGX_HTTP_PACK_CONF_ZSTD;
     }
 
-    if (token.len == sizeof("brotli") - 1 &&
-        ngx_strncmp(token.data, "brotli", token.len) == 0) {
+    if (token.len == sizeof("br") - 1 &&
+        ngx_strncmp(token.data, "br", token.len) == 0) {
         return NGX_HTTP_PACK_CONF_BROTLI;
     }
 
@@ -171,7 +171,7 @@ ngx_http_pack_parse_token(
         NGX_LOG_EMERG,
         cf,
         0,
-        "unknown codec \"%V\", expected \"zstd\" or \"brotli\"",
+        "unknown codec \"%V\", expected \"zstd\" or \"br\"",
         &token);
     return NGX_ERROR;
 }

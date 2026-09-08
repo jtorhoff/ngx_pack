@@ -2757,8 +2757,8 @@ PRECEDENCE_CASES = [
 ]
 
 
-# Against /always/ rather than /all/: "pack zstd brotli=always;" there,
-# not "pack zstd brotli;", so Brotli claims every one of these - None
+# Against /always/ rather than /all/: "pack zstd br=always;" there,
+# not "pack zstd br;", so Brotli claims every one of these - None
 # sends no Accept-Encoding header at all, and the last two rows name
 # "br" with an explicit zero weight, which "=always" does not read as
 # a refusal either. zstd is unchanged, so it still wins whenever a
@@ -2923,7 +2923,7 @@ def test_proxied_gate(ctx: Context, codec: Codec) -> None:
 def test_codec_precedence(ctx: Context) -> None:
     """Which filter takes a response several would accept is settled by
     the physical chain order here, not by the client - /all/ writes
-    "pack zstd brotli;", the same order zstd and Brotli already run
+    "pack zstd br;", the same order zstd and Brotli already run
     in regardless of what "pack" says, so nothing here exercises
     "pack"'s own power to reverse that (test_zstd_precedence_reversed
     does). gzip has no say in "pack" at all; its place below both is
@@ -2953,7 +2953,7 @@ def test_codec_precedence(ctx: Context) -> None:
 
 @test("pack_brotli always yields only to zstd, never to the client", label="all")
 def test_brotli_always_precedence(ctx: Context) -> None:
-    """/always/ is "pack zstd brotli=always;": zstd ranked first still
+    """/always/ is "pack zstd br=always;": zstd ranked first still
     only claims a response a client actually asked for, but Brotli's
     own turn no longer reads Accept-Encoding at all - not even to see
     whether "br" was refused outright.
@@ -2997,7 +2997,7 @@ BROTLI_ALWAYS_IGNORES = [
 
 @test("pack_brotli always ignores Accept-Encoding entirely", label="all")
 def test_brotli_always_ignores_accept_encoding(ctx: Context) -> None:
-    """/brotli-always/ is "pack brotli=always;" - zstd not named at
+    """/brotli-always/ is "pack br=always;" - zstd not named at
     all, gzip at its default off - so Brotli's own "always" claim is
     the only thing that can put a Content-Encoding on this response,
     proving the directive on its own terms rather than mixed with the
@@ -3069,10 +3069,10 @@ BROTLI_ZSTD_PLAIN_CASES = [
 ]
 
 
-@test("pack brotli zstd prefers Brotli with no floor under either", label="all")
+@test("pack br zstd prefers Brotli with no floor under either", label="all")
 def test_brotli_zstd_plain_precedence(ctx: Context) -> None:
-    """/brotli-zstd-plain/ is "pack brotli zstd;" - the plain
-    counterpart to /all/'s "pack zstd brotli;" with the two codecs
+    """/brotli-zstd-plain/ is "pack br zstd;" - the plain
+    counterpart to /all/'s "pack zstd br;" with the two codecs
     swapped and no "=always" anywhere, proving "pack"'s order alone
     already decides preference between two otherwise-ordinary
     negotiated codecs, with no unconditional codec involved at all.
@@ -3110,9 +3110,9 @@ BROTLI_ZSTD_ALWAYS_CASES = [
 ]
 
 
-@test("pack brotli zstd=always reverses the usual precedence", label="all")
+@test("pack br zstd=always reverses the usual precedence", label="all")
 def test_zstd_precedence_reversed(ctx: Context) -> None:
-    """/brotli-zstd-always/ is "pack brotli zstd=always;" - the one
+    """/brotli-zstd-always/ is "pack br zstd=always;" - the one
     location in this suite where the codec named first in "pack" is
     not the one that also runs first in the physical chain.
 
@@ -3157,7 +3157,7 @@ def test_pack_grammar_refused(ctx: Context) -> None:
         f"expected the named-twice refusal, got:\n{text}",
     )
 
-    accepted, text = config_accepted(ctx, "pack zstd=always brotli=always;")
+    accepted, text = config_accepted(ctx, "pack zstd=always br=always;")
     check(not accepted, f"two codecs named \"=always\" was accepted:\n{text}")
     check(
         "only one codec may be" in text,
@@ -3171,7 +3171,7 @@ def test_pack_grammar_refused(ctx: Context) -> None:
         f"expected the unknown-codec refusal, got:\n{text}",
     )
 
-    accepted, text = config_accepted(ctx, "pack zstd brotli zstd;")
+    accepted, text = config_accepted(ctx, "pack zstd br zstd;")
     check(not accepted, f"a third codec was accepted:\n{text}")
     check(
         "at most two codecs" in text,
@@ -3183,7 +3183,7 @@ def test_pack_grammar_refused(ctx: Context) -> None:
     # outright and the second would never be reached to matter. Only
     # the last codec named may carry it - checked with each codec
     # taking that first, wrongly-marked position in turn.
-    for directive in ("pack zstd=always brotli;", "pack brotli=always zstd;"):
+    for directive in ("pack zstd=always br;", "pack br=always zstd;"):
         accepted, text = config_accepted(ctx, directive)
         check(
             not accepted,
@@ -3198,11 +3198,11 @@ def test_pack_grammar_refused(ctx: Context) -> None:
     # with the other "=always", and "off".
     for directive in (
         "pack zstd;",
-        "pack brotli;",
-        "pack zstd brotli;",
-        "pack brotli zstd;",
-        "pack zstd brotli=always;",
-        "pack brotli zstd=always;",
+        "pack br;",
+        "pack zstd br;",
+        "pack br zstd;",
+        "pack zstd br=always;",
+        "pack br zstd=always;",
         "pack off;",
     ):
         accepted, text = config_accepted(ctx, directive)
