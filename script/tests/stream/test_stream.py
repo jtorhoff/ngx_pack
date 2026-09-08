@@ -2757,6 +2757,26 @@ PRECEDENCE_CASES = [
 ]
 
 
+# Against /always/ rather than /all/: pack_brotli is "always" there,
+# not "on", so Brotli claims every one of these - None sends no
+# Accept-Encoding header at all, and the last two rows name "br" with
+# an explicit zero weight, which "always" does not read as a refusal
+# either. zstd is unchanged, so it still wins whenever a client
+# actually names it, ahead of Brotli in the chain the same way /all/
+# is - the only thing that still keeps a request from getting Brotli
+# here.
+ALWAYS_PRECEDENCE_CASES = [
+    (None, "br"),
+    ("gzip", "br"),
+    ("zstd", "zstd"),
+    ("gzip, zstd", "zstd"),
+    ("zstd;q=0", "br"),
+    ("zstd;q=0, gzip", "br"),
+    ("br;q=0", "br"),
+    ("zstd;q=0, br;q=0", "br"),
+]
+
+
 # What the upstream sends as Cache-Control, and whether the response
 # may then be compressed. "+" becomes ", " on the way out.
 NO_TRANSFORM_CASES = [
@@ -2927,6 +2947,73 @@ def test_codec_precedence(ctx: Context) -> None:
             f"{headers.get('content-encoding')!r}, not {expected!r}; "
             f"the filters have changed places in the chain, or one of "
             f"them is not enabled at /all/",
+        )
+
+
+@test("pack_brotli always yields only to zstd, never to the client", label="all")
+def test_brotli_always_precedence(ctx: Context) -> None:
+    """/always/ carries the same "pack_zstd on" as /all/ but "pack_brotli
+    always" in place of "pack_brotli on": zstd still runs first in the
+    chain and still only claims a response a client actually asked
+    for, but Brotli's own turn no longer reads Accept-Encoding at all -
+    not even to see whether "br" was refused outright.
+
+    So a client is served zstd if it named zstd, Brotli otherwise -
+    whether or not it ever mentioned Brotli, whether or not it named
+    gzip instead (also on at this location, and would otherwise have
+    taken an unclaimed response), and even if it named "br" with an
+    explicit zero weight. The only thing that still keeps a request
+    from getting Brotli here is zstd claiming it first.
+    """
+    for accept, expected in ALWAYS_PRECEDENCE_CASES:
+        _, headers, _ = fetch(ctx.port, "/always/small.html", accept)
+        check(
+            headers.get("content-encoding") == expected,
+            f"Accept-Encoding: {accept!r} was answered with "
+            f"{headers.get('content-encoding')!r}, not {expected!r}",
+        )
+
+
+# No header at all, an empty one, tokens naming only other encodings,
+# a bare wildcard (check_encoding reads Accept-Encoding for the
+# literal substring "br", so "*" is never a match for it either), a
+# token list weighted toward other encodings, and - the case that
+# actually distinguishes "always" from merely tolerating silence -
+# "br" named with an explicit zero weight. Every one of these still
+# gets Brotli.
+BROTLI_ALWAYS_IGNORES = [
+    None,
+    "",
+    "identity",
+    "deflate",
+    "gzip, deflate",
+    "*",
+    "unknown-token-xyz",
+    "gzip;q=1.0, deflate;q=0.5",
+    "br;q=0",
+    "zstd;q=0.9, br;q=0",
+]
+
+
+@test("pack_brotli always ignores Accept-Encoding entirely", label="all")
+def test_brotli_always_ignores_accept_encoding(ctx: Context) -> None:
+    """/brotli-always/ turns pack_zstd off and leaves gzip at its
+    default off, so Brotli's own "always" claim is the only thing
+    that can put a Content-Encoding on this response - proving the
+    directive on its own terms, not mixed with the codec-precedence
+    question test_brotli_always_precedence answers at /always/.
+
+    Every case in BROTLI_ALWAYS_IGNORES gets Brotli, including an
+    outright "br;q=0": "always" was asked to mean Brotli unconditionally,
+    not merely Brotli when the client stays quiet about it, so an
+    explicit refusal carries no more weight than silence does.
+    """
+    for accept in BROTLI_ALWAYS_IGNORES:
+        _, headers, _ = fetch(ctx.port, "/brotli-always/small.html", accept)
+        check(
+            headers.get("content-encoding") == "br",
+            f"Accept-Encoding: {accept!r} was answered with "
+            f"{headers.get('content-encoding')!r}, not 'br'",
         )
 
 

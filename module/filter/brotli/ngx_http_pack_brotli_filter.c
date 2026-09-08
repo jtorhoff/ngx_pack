@@ -29,14 +29,14 @@ static ngx_str_t const ENCODING = ngx_string("br");
    case this exists to learn. */
 #define NGX_HTTP_PACK_BROTLI_HELD_INPUT (32 * 1024)
 
-/* pack_brotli. "always" claims a response even when the client's
-   Accept-Encoding never named "br" - silence, not refusal, is what it
-   overrides: an explicit "br;q=0" is still honored, since that is the
-   client saying what it means. See
-   ngx_http_pack_claim_request_always in the shared header for exactly
-   where that line is drawn. Modelled on gzip_static's own third
-   state, which is the same override for the sibling static-file
-   case. */
+/* pack_brotli. "always" claims every eligible response outright,
+   Accept-Encoding unread - not even an explicit "br;q=0" is a reason
+   to decline, since an operator reaching for "always" wants Brotli as
+   the unconditional floor, not a stronger negotiation. See
+   ngx_http_pack_claim_request_always in the shared header. Modelled
+   on gzip_static's own third state, though that one stops short of
+   overriding an explicit refusal - this goes further, deliberately.
+ */
 enum {
     NGX_HTTP_PACK_BROTLI_OFF = 0,
     NGX_HTTP_PACK_BROTLI_ON,
@@ -522,12 +522,12 @@ ngx_http_pack_brotli_header_filter(ngx_http_request_t *const r)
         return ngx_http_next_header_filter(r);
     }
 
-    /* Before the Accept-Encoding test, not after: the response varies
-       whether or not this particular client is served Brotli, and a
-       cache that only heard about it from the clients that were is no
-       use. True under "always" too - a client that explicitly refused
-       ("br;q=0") still does not get Brotli, so the response still
-       depends on what this header said. */
+    /* Before the Accept-Encoding test, not after: this filter's own
+       decision no longer depends on Accept-Encoding under "always",
+       but it cannot know whether zstd or another codec at the same
+       location still does - and a cache that heard about this
+       response only from a zstd client is no use to one that only
+       speaks Brotli. */
     if (ngx_http_pack_set_vary(r) != NGX_OK) {
         return NGX_ERROR;
     }
@@ -536,7 +536,7 @@ ngx_http_pack_brotli_header_filter(ngx_http_request_t *const r)
         r, ngx_http_pack_brotli_module);
 
     claimed = conf->enable == NGX_HTTP_PACK_BROTLI_ALWAYS
-                  ? ngx_http_pack_claim_request_always(r, &ENCODING)
+                  ? ngx_http_pack_claim_request_always(r)
                   : ngx_http_pack_claim_request(r, &ENCODING);
     if (claimed != NGX_OK) {
         return ngx_http_next_header_filter(r);
