@@ -248,6 +248,21 @@ ngx_http_pack_set(
         pcf->codecs[n] = codec;
     }
 
+    /* "=always" on the first of two codecs would make the second one
+       dead weight: the first would claim every eligible response
+       outright and the ranking that names a second codec at all
+       would never be consulted. Only the last codec named - the one
+       actually reached when an earlier one declines - may carry it.
+     */
+    if (n == 2 && always_slot == 0) {
+        ngx_conf_log_error(
+            NGX_LOG_EMERG,
+            cf,
+            0,
+            "\"=always\" is only legal on the last codec named");
+        return NGX_CONF_ERROR;
+    }
+
     if (n == 1) {
         pcf->codecs[1] = NGX_HTTP_PACK_CONF_NONE;
     }
