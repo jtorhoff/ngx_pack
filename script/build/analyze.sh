@@ -4,7 +4,7 @@
 # reports anything.
 #
 # Not scan-build over the whole nginx build, deliberately. That analyses
-# nginx's ~150 files as well as these five, and nginx's own findings would
+# nginx's ~150 files as well as these six, and nginx's own findings would
 # either drown ours or have to be filtered out of a report by path - and a
 # filter that silently stops matching is how a job like this rots into
 # always-green. Analysing only the files this repository owns means every
@@ -58,6 +58,7 @@ fi
 # The sources this repository owns. The headers are analysed with them,
 # being included; deps/ is vendored and is not ours to answer for.
 SOURCES=(
+	"$ROOT"/module/pack/ngx_http_pack_module.c
 	"$ROOT"/module/filter/zstd/ngx_http_pack_zstd_filter.c
 	"$ROOT"/module/filter/zstd/ngx_http_pack_zstd_encoder.c
 	"$ROOT"/module/filter/brotli/ngx_http_pack_brotli_filter.c

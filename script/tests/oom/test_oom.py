@@ -16,7 +16,7 @@ option, and neither is retracting the header.
 
 What must hold is everything around that:
 
-  * the worker survives - a location with pack_zstd off keeps serving,
+  * the worker survives - a location with pack off keeps serving,
   * the reason is logged at alert level, naming this module,
   * nothing is leaked, whether the refusal came before the context
     existed or after.
@@ -129,7 +129,7 @@ def assert_worker_healthy(nginx: T.Nginx) -> None:
     body = raw_get("/plain/a.html")
     check(
         b"200" in body.split(b"\r\n", 1)[0],
-        f"a location with pack_zstd off did not answer after a refused "
+        f"a location with pack off did not answer after a refused "
         f"allocation: {body[:80]!r}",
     )
 

@@ -140,12 +140,13 @@ LLVM_PROFILE_FILE="$COV/header_status-%p.profraw" \
 "$LLVM_PROFDATA" merge -sparse "$COV"/*.profraw -o "$COV/merged.profdata"
 
 # --with-cc-opt applies to every file nginx compiles, so its own ~150
-# carry mapping data too; naming just the five this repository owns
+# carry mapping data too; naming just the six this repository owns
 # is what keeps the report to what it is actually about, the same
 # philosophy script/build/analyze.sh uses for the static analyser.
 echo
 echo "### coverage - module sources only"
 "$LLVM_COV" report "$NGINX_BIN" -instr-profile="$COV/merged.profdata" \
+	"$ROOT/module/pack/ngx_http_pack_module.c" \
 	"$ROOT/module/filter/zstd/ngx_http_pack_zstd_filter.c" \
 	"$ROOT/module/filter/zstd/ngx_http_pack_zstd_encoder.c" \
 	"$ROOT/module/filter/brotli/ngx_http_pack_brotli_filter.c" \

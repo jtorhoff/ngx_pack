@@ -479,7 +479,7 @@ jobs:
           CC: clang
         run: script/build/build.sh
 
-      # Analyses only the five files this repository owns. Findings in
+      # Analyses only the six files this repository owns. Findings in
       # nginx or in deps/ are not ours to answer for, and filtering them
       # out of a whole-build report by path is how a job like this rots
       # into always-green. See the script.
@@ -621,5 +621,6 @@ jobs:
           clang-format --version
           # deps/ is vendored and formats to its own conventions.
           clang-format --dry-run --Werror \
-            module/common/*.h module/filter/*/*.c module/static/*.c \
-            script/fuzz/*.c
+            module/common/*.h module/pack/*.c module/pack/*.h \
+            module/filter/*/*.c module/filter/*/*.h \
+            module/static/*.c script/fuzz/*.c

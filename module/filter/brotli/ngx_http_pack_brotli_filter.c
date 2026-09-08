@@ -11,6 +11,7 @@
 
 #include "../../common/ngx_http_pack_headers.h"
 #include "../../common/ngx_http_pack_helpers.h"
+#include "../../pack/ngx_http_pack_module.h"
 #include "ngx_http_pack_brotli_encoder.h"
 #include "ngx_http_pack_brotli_filter.h"
 
@@ -29,16 +30,6 @@ static ngx_str_t const ENCODING = ngx_string("br");
    ever delays a response whose length is still unknown - which is the
    case this exists to learn. */
 #define NGX_HTTP_PACK_BROTLI_HELD_INPUT (32 * 1024)
-
-/* pack_brotli. "always" claims every eligible response outright,
-   Accept-Encoding unread - not even an explicit "br;q=0" declines it,
-   since an operator reaching for "always" wants Brotli as the
-   unconditional floor, not a stronger negotiation. */
-enum {
-    NGX_HTTP_PACK_BROTLI_OFF = 0,
-    NGX_HTTP_PACK_BROTLI_ON,
-    NGX_HTTP_PACK_BROTLI_ALWAYS,
-};
 
 /* pack_brotli_proxied. Matches gzip_proxied's default of "off": a
    request carrying "Via" reached us through another proxy, and
@@ -116,12 +107,10 @@ enum {
 #endif
 
 
-/* Module configuration. */
+/* Module configuration. Whether Brotli is enabled at all, and
+   whether it is "=always", now live in the "pack" directive instead
+   of here - see ngx_http_pack_status. */
 typedef struct {
-    /* pack_brotli: off, on, or always - one of the
-       NGX_HTTP_PACK_BROTLI_* constants above. */
-    ngx_uint_t enable;
-
     /* Supported MIME types. */
     ngx_hash_t   types;
     ngx_array_t *types_keys;
@@ -237,25 +226,6 @@ static char *ngx_http_pack_brotli_set_buffers(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
-static ngx_conf_enum_t const ngx_http_pack_brotli_enable[] = {
-    {
-        .name  = ngx_string("off"),
-        .value = NGX_HTTP_PACK_BROTLI_OFF,
-    },
-    {
-        .name  = ngx_string("on"),
-        .value = NGX_HTTP_PACK_BROTLI_ON,
-    },
-    {
-        .name  = ngx_string("always"),
-        .value = NGX_HTTP_PACK_BROTLI_ALWAYS,
-    },
-    {
-        .name  = ngx_null_string,
-        .value = 0,
-    },
-};
-
 static ngx_conf_enum_t const ngx_http_pack_brotli_proxied[] = {
     {
         .name  = ngx_string("off"),
@@ -281,16 +251,6 @@ static ngx_conf_post_handler_pt ngx_http_pack_brotli_parse_window_p =
     ngx_http_pack_brotli_parse_window;
 
 static ngx_command_t ngx_http_pack_brotli_commands[] = {
-    {
-        ngx_string("pack_brotli"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_HTTP_LIF_CONF | NGX_CONF_TAKE1,
-        ngx_conf_set_enum_slot,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(conf_t, enable),
-        (void *) &ngx_http_pack_brotli_enable,
-    },
-
     {
         ngx_string("pack_brotli_types"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -450,7 +410,7 @@ ngx_http_pack_brotli_preflight(ngx_http_request_t *const r)
     conf = ngx_http_get_module_loc_conf(
         r, ngx_http_pack_brotli_module);
 
-    if (conf->enable == NGX_HTTP_PACK_BROTLI_OFF) {
+    if (!ngx_http_pack_status(r, NGX_HTTP_PACK_BROTLI).listed) {
         return NGX_DECLINED;
     }
 
@@ -511,7 +471,6 @@ ngx_http_pack_brotli_preflight(ngx_http_request_t *const r)
 static ngx_int_t
 ngx_http_pack_brotli_header_filter(ngx_http_request_t *const r)
 {
-    conf_t   *conf;
     ctx_t    *ctx;
     ngx_int_t claimed;
 
@@ -521,18 +480,14 @@ ngx_http_pack_brotli_header_filter(ngx_http_request_t *const r)
 
     /* Before the Accept-Encoding test, not after: this filter's own
        decision no longer depends on Accept-Encoding under "always",
-       but it cannot know whether zstd or another codec at the same
-       location still does - and a cache that heard about this
-       response only from a zstd client is no use to one that only
-       speaks Brotli. */
+       but it cannot know whether zstd still does - and a cache that
+       heard about this response only from a zstd client is no use to
+       one that only speaks Brotli. */
     if (ngx_http_pack_set_vary(r) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    conf = ngx_http_get_module_loc_conf(
-        r, ngx_http_pack_brotli_module);
-
-    claimed = conf->enable == NGX_HTTP_PACK_BROTLI_ALWAYS
+    claimed = ngx_http_pack_status(r, NGX_HTTP_PACK_BROTLI).always
                   ? ngx_http_pack_claim_request_always(r)
                   : ngx_http_pack_claim_request(r, &ENCODING);
     if (claimed != NGX_OK) {
@@ -809,7 +764,7 @@ ngx_http_pack_brotli_ensure_encoder(ctx_t *const ctx)
 
     ctx->encoder = ngx_http_pack_brotli_encoder_create(
         ctx->request,
-        &(ngx_http_pack_brotli_encoder_conf_t) {
+        &(ngx_http_pack_brotli_encoder_conf_t){
             .quality        = conf->level,
             .window_bits    = conf->window_bits,
             .nbuffers       = conf->bufs.num,
@@ -919,7 +874,7 @@ ngx_http_pack_brotli_body_filter(
         r->connection->buffered |= MASK_BUFFERED;
     }
 
-    if (ngx_http_pack_brotli_prepare(&(prepare_args) {
+    if (ngx_http_pack_brotli_prepare(&(prepare_args){
             .ctx = ctx,
             .rc  = &rc,
         }) != NGX_HTTP_PACK_BROTLI_OK) {
@@ -949,8 +904,6 @@ ngx_http_pack_brotli_create_conf(ngx_conf_t *const cf)
          conf->types = { NULL };
          conf->types_keys = NULL; */
 
-    conf->enable = NGX_CONF_UNSET_UINT;
-
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
     conf->min_length  = NGX_CONF_UNSET;
@@ -967,9 +920,6 @@ ngx_http_pack_brotli_merge_conf(
     conf_t *prev = parent;
     conf_t *conf = child;
     char   *rc;
-
-    ngx_conf_merge_uint_value(
-        conf->enable, prev->enable, NGX_HTTP_PACK_BROTLI_OFF);
 
     /* Off, as gzip_proxied is: a response reached through another
        proxy is not this server's to transform by default. */
@@ -1017,15 +967,24 @@ ngx_http_pack_brotli_merge_conf(
 }
 
 
+/* A pure read: no Vary, no ctx, no commitment - zstd calls this to
+   decide whether to defer, and the real answer still comes from this
+   file's own header filter once zstd has (or has not). */
 ngx_flag_t
-ngx_http_pack_brotli_is_always(ngx_conf_t *const cf)
+ngx_http_pack_brotli_would_claim(ngx_http_request_t *const r)
 {
-    conf_t *conf;
+    ngx_http_pack_status_t status;
 
-    conf = ngx_http_conf_get_module_loc_conf(
-        cf, ngx_http_pack_brotli_module);
+    if (ngx_http_pack_brotli_preflight(r) != NGX_OK) {
+        return 0;
+    }
 
-    return conf->enable == NGX_HTTP_PACK_BROTLI_ALWAYS;
+    status = ngx_http_pack_status(r, NGX_HTTP_PACK_BROTLI);
+
+    return (status.always
+                ? ngx_http_pack_claim_request_always(r)
+                : ngx_http_pack_claim_request(r, &ENCODING)) ==
+           NGX_OK;
 }
 
 

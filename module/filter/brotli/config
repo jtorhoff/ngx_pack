@@ -65,18 +65,23 @@ PACK_COMMON_DIR="$PACK_ROOT_DIR/module/common"
 PACK_COMMON_H="$PACK_COMMON_DIR/ngx_http_pack_headers.h"
 PACK_HELPERS_H="$PACK_COMMON_DIR/ngx_http_pack_helpers.h"
 
+# The "pack" directive itself: what decides whether this filter is
+# listed at all, its rank, and whether it is "=always" - see
+# ngx_http_pack_module.h.
+PACK_MODULE_H="$PACK_ROOT_DIR/module/pack/ngx_http_pack_module.h"
+
 # The encoder is a translation unit of its own so that the filter
 # cannot see inside it: the header declares an incomplete type, and
 # only ngx_http_pack_brotli_encoder.c knows what it holds.
 PACK_ENCODER_H="$PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_encoder.h"
 
-# The one thing pack_zstd's own config needs from this module: see
+# The one thing zstd's own filter needs from this module: see
 # ngx_http_pack_brotli_filter.h for why.
 PACK_FILTER_H="$PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_filter.h"
 
 ngx_module_incs="$PACK_BROTLI_DIR/include"
 ngx_module_deps="$BROTLI_ENC_H $PACK_COMMON_H $PACK_HELPERS_H \
-$PACK_ENCODER_H $PACK_FILTER_H"
+$PACK_MODULE_H $PACK_ENCODER_H $PACK_FILTER_H"
 ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_filter.c \
                  $PACK_MODULE_SRC_DIR/ngx_http_pack_brotli_encoder.c"
 # The archives by full path rather than -L plus -l. nginx puts

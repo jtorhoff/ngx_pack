@@ -1,0 +1,26 @@
+#!/bin/sh
+# shellcheck disable=SC1091,SC2034,SC2154
+
+# Copyright (C) Igor Sysoev
+# Copyright (C) Nginx, Inc.
+# Copyright (C) Google Inc.
+# Copyright (C) 2026 Juri Torhoff
+
+if [ "$ngx_addon_name" = "ngx_pack" ]; then
+	PACK_MODULE_SRC_DIR="$ngx_addon_dir/module/pack"
+else
+	PACK_MODULE_SRC_DIR="$ngx_addon_dir"
+fi
+
+ngx_addon_name=ngx_pack_module
+ngx_module_type=HTTP
+ngx_module_incs=
+ngx_module_name=ngx_http_pack_module
+ngx_module_deps="$PACK_MODULE_SRC_DIR/ngx_http_pack_module.h"
+ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_module.c"
+ngx_module_libs=
+ngx_module_order=
+
+. auto/module
+
+have=NGX_HTTP_PACK_MODULE_DIRECTIVE . auto/have

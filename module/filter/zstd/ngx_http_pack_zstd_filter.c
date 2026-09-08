@@ -11,15 +11,9 @@
 
 #include "../../common/ngx_http_pack_headers.h"
 #include "../../common/ngx_http_pack_helpers.h"
-#include "ngx_http_pack_zstd_encoder.h"
-
-/* Only when the Brotli filter is actually compiled in - the two are
-   addable independently, and this module must still build and link
-   on its own without it. Guards every use below too, not just this
-   include. */
-#if (NGX_HTTP_PACK_BROTLI_FILTER_MODULE)
+#include "../../pack/ngx_http_pack_module.h"
 #include "../brotli/ngx_http_pack_brotli_filter.h"
-#endif
+#include "ngx_http_pack_zstd_encoder.h"
 
 
 static ngx_str_t const ENCODING = ngx_string("zstd");
@@ -55,16 +49,6 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    hand - the exception is a flush marker arriving first, which
    compresses whatever the size. See merge_conf for why 256. */
 #define NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT 256
-
-/* pack_zstd. "always" claims every eligible response outright,
-   Accept-Encoding unread - not even an explicit "zstd;q=0" declines
-   it, since an operator reaching for "always" wants zstd as the
-   unconditional floor, not a stronger negotiation. */
-enum {
-    NGX_HTTP_PACK_ZSTD_OFF = 0,
-    NGX_HTTP_PACK_ZSTD_ON,
-    NGX_HTTP_PACK_ZSTD_ALWAYS,
-};
 
 /* pack_zstd_proxied. Matches gzip_proxied's default of "off": a
    request carrying "Via" reached us through another proxy, and
@@ -127,11 +111,10 @@ enum {
 #endif
 
 
+/* Whether zstd is enabled at all, and whether it is "=always", now
+   live in the "pack" directive instead of here - see
+   ngx_http_pack_status. */
 typedef struct {
-    /* pack_zstd: off, on, or always - one of the NGX_HTTP_PACK_ZSTD_*
-       constants above. */
-    ngx_uint_t enable;
-
     /* Supported MIME types. */
     ngx_hash_t   types;
     ngx_array_t *types_keys;
@@ -275,25 +258,6 @@ static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
     NGX_HTTP_PACK_ZSTD_LEVEL_MAX,
 };
 
-static ngx_conf_enum_t const ngx_http_pack_zstd_enable[] = {
-    {
-        .name  = ngx_string("off"),
-        .value = NGX_HTTP_PACK_ZSTD_OFF,
-    },
-    {
-        .name  = ngx_string("on"),
-        .value = NGX_HTTP_PACK_ZSTD_ON,
-    },
-    {
-        .name  = ngx_string("always"),
-        .value = NGX_HTTP_PACK_ZSTD_ALWAYS,
-    },
-    {
-        .name  = ngx_null_string,
-        .value = 0,
-    },
-};
-
 static ngx_conf_enum_t const ngx_http_pack_zstd_proxied[] = {
     {
         .name  = ngx_string("off"),
@@ -317,15 +281,6 @@ static ngx_conf_post_handler_pt const
     ngx_http_pack_zstd_check_hint_p = ngx_http_pack_zstd_check_hint;
 
 static ngx_command_t const ngx_http_pack_zstd_commands[] = {
-    {
-        ngx_string("pack_zstd"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_HTTP_LIF_CONF | NGX_CONF_TAKE1,
-        ngx_conf_set_enum_slot,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(conf_t, enable),
-        (void *) &ngx_http_pack_zstd_enable,
-    },
     {
         ngx_string("pack_zstd_types"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -516,7 +471,7 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
     conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_zstd_module);
 
     /* Filter only if enabled. */
-    if (conf->enable == NGX_HTTP_PACK_ZSTD_OFF) {
+    if (!ngx_http_pack_status(r, NGX_HTTP_PACK_ZSTD).listed) {
         return (preflight_result) {
             .status = NGX_DECLINED,
         };
@@ -595,29 +550,35 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
 static ngx_int_t
 ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
 {
-    conf_t   *conf;
-    ctx_t    *ctx;
-    ngx_int_t claimed;
+    ctx_t                 *ctx;
+    ngx_int_t              claimed;
+    ngx_http_pack_status_t status;
 
     if (ngx_http_pack_zstd_preflight(r).status != NGX_OK) {
         return ngx_http_next_header_filter(r);
     }
 
-    /* Before the Accept-Encoding test, not after: this filter's own
-       decision no longer depends on Accept-Encoding under "always",
-       but it cannot know whether Brotli or another codec at the same
-       location still does - and a cache that heard about this
-       response only from a Brotli client is no use to one that only
-       speaks zstd. */
+    /* Before the Accept-Encoding test, not after: the response varies
+       whether or not this particular client is served zstd - and,
+       under "pack", whether or not it is served Brotli instead, which
+       this filter's own header never rules out on its own. */
     if (ngx_http_pack_set_vary(r) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_zstd_module);
+    status = ngx_http_pack_status(r, NGX_HTTP_PACK_ZSTD);
 
-    /* Check if client supports zstd encoding, unless pack_zstd always
-       says not to bother asking. */
-    claimed = conf->enable == NGX_HTTP_PACK_ZSTD_ALWAYS
+    /* zstd is the one codec that always runs first in the chain,
+       whatever "pack" says - so it is the one that has to step aside
+       when Brotli is ranked ahead of it here, asking whether Brotli
+       would actually take this response before deciding anything of
+       its own. Brotli needs no equivalent: running second, it already
+       declines whatever zstd has claimed. */
+    if (status.deferred && ngx_http_pack_brotli_would_claim(r)) {
+        return ngx_http_next_header_filter(r);
+    }
+
+    claimed = status.always
                   ? ngx_http_pack_claim_request_always(r)
                   : ngx_http_pack_claim_request(r, &ENCODING);
     if (claimed != NGX_OK) {
@@ -1154,7 +1115,6 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *const cf)
        "not set here", and the slot rejects a configured 0 before it
        can be confused with one. */
 
-    conf->enable      = NGX_CONF_UNSET_UINT;
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
     conf->hint        = NGX_CONF_UNSET_SIZE;
@@ -1173,51 +1133,6 @@ ngx_http_pack_zstd_merge_conf(
 
     prev = parent;
     conf = child;
-
-    ngx_conf_merge_uint_value(
-        conf->enable, prev->enable, NGX_HTTP_PACK_ZSTD_OFF);
-
-    /* Both filters set to "always" for one location is a config
-       mistake: each would unconditionally claim every response, and
-       only zstd - running first in the chain - actually could.
-       Checked here rather than in Brotli's merge_loc_conf because
-       this module's merge always runs after Brotli's, so its
-       "enable" is already settled by the time this reads it. */
-#if (NGX_HTTP_PACK_BROTLI_FILTER_MODULE)
-    if (conf->enable == NGX_HTTP_PACK_ZSTD_ALWAYS &&
-        ngx_http_pack_brotli_is_always(cf)) {
-        ngx_http_core_loc_conf_t *clcf;
-
-        clcf = ngx_http_conf_get_module_loc_conf(
-            cf, ngx_http_core_module);
-
-        /* clcf->name is empty for the block's own directives, i.e.
-           both set directly in a server{} rather than under a nested
-           location{} - "location \"\"" would read as a typo rather
-           than as what it is. */
-        if (clcf->name.len != 0) {
-            ngx_conf_log_error(
-                NGX_LOG_EMERG,
-                cf,
-                0,
-                "\"pack_zstd always\" and \"pack_brotli always\" "
-                "cannot both apply to location \"%V\" - it would be "
-                "ambiguous which one is meant to be the "
-                "unconditional default",
-                &clcf->name);
-        } else {
-            ngx_conf_log_error(
-                NGX_LOG_EMERG,
-                cf,
-                0,
-                "\"pack_zstd always\" and \"pack_brotli always\" "
-                "cannot both apply here - it would be ambiguous "
-                "which one is meant to be the unconditional default");
-        }
-
-        return NGX_CONF_ERROR;
-    }
-#endif
 
     /* Off, as gzip_proxied is: a response reached through another
        proxy is not this server's to transform by default. */

@@ -71,8 +71,16 @@ PACK_HELPERS_H="$PACK_COMMON_DIR/ngx_http_pack_helpers.h"
 # only ngx_http_pack_zstd_encoder.c knows what it holds.
 PACK_ENCODER_H="$PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_encoder.h"
 
+# The "pack" directive itself - see ngx_http_pack_module.h - and the
+# one query this filter makes of Brotli's: whether Brotli would claim
+# a response zstd is ranked behind, needed because zstd is the codec
+# that always runs first in the chain regardless of what "pack" says.
+PACK_MODULE_H="$PACK_ROOT_DIR/module/pack/ngx_http_pack_module.h"
+PACK_BROTLI_FILTER_H="$PACK_ROOT_DIR/module/filter/brotli/ngx_http_pack_brotli_filter.h"
+
 ngx_module_incs="$PACK_ZSTD_DIR/lib"
-ngx_module_deps="$ZSTD_H $PACK_COMMON_H $PACK_HELPERS_H $PACK_ENCODER_H"
+ngx_module_deps="$ZSTD_H $PACK_COMMON_H $PACK_HELPERS_H $PACK_ENCODER_H \
+$PACK_MODULE_H $PACK_BROTLI_FILTER_H"
 ngx_module_srcs="$PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_filter.c \
                  $PACK_MODULE_SRC_DIR/ngx_http_pack_zstd_encoder.c"
 # The archive by full path rather than -L plus -l: nginx puts
