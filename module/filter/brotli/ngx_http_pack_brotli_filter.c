@@ -31,13 +31,9 @@ static ngx_str_t const ENCODING = ngx_string("br");
 #define NGX_HTTP_PACK_BROTLI_HELD_INPUT (32 * 1024)
 
 /* pack_brotli. "always" claims every eligible response outright,
-   Accept-Encoding unread - not even an explicit "br;q=0" is a reason
-   to decline, since an operator reaching for "always" wants Brotli as
-   the unconditional floor, not a stronger negotiation. See
-   ngx_http_pack_claim_request_always in the shared header. Modelled
-   on gzip_static's own third state, though that one stops short of
-   overriding an explicit refusal - this goes further, deliberately.
- */
+   Accept-Encoding unread - not even an explicit "br;q=0" declines it,
+   since an operator reaching for "always" wants Brotli as the
+   unconditional floor, not a stronger negotiation. */
 enum {
     NGX_HTTP_PACK_BROTLI_OFF = 0,
     NGX_HTTP_PACK_BROTLI_ON,

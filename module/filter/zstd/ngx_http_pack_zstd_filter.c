@@ -57,12 +57,9 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 #define NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT 256
 
 /* pack_zstd. "always" claims every eligible response outright,
-   Accept-Encoding unread - not even an explicit "zstd;q=0" is a
-   reason to decline, since an operator reaching for "always" wants
-   zstd as the unconditional floor, not a stronger negotiation. See
-   ngx_http_pack_claim_request_always in the shared header. The
-   brotli filter carries the same third state, for the same reason -
-   see its own copy of this comment. */
+   Accept-Encoding unread - not even an explicit "zstd;q=0" declines
+   it, since an operator reaching for "always" wants zstd as the
+   unconditional floor, not a stronger negotiation. */
 enum {
     NGX_HTTP_PACK_ZSTD_OFF = 0,
     NGX_HTTP_PACK_ZSTD_ON,
@@ -1180,16 +1177,12 @@ ngx_http_pack_zstd_merge_conf(
     ngx_conf_merge_uint_value(
         conf->enable, prev->enable, NGX_HTTP_PACK_ZSTD_OFF);
 
-    /* Both filters set to "always" for the same location is a config
-       mistake, not a real choice: each would then unconditionally
-       claim every eligible response, and only one - zstd, since it
-       runs first in the chain - actually could. Checked here rather
-       than in Brotli's own merge_loc_conf because this module's
-       merge always runs after Brotli's for a given location (both
-       config scripts' filter-chain reordering already leans on that
-       same fixed module order), so Brotli's "enable" is already
-       settled by the time this reads it - reading it any earlier
-       would still see NGX_CONF_UNSET_UINT. */
+    /* Both filters set to "always" for one location is a config
+       mistake: each would unconditionally claim every response, and
+       only zstd - running first in the chain - actually could.
+       Checked here rather than in Brotli's merge_loc_conf because
+       this module's merge always runs after Brotli's, so its
+       "enable" is already settled by the time this reads it. */
 #if (NGX_HTTP_PACK_BROTLI_FILTER_MODULE)
     if (conf->enable == NGX_HTTP_PACK_ZSTD_ALWAYS &&
         ngx_http_pack_brotli_is_always(cf)) {

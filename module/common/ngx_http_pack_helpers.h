@@ -63,13 +63,10 @@ ngx_http_pack_format_size(ngx_pool_t *const pool, size_t const bytes)
     };
 }
 
-/* Whether the response may be re-encoded at all. "no-transform" is
-   the origin saying its payload must reach the client as it left, and
-   compressing it is the transformation that forbids - RFC 9111
-   section 5.2.2.6. Found with nginx's multi-header walk, since the
-   directive may be repeated or sit beside others and "no-transform-x"
-   is not it. NGX_OK when compression is allowed, else NGX_DECLINED.
- */
+/* Whether the response may be re-encoded at all: RFC 9111 5.2.2.6
+   lets an origin demand its payload reach the client unchanged, and
+   compressing it is exactly the transformation that forbids. NGX_OK
+   when compression is allowed, else NGX_DECLINED. */
 static ngx_int_t
 ngx_http_pack_transform_allowed(ngx_http_request_t *const r)
 {
