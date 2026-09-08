@@ -46,4 +46,14 @@ ngx_http_pack_status_t ngx_http_pack_status(
    response is worth compressing, before either codec is chosen. */
 u_char *ngx_http_pack_test_content_type(ngx_http_request_t *r);
 
+/* pack_proxied's parsed value, shared the same way pack_types is: a
+   request that arrived through another proxy is either fair game or
+   it is not, regardless of which codec would otherwise take it. */
+typedef enum {
+    NGX_HTTP_PACK_PROXIED_OFF = 0,
+    NGX_HTTP_PACK_PROXIED_ANY,
+} ngx_http_pack_proxied_e;
+
+ngx_http_pack_proxied_e ngx_http_pack_proxied(ngx_http_request_t *r);
+
 #endif /* NGX_HTTP_PACK_MODULE_H_INCLUDED_ */

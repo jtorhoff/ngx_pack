@@ -1667,7 +1667,7 @@ def test_static_directory_guard(ctx: Context) -> None:
 def test_static_proxied_guard(ctx: Context) -> None:
     """"Via" means another proxy already handled this request - the same
     signal test_proxied_gate checks for the two filters, but pack_static's
-    own accepts() has no pack_*_proxied of its own to relax it with yet, so
+    own accepts() has no pack_proxied of its own to relax it with yet, so
     "on" declines every proxied request outright."""
     via = {"Via": "1.1 upstream-cache"}
     _, headers, _ = fetch(ctx.port, "/static/multi.html", "br", headers=via)
@@ -2914,7 +2914,7 @@ def test_proxied_gate(ctx: Context, codec: Codec) -> None:
     _, headers, _ = fetch(ctx.port, "/proxied-any/small.html", codec.token, headers=via)
     check(
         headers.get("content-encoding") == codec.token,
-        f"{codec.directive}_proxied any still declined a request "
+        f"pack_proxied any still declined a request "
         f"carrying Via, answering {headers.get('content-encoding')!r}",
     )
 

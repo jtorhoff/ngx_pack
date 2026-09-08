@@ -18,6 +18,26 @@ enum {
     NGX_HTTP_PACK_CONF_BROTLI,
 };
 
+/* pack_proxied. Matches gzip_proxied's default of "off": a request
+   carrying "Via" reached us through another proxy, and compressing
+   there is the operator's call, not ours. Only these two of gzip's
+   settings - the rest key off response headers a filter would have
+   to re-read, and "any" covers what they are reached for. */
+static ngx_conf_enum_t const ngx_http_pack_proxied_values[] = {
+    {
+        .name  = ngx_string("off"),
+        .value = NGX_HTTP_PACK_PROXIED_OFF,
+    },
+    {
+        .name  = ngx_string("any"),
+        .value = NGX_HTTP_PACK_PROXIED_ANY,
+    },
+    {
+        .name  = ngx_null_string,
+        .value = 0,
+    },
+};
+
 typedef struct {
     /* codecs[0] outranks codecs[1], left-packed - a real codec never
        sits at [1] while [0] is NGX_HTTP_PACK_CONF_NONE, which is what
@@ -35,6 +55,10 @@ typedef struct {
        worth compressing, regardless of which codec would do it. */
     ngx_hash_t   types;
     ngx_array_t *types_keys;
+
+    /* pack_proxied: whether a request that arrived through another
+       proxy may be compressed, again shared rather than per codec. */
+    ngx_uint_t proxied;
 } conf_t;
 
 
@@ -63,6 +87,15 @@ static ngx_command_t const ngx_http_pack_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, types_keys),
         &ngx_http_html_default_types[0],
+    },
+    {
+        ngx_string("pack_proxied"),
+        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+            NGX_CONF_TAKE1,
+        ngx_conf_set_enum_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(conf_t, proxied),
+        (void *) &ngx_http_pack_proxied_values,
     },
     ngx_null_command,
 };
@@ -109,6 +142,7 @@ ngx_http_pack_create_conf(ngx_conf_t *const cf)
     conf->codecs[0]   = NGX_CONF_UNSET;
     conf->codecs[1]   = NGX_CONF_UNSET;
     conf->always_slot = NGX_CONF_UNSET;
+    conf->proxied     = NGX_CONF_UNSET_UINT;
 
     return conf;
 }
@@ -147,6 +181,11 @@ ngx_http_pack_merge_conf(
             ngx_http_html_default_types) != NGX_CONF_OK) {
         return NGX_CONF_ERROR;
     }
+
+    /* Off, as gzip_proxied is: a response reached through another
+       proxy is not this server's to transform by default. */
+    ngx_conf_merge_uint_value(
+        conf->proxied, prev->proxied, NGX_HTTP_PACK_PROXIED_OFF);
 
     return NGX_CONF_OK;
 }
@@ -341,4 +380,15 @@ ngx_http_pack_test_content_type(ngx_http_request_t *const r)
     conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_module);
 
     return ngx_http_test_content_type(r, &conf->types);
+}
+
+
+ngx_http_pack_proxied_e
+ngx_http_pack_proxied(ngx_http_request_t *const r)
+{
+    conf_t *conf;
+
+    conf = ngx_http_get_module_loc_conf(r, ngx_http_pack_module);
+
+    return (ngx_http_pack_proxied_e) conf->proxied;
 }

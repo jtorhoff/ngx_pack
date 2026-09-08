@@ -50,17 +50,6 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    compresses whatever the size. See merge_conf for why 256. */
 #define NGX_HTTP_PACK_ZSTD_MIN_LENGTH_DEFAULT 256
 
-/* pack_zstd_proxied. Matches gzip_proxied's default of "off": a
-   request carrying "Via" reached us through another proxy, and
-   compressing there is the operator's call, not ours. Only these two
-   of gzip's settings - the rest key off response headers this filter
-   would have to re-read, and "any" covers what they are reached for.
- */
-enum {
-    NGX_HTTP_PACK_ZSTD_PROXIED_OFF = 0,
-    NGX_HTTP_PACK_ZSTD_PROXIED_ANY,
-};
-
 /* The ceiling is memory - encoder memory scales
    with the window, paid per request in flight. */
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 14
@@ -134,10 +123,6 @@ typedef struct {
        the encoder's own ngx_http_pack_zstd_encoder_conf_t, which this
        is copied into. */
     size_t hint;
-
-    /* pack_zstd_proxied: whether a request that arrived through
-       another proxy may be compressed. */
-    ngx_uint_t proxied;
 } conf_t;
 
 /* What the body filter should do once ngx_http_pack_zstd_prepare
@@ -254,21 +239,6 @@ static ngx_conf_num_bounds_t const ngx_http_pack_zstd_levels = {
     NGX_HTTP_PACK_ZSTD_LEVEL_MAX,
 };
 
-static ngx_conf_enum_t const ngx_http_pack_zstd_proxied[] = {
-    {
-        .name  = ngx_string("off"),
-        .value = NGX_HTTP_PACK_ZSTD_PROXIED_OFF,
-    },
-    {
-        .name  = ngx_string("any"),
-        .value = NGX_HTTP_PACK_ZSTD_PROXIED_ANY,
-    },
-    {
-        .name  = ngx_null_string,
-        .value = 0,
-    },
-};
-
 static ngx_conf_post_handler_pt const
     ngx_http_pack_zstd_parse_window_p =
         ngx_http_pack_zstd_parse_window;
@@ -321,16 +291,6 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, min_length),
         NULL,
-    },
-
-    {
-        ngx_string("pack_zstd_proxied"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_CONF_TAKE1,
-        ngx_conf_set_enum_slot,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(conf_t, proxied),
-        (void *) &ngx_http_pack_zstd_proxied,
     },
     ngx_null_command,
 };
@@ -490,7 +450,7 @@ ngx_http_pack_zstd_preflight(ngx_http_request_t *const r)
        moving from gzip should not silently start compressing what
        they were passing through. */
     if (r->headers_in.via != NULL &&
-        conf->proxied == NGX_HTTP_PACK_ZSTD_PROXIED_OFF) {
+        ngx_http_pack_proxied(r) == NGX_HTTP_PACK_PROXIED_OFF) {
         return (preflight_result) {
             .status = NGX_DECLINED,
         };
@@ -1105,7 +1065,6 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *const cf)
     conf->window_bits = NGX_CONF_UNSET_SIZE;
     conf->hint        = NGX_CONF_UNSET_SIZE;
     conf->min_length  = NGX_CONF_UNSET;
-    conf->proxied     = NGX_CONF_UNSET_UINT;
 
     return conf;
 }
@@ -1119,11 +1078,6 @@ ngx_http_pack_zstd_merge_conf(
 
     prev = parent;
     conf = child;
-
-    /* Off, as gzip_proxied is: a response reached through another
-       proxy is not this server's to transform by default. */
-    ngx_conf_merge_uint_value(
-        conf->proxied, prev->proxied, NGX_HTTP_PACK_ZSTD_PROXIED_OFF);
 
     /* Not zstd's own default, which is 3 (ZSTD_CLEVEL_DEFAULT):
        chosen rather than kept, see the constant.
