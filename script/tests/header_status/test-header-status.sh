@@ -6,7 +6,7 @@
 #
 # The fault filter returns an HTTP status from its header filter, which
 # no stock nginx module does on a response of unknown length - so
-# without it, ngx_http_zstd_filter_prepare's "header_rc > NGX_OK"
+# without it, ngx_http_pack_zstd_prepare's "header_rc > NGX_OK"
 # branch cannot be reached, and cannot be tested.
 #
 # Required:

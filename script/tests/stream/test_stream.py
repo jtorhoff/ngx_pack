@@ -493,7 +493,7 @@ STATUS_BODY = ("<html><body>" + "status guard body " * 40 + "</body></html>").en
 # Same, for the Vary dedupe cases below.
 VARY_BODY = ("<html><body>" + "vary dedupe body " * 40 + "</body></html>").encode()
 
-# Headers the upstream sends so ngx_http_zstd_check_vary can be reached with
+# Headers the upstream sends so ngx_http_pack_check_vary can be reached with
 # something to compare against. The module adds "Vary: Accept-Encoding" itself,
 # so what each case checks is whether it recognises what is already there.
 #
@@ -4531,7 +4531,7 @@ def test_cleanup_handler_on_abort(ctx: Context, codec: Codec) -> None:
     # The point of this test. The encoder must be released by the pool cleanup
     # handler, which runs inside ngx_destroy_pool - after nginx has logged
     # "http close request". If every free landed before that line, the request
-    # drained through ngx_http_zstd_filter_close instead, and the cleanup
+    # drained through the filter's own close path instead, and the cleanup
     # handler went untested even though the balance check passed.
     check(
         any(entry["frees_after_close"] for entry in active.values()),

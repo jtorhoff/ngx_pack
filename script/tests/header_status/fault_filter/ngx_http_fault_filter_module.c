@@ -8,7 +8,7 @@
    It exists because that behaviour is otherwise unreachable here. A
    header filter below the zstd filter returning a status - rather
    than NGX_OK, NGX_AGAIN or NGX_ERROR - is what
-   ngx_http_zstd_filter_prepare's "header_rc > NGX_OK" branch handles,
+   ngx_http_pack_zstd_prepare's "header_rc > NGX_OK" branch handles,
    and no stock nginx module can produce it on the path that branch
    lives on: ngx_http_image_filter_module is the only one in the tree
    that returns a status from a header filter at all, and it does so
