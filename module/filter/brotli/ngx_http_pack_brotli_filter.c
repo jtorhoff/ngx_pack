@@ -12,6 +12,7 @@
 #include "../../common/ngx_http_pack_headers.h"
 #include "../../common/ngx_http_pack_helpers.h"
 #include "ngx_http_pack_brotli_encoder.h"
+#include "ngx_http_pack_brotli_filter.h"
 
 
 static ngx_str_t const ENCODING = ngx_string("br");
@@ -1017,6 +1018,18 @@ ngx_http_pack_brotli_merge_conf(
     }
 
     return NGX_CONF_OK;
+}
+
+
+ngx_flag_t
+ngx_http_pack_brotli_is_always(ngx_conf_t *const cf)
+{
+    conf_t *conf;
+
+    conf = ngx_http_conf_get_module_loc_conf(
+        cf, ngx_http_pack_brotli_module);
+
+    return conf->enable == NGX_HTTP_PACK_BROTLI_ALWAYS;
 }
 
 

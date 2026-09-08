@@ -3017,6 +3017,137 @@ def test_brotli_always_ignores_accept_encoding(ctx: Context) -> None:
         )
 
 
+# zstd's mirror of BROTLI_ALWAYS_IGNORES: the same shape of cases, the
+# token swapped for "zstd" throughout.
+ZSTD_ALWAYS_IGNORES = [
+    None,
+    "",
+    "identity",
+    "deflate",
+    "gzip, deflate",
+    "*",
+    "unknown-token-xyz",
+    "gzip;q=1.0, deflate;q=0.5",
+    "zstd;q=0",
+    "br;q=0.9, zstd;q=0",
+]
+
+
+@test("pack_zstd always ignores Accept-Encoding entirely", label="all")
+def test_zstd_always_ignores_accept_encoding(ctx: Context) -> None:
+    """zstd's mirror of test_brotli_always_ignores_accept_encoding:
+    /zstd-always/ turns pack_brotli off, so zstd's own "always" claim
+    is the only thing that can put a Content-Encoding on this
+    response.
+
+    Every case in ZSTD_ALWAYS_IGNORES gets zstd, including an
+    outright "zstd;q=0" - the same unconditional floor Brotli's
+    "always" gives, not merely zstd when the client stays quiet about
+    it.
+    """
+    for accept in ZSTD_ALWAYS_IGNORES:
+        _, headers, _ = fetch(ctx.port, "/zstd-always/small.html", accept)
+        check(
+            headers.get("content-encoding") == "zstd",
+            f"Accept-Encoding: {accept!r} was answered with "
+            f"{headers.get('content-encoding')!r}, not 'zstd'",
+        )
+
+
+# Every one of these still answers "zstd", including a client that
+# asked only for "br" and one that explicitly refused zstd outright -
+# see test_zstd_always_shadows_brotli for why.
+ZSTD_ALWAYS_SHADOWS_BROTLI_CASES = [
+    None,
+    "br",
+    "gzip, br",
+    "br;q=1.0",
+    "zstd;q=0",
+    "zstd;q=0, br",
+]
+
+
+@test("pack_zstd always claims a response before Brotli ever sees it", label="all")
+def test_zstd_always_shadows_brotli(ctx: Context) -> None:
+    """/zstd-always-brotli-on/ carries "pack_brotli on" and "pack_zstd
+    always" - the roles /always/ tests are reversed, not just zstd
+    swapped for Brotli.
+
+    /always/ works because zstd runs first in the chain: a client that
+    named zstd gets zstd, and Brotli's "always" only ever gets a turn
+    once zstd has already declined. Put "always" on zstd instead and
+    that ordering stops being incidental and starts being decisive -
+    zstd claims every eligible response before Brotli's header filter
+    is even reached, so a client that asked only for "br" and never
+    mentioned zstd still gets zstd, not the encoding it actually
+    asked for. Brotli being "on" rather than "off" here is the point:
+    it is enabled and would gladly serve that client, and its own
+    accept check is simply never reached to find that out.
+    """
+    for accept in ZSTD_ALWAYS_SHADOWS_BROTLI_CASES:
+        _, headers, _ = fetch(
+            ctx.port, "/zstd-always-brotli-on/small.html", accept
+        )
+        check(
+            headers.get("content-encoding") == "zstd",
+            f"Accept-Encoding: {accept!r} was answered with "
+            f"{headers.get('content-encoding')!r}, not 'zstd'",
+        )
+
+
+@test("pack_zstd always and pack_brotli always refuse to coexist", label="all")
+def test_both_always_refused(ctx: Context) -> None:
+    """Only one of the two can actually be the unconditional default a
+    request always gets - zstd, since it runs first in the chain - so
+    both directives set to "always" for the same scope is a config
+    mistake nginx should refuse outright rather than silently letting
+    the chain order settle it.
+
+    Checked both directly in a server{} block, where the name nginx
+    itself would report is empty, and nested under a location{},
+    where it names that location - see
+    ngx_http_pack_zstd_filter.c's merge_conf for where this actually
+    happens and why it has to be zstd's merge_conf and not Brotli's.
+    """
+    accepted, text = config_accepted(
+        ctx, "pack_zstd always;\n  pack_brotli always;"
+    )
+    check(
+        not accepted,
+        f"both filters set to \"always\" in the same block was accepted:\n{text}",
+    )
+    check(
+        "cannot both apply here" in text,
+        f"expected the server-block wording, got:\n{text}",
+    )
+
+    accepted, text = config_accepted(
+        ctx,
+        "location /both/ { pack_zstd always; pack_brotli always; }",
+    )
+    check(
+        not accepted,
+        f"both filters set to \"always\" in one location was accepted:\n{text}",
+    )
+    check(
+        'cannot both apply to location "/both/"' in text,
+        f"expected the named-location wording, got:\n{text}",
+    )
+
+    # The two directives not agreeing is not an error: only one codec
+    # can be "always" at once, and this module's own precedence
+    # already settles which one wins whenever both are merely "on".
+    accepted, text = config_accepted(
+        ctx, "pack_zstd always;\n  pack_brotli on;"
+    )
+    check(accepted, f"zstd always with brotli on was refused:\n{text}")
+
+    accepted, text = config_accepted(
+        ctx, "pack_brotli always;\n  pack_zstd on;"
+    )
+    check(accepted, f"brotli always with zstd on was refused:\n{text}")
+
+
 @test(
     "a response is compressed correctly over HTTP/2 too",
     needs_decoder=True,
