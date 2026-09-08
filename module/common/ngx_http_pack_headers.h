@@ -97,14 +97,24 @@ ngx_http_pack_is_zero_weighted(
     return 1;
 }
 
-/* Decides whether the client will accept a given "encoding", reading
-   Accept-Encoding as a comma-separated token list. Against RFC 9110
-   the weight is ignored unless it is an explicit zero, which that RFC
-   defines as "not acceptable": "zstd;q=0.1" still matches, "zstd;q=0"
-   does not, and "*" is ignored. NGX_OK on a match, else NGX_DECLINED.
- */
-static ngx_int_t
-ngx_http_pack_check_encoding(
+/* The three ways Accept-Encoding can leave one encoding: named with a
+   non-zero weight, named with an explicit zero weight ("not
+   acceptable" per RFC 9110), or never named at all - which
+   ngx_http_pack_check_encoding folds into a plain accept/reject
+   answer, and the "always" claim below tells apart: silence is not
+   the same as a client that named the encoding to rule it out. */
+typedef enum {
+    NGX_HTTP_PACK_ENCODING_ACCEPTED,
+    NGX_HTTP_PACK_ENCODING_REFUSED,
+    NGX_HTTP_PACK_ENCODING_UNLISTED,
+} encoding_verdict_e;
+
+/* The scan behind both ngx_http_pack_check_encoding and the "always"
+   claim path: reads Accept-Encoding as a comma-separated token list
+   and reports which of the three ways above it leaves "encoding" in.
+   The weight is read only for an explicit zero; "*" is ignored. */
+static encoding_verdict_e
+ngx_http_pack_check_encoding_verdict(
     ngx_http_request_t *const r, ngx_str_t const *const encoding)
 {
     ngx_table_elt_t *entry;
@@ -113,11 +123,14 @@ ngx_http_pack_check_encoding(
     u_char          *cursor;
     u_char           before;
     u_char           after;
+    ngx_uint_t       refused;
 
     entry = r->headers_in.accept_encoding;
     if (entry == NULL) {
-        return NGX_DECLINED;
+        return NGX_HTTP_PACK_ENCODING_UNLISTED;
     }
+
+    refused = 0;
 
     start  = entry->value.data;
     end    = start + entry->value.len;
@@ -162,13 +175,31 @@ ngx_http_pack_check_encoding(
 
         /* A zero weight rejects this token, but not the header: the
            same encoding may be named again further along, so keep
-           searching. */
+           searching - noted here and not decided until the search
+           runs out, since a later occurrence may still accept it. */
         if (!ngx_http_pack_is_zero_weighted(cursor, end)) {
-            return NGX_OK;
+            return NGX_HTTP_PACK_ENCODING_ACCEPTED;
         }
+
+        refused = 1;
     }
 
-    return NGX_DECLINED;
+    return refused ? NGX_HTTP_PACK_ENCODING_REFUSED
+                   : NGX_HTTP_PACK_ENCODING_UNLISTED;
+}
+
+/* Decides whether the client will accept a given "encoding". NGX_OK
+   only for NGX_HTTP_PACK_ENCODING_ACCEPTED, NGX_DECLINED for either
+   of the other two verdicts - the ordinary claim path has no need to
+   tell a refusal from silence. */
+static ngx_int_t
+ngx_http_pack_check_encoding(
+    ngx_http_request_t *const r, ngx_str_t const *const encoding)
+{
+    return ngx_http_pack_check_encoding_verdict(r, encoding) ==
+                   NGX_HTTP_PACK_ENCODING_ACCEPTED
+               ? NGX_OK
+               : NGX_DECLINED;
 }
 
 /* Sets the Content-Encoding header with the given encoding.
@@ -213,6 +244,32 @@ ngx_http_pack_claim_request(
     }
 
     if (ngx_http_pack_check_encoding(r, encoding) != NGX_OK) {
+        return NGX_DECLINED;
+    }
+
+    return NGX_OK;
+}
+
+/* The "always" counterpart to ngx_http_pack_claim_request: a client
+   that never mentioned "encoding" is claimed anyway, on the theory
+   that silence is not refusal - but a client that named it with an
+   explicit zero weight still means what that says, so that case alone
+   still declines. The main-request and HTTP-version guards are
+   unchanged; those are not about what the client will accept. */
+static inline ngx_int_t
+ngx_http_pack_claim_request_always(
+    ngx_http_request_t *const r, ngx_str_t const *const encoding)
+{
+    if (r != r->main) {
+        return NGX_DECLINED;
+    }
+
+    if (r->http_version < NGX_HTTP_VERSION_11) {
+        return NGX_DECLINED;
+    }
+
+    if (ngx_http_pack_check_encoding_verdict(r, encoding) ==
+        NGX_HTTP_PACK_ENCODING_REFUSED) {
         return NGX_DECLINED;
     }
 

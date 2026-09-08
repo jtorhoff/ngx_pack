@@ -29,6 +29,20 @@ static ngx_str_t const ENCODING = ngx_string("br");
    case this exists to learn. */
 #define NGX_HTTP_PACK_BROTLI_HELD_INPUT (32 * 1024)
 
+/* pack_brotli. "always" claims a response even when the client's
+   Accept-Encoding never named "br" - silence, not refusal, is what it
+   overrides: an explicit "br;q=0" is still honored, since that is the
+   client saying what it means. See
+   ngx_http_pack_claim_request_always in the shared header for exactly
+   where that line is drawn. Modelled on gzip_static's own third
+   state, which is the same override for the sibling static-file
+   case. */
+enum {
+    NGX_HTTP_PACK_BROTLI_OFF = 0,
+    NGX_HTTP_PACK_BROTLI_ON,
+    NGX_HTTP_PACK_BROTLI_ALWAYS,
+};
+
 /* pack_brotli_proxied. Matches gzip_proxied's default of "off": a
    request carrying "Via" reached us through another proxy, and
    compressing there is the operator's call, not ours. Only these two
@@ -107,7 +121,9 @@ enum {
 
 /* Module configuration. */
 typedef struct {
-    ngx_flag_t enable;
+    /* pack_brotli: off, on, or always - one of the
+       NGX_HTTP_PACK_BROTLI_* constants above. */
+    ngx_uint_t enable;
 
     /* Supported MIME types. */
     ngx_hash_t   types;
@@ -224,6 +240,25 @@ static char *ngx_http_pack_brotli_set_buffers(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 
+static ngx_conf_enum_t const ngx_http_pack_brotli_enable[] = {
+    {
+        .name  = ngx_string("off"),
+        .value = NGX_HTTP_PACK_BROTLI_OFF,
+    },
+    {
+        .name  = ngx_string("on"),
+        .value = NGX_HTTP_PACK_BROTLI_ON,
+    },
+    {
+        .name  = ngx_string("always"),
+        .value = NGX_HTTP_PACK_BROTLI_ALWAYS,
+    },
+    {
+        .name  = ngx_null_string,
+        .value = 0,
+    },
+};
+
 static ngx_conf_enum_t const ngx_http_pack_brotli_proxied[] = {
     {
         .name  = ngx_string("off"),
@@ -252,11 +287,11 @@ static ngx_command_t ngx_http_pack_brotli_commands[] = {
     {
         ngx_string("pack_brotli"),
         NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_HTTP_LIF_CONF | NGX_CONF_FLAG,
-        ngx_conf_set_flag_slot,
+            NGX_HTTP_LIF_CONF | NGX_CONF_TAKE1,
+        ngx_conf_set_enum_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, enable),
-        NULL,
+        (void *) &ngx_http_pack_brotli_enable,
     },
 
     {
@@ -418,7 +453,7 @@ ngx_http_pack_brotli_preflight(ngx_http_request_t *const r)
     conf = ngx_http_get_module_loc_conf(
         r, ngx_http_pack_brotli_module);
 
-    if (!conf->enable) {
+    if (conf->enable == NGX_HTTP_PACK_BROTLI_OFF) {
         return NGX_DECLINED;
     }
 
@@ -479,7 +514,9 @@ ngx_http_pack_brotli_preflight(ngx_http_request_t *const r)
 static ngx_int_t
 ngx_http_pack_brotli_header_filter(ngx_http_request_t *const r)
 {
-    ctx_t *ctx;
+    conf_t   *conf;
+    ctx_t    *ctx;
+    ngx_int_t claimed;
 
     if (ngx_http_pack_brotli_preflight(r) != NGX_OK) {
         return ngx_http_next_header_filter(r);
@@ -488,12 +525,20 @@ ngx_http_pack_brotli_header_filter(ngx_http_request_t *const r)
     /* Before the Accept-Encoding test, not after: the response varies
        whether or not this particular client is served Brotli, and a
        cache that only heard about it from the clients that were is no
-       use. */
+       use. True under "always" too - a client that explicitly refused
+       ("br;q=0") still does not get Brotli, so the response still
+       depends on what this header said. */
     if (ngx_http_pack_set_vary(r) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    if (ngx_http_pack_claim_request(r, &ENCODING) != NGX_OK) {
+    conf = ngx_http_get_module_loc_conf(
+        r, ngx_http_pack_brotli_module);
+
+    claimed = conf->enable == NGX_HTTP_PACK_BROTLI_ALWAYS
+                  ? ngx_http_pack_claim_request_always(r, &ENCODING)
+                  : ngx_http_pack_claim_request(r, &ENCODING);
+    if (claimed != NGX_OK) {
         return ngx_http_next_header_filter(r);
     }
 
@@ -907,7 +952,7 @@ ngx_http_pack_brotli_create_conf(ngx_conf_t *const cf)
          conf->types = { NULL };
          conf->types_keys = NULL; */
 
-    conf->enable = NGX_CONF_UNSET;
+    conf->enable = NGX_CONF_UNSET_UINT;
 
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
@@ -926,7 +971,8 @@ ngx_http_pack_brotli_merge_conf(
     conf_t *conf = child;
     char   *rc;
 
-    ngx_conf_merge_value(conf->enable, prev->enable, 0);
+    ngx_conf_merge_uint_value(
+        conf->enable, prev->enable, NGX_HTTP_PACK_BROTLI_OFF);
 
     /* Off, as gzip_proxied is: a response reached through another
        proxy is not this server's to transform by default. */
