@@ -764,7 +764,7 @@ ngx_http_pack_brotli_ensure_encoder(ctx_t *const ctx)
 
     ctx->encoder = ngx_http_pack_brotli_encoder_create(
         ctx->request,
-        &(ngx_http_pack_brotli_encoder_conf_t){
+        &(ngx_http_pack_brotli_encoder_conf_t) {
             .quality        = conf->level,
             .window_bits    = conf->window_bits,
             .nbuffers       = conf->bufs.num,
@@ -874,7 +874,7 @@ ngx_http_pack_brotli_body_filter(
         r->connection->buffered |= MASK_BUFFERED;
     }
 
-    if (ngx_http_pack_brotli_prepare(&(prepare_args){
+    if (ngx_http_pack_brotli_prepare(&(prepare_args) {
             .ctx = ctx,
             .rc  = &rc,
         }) != NGX_HTTP_PACK_BROTLI_OK) {
