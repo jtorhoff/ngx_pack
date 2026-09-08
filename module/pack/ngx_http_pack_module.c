@@ -21,11 +21,10 @@ enum {
 typedef struct {
     /* codecs[0] outranks codecs[1], left-packed - a real codec never
        sits at [1] while [0] is NGX_HTTP_PACK_CONF_NONE, which is what
-       lets ngx_http_pack_status treat "found at index 1" as "the
-       other codec is ranked ahead" without checking codecs[0] itself.
+       lets ngx_http_pack_status read "found at index 1" as "the other
+       codec is ranked ahead" with no need to check codecs[0] too.
        NGX_CONF_UNSET in codecs[0] means "pack" was never written for
-       this location at all - not even "off" - and it should inherit
-       whatever its parent resolved to. */
+       this location - not even "off" - and it should inherit. */
     ngx_int_t codecs[2];
 
     /* Which slot is "=always", or -1 for neither. */

@@ -10,14 +10,11 @@
 #include <ngx_http.h>
 
 
-/* Whether Brotli would claim "r" right now - preflight-eligible, and
-   either "pack" marked it "=always" or the client actually asked for
-   it. The one thing outside this file that needs it: zstd's header
-   filter, the one codec that always runs first in the chain
-   regardless of what "pack" says, asking whether it should defer to
-   Brotli before deciding anything of its own. A pure read; nothing
-   here is committed until Brotli's own header filter actually runs.
- */
+/* Whether Brotli would claim "r" right now. zstd's header filter is
+   the one caller: it always runs first regardless of what "pack"
+   says, so this is how it asks whether to defer before deciding
+   anything of its own. A pure read - nothing is committed until
+   Brotli's own header filter actually runs. */
 ngx_flag_t ngx_http_pack_brotli_would_claim(ngx_http_request_t *r);
 
 
