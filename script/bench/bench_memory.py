@@ -99,13 +99,6 @@ def render_conf(
                 + "\n    }"
             )
 
-    # The other codec is turned off by name rather than left unmentioned:
-    # both filters see every response, and the trace is read per codec, so
-    # a stray second encoder would be counted as a second connection.
-    others = "\n  ".join(
-        f"{other.directive} off;" for other in T.CODECS if other is not codec
-    )
-
     conf = f"""
 daemon off;
 master_process off;
@@ -131,13 +124,12 @@ http {{
   }}
   default_type application/octet-stream;
 
-  {codec.directive} on;
+  pack {codec.token};
   # text/html is deliberately absent: it is always compressed, and naming
   # it draws a "duplicate MIME type" warning into output meant for a
   # commit message.
-  {codec.directive}_types text/css application/javascript text/plain
-                        application/json application/x-protobuf;
-  {others}
+  pack_types text/css application/javascript text/plain
+             application/json application/x-protobuf;
 
   server {{
     listen 127.0.0.1:{port};
@@ -278,7 +270,7 @@ def run_codec(
                     if result is None:
                         print(
                             f"{name:>12}   not compressed - check "
-                            f"{codec.directive}_types"
+                            f"pack_types"
                         )
                         continue
 

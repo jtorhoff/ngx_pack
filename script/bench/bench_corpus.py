@@ -116,13 +116,6 @@ def render_conf(
                 + "\n    }"
             )
 
-    # The other codec is turned off by name rather than left unmentioned:
-    # both filters see every response, and an explicit "off" is what keeps
-    # a table headed "brotli" from measuring whichever one won the chain.
-    others = "\n  ".join(
-        f"{other.directive} off;" for other in T.CODECS if other is not codec
-    )
-
     # The same corpus with this codec switched off. Every figure above is
     # read against it - a ratio is free to look good on a filter that has
     # tripled the time to first byte - and measuring it here rather than in a
@@ -131,7 +124,7 @@ def render_conf(
     locations.append(
         f"    location /plain/ {{\n"
         f"      root html;\n"
-        f"      {codec.directive} off;\n"
+        f"      pack off;\n"
         f"    }}"
     )
 
@@ -159,13 +152,12 @@ http {{
   }}
   default_type application/octet-stream;
 
-  {codec.directive} on;
+  pack {codec.token};
   # text/html is deliberately absent: it is always compressed, and naming
   # it draws a "duplicate MIME type" warning into output meant for a
   # commit message.
-  {codec.directive}_types text/css application/javascript text/plain
-                        application/json application/x-protobuf;
-  {others}
+  pack_types text/css application/javascript text/plain
+             application/json application/x-protobuf;
 
   server {{
     listen 127.0.0.1:{port};
@@ -299,7 +291,7 @@ def run_codec(
                     if headers.get("content-encoding") != codec.token:
                         print(
                             f"{name:>12}   not compressed - check "
-                            f"{codec.directive}_types"
+                            f"pack_types"
                         )
                         continue
                     raw = len(corpus[name])
