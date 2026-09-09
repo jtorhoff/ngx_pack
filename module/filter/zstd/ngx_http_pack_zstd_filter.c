@@ -1086,7 +1086,7 @@ ngx_http_pack_zstd_merge_conf(
     ngx_conf_merge_value(
         conf->level, prev->level, NGX_HTTP_PACK_ZSTD_LEVEL_DEFAULT);
 
-    /* 16 bits (64 KB): per-request memory outranks compression ratio
+    /* 14 bits (16 KB): per-request memory outranks compression ratio
        here, and zstd's memory climbs with the window - multiply any
        increase by the concurrent requests a worker carries. 128 KB
        would be the largest window still free in block terms; the
