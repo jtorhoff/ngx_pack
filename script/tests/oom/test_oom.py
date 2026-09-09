@@ -233,7 +233,7 @@ def main() -> int:
 
     print(f"nginx: {nginx_bin}\n{version.strip()}\n")
 
-    work = T.tempfile.mkdtemp(prefix="ngx-zstd-oom-")
+    work = T.tempfile.mkdtemp(prefix="ngx-pack-oom-")
     os.makedirs(os.path.join(work, "logs"), exist_ok=True)
     T.build_fixtures(work)
 

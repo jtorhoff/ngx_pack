@@ -45,7 +45,7 @@ UNAME="$(uname -s)"
 # A real target, not an empty translation unit: libFuzzer supplies
 # main() and needs LLVMFuzzerTestOneInput, so linking nothing always
 # fails and would make the probe report "no libFuzzer" everywhere.
-probe="$(mktemp -t ngxzstdfuzz.XXX).c"
+probe="$(mktemp -t ngxpackfuzz.XXX).c"
 cat >"$probe" <<'PROBE'
 #include <stddef.h>
 #include <stdint.h>

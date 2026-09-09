@@ -70,7 +70,7 @@ def main() -> int:
         if not T.port_is_free(port):
             raise SystemExit(f"error: port {port} is already in use")
 
-    work = tempfile.mkdtemp(prefix="ngx-zstd-hdr-")
+    work = tempfile.mkdtemp(prefix="ngx-pack-hdr-")
     fixtures = T.build_fixtures(work)
     conf = render_conf(work)
 

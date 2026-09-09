@@ -3223,7 +3223,7 @@ def test_http2_smoke(ctx: Context, codec: Codec) -> None:
     is only the proof that the same code runs at all when nginx is
     talking HTTP/2, via curl since nothing already in use here can.
     """
-    fd, out = tempfile.mkstemp(prefix="ngx-zstd-h2-")
+    fd, out = tempfile.mkstemp(prefix="ngx-pack-h2-")
     os.close(fd)
     try:
         done = subprocess.run(
@@ -4895,7 +4895,7 @@ def main() -> int:
         )
     print()
 
-    work = tempfile.mkdtemp(prefix="ngx-zstd-test-")
+    work = tempfile.mkdtemp(prefix="ngx-pack-test-")
     fixtures = build_fixtures(work)
     conf = render_conf(work, args.port, args.upstream_port)
 
