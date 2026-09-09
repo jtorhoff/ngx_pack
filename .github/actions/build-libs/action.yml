@@ -29,9 +29,14 @@ runs:
           deps/zstd/out
           deps/brotli/out
         # Architecture is in the key because the artefacts are object
-        # code. No restore-keys: a near-miss would restore libraries
-        # built from a different submodule and link them silently.
-        key: libs-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.v }}
+        # code. The repository is in it because the cached tree
+        # carries a CMakeCache.txt pinned to the absolute checkout
+        # path - /home/runner/work/<repo>/<repo> - so a rename that
+        # changes that path must miss rather than restore a cache
+        # CMake will then refuse to reuse. No restore-keys: a
+        # near-miss would restore libraries built from a different
+        # submodule and link them silently.
+        key: libs-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ steps.key.outputs.v }}
 
     # Unconditional. On a hit cmake finds everything current and
     # returns in about a second, which is cheaper than the "if" that
