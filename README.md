@@ -32,21 +32,22 @@ not support zstd (yet). Therefore, the following config
 is recommended for production environments:
 
 ```nginx
-pack zstd br=always; # serves zstd if supported by the browser,
-                     # brotli (unconditionally) otherwise.
+# serves zstd if supported by the browser,
+# brotli (unconditionally) otherwise.
+pack zstd br=always;
 
 # Put pack_static config to the location
 # from where you serve static, pre-compressed
 # files (with brotli for best results).
 pack_static always;
-pack_static_encodings br; # zstd and gzip files also supported.
+pack_static_encodings br;
 
 # nginx looks up a static, pre-compressed file on each request,
 # which translates to a syscall (open) on each request.
 # To cache those lookups, add the following directives to your
 # config.
 open_file_cache        max=1000 inactive=60s;
-open_file_cache_errors on; # without this the miss is never cached
+open_file_cache_errors on;
 
 pack_types
     application/eot application/font application/font-sfnt
