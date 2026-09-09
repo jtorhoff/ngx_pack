@@ -10,8 +10,7 @@
 
 #include "ngx_http_pack_zstd_encoder.h"
 
-/* Needed for ZSTD_createCCtx_advanced (the custom allocator) and
-   ZSTD_c_srcSizeHint. */
+/* Needed for ZSTD_createCCtx_advanced, the custom allocator. */
 #define ZSTD_STATIC_LINKING_ONLY
 #include <zstd.h>
 
@@ -1130,35 +1129,6 @@ ngx_http_pack_zstd_set_pledged_size(set_pledged_size_args *const args)
 }
 
 typedef struct {
-    encoder_t *enc;
-    int32_t    hint;
-} set_src_hint_args;
-
-typedef struct {
-    ngx_int_t status;
-} set_src_hint_result;
-
-static set_src_hint_result
-ngx_http_pack_zstd_set_src_hint(set_src_hint_args *const args)
-{
-    static ngx_str_t const sizeHint = ngx_string("srcSizeHint");
-
-    ngx_int_t rc;
-
-    rc = (ngx_http_pack_zstd_set_param(&(set_param_args) {
-              .enc   = args->enc,
-              .param = ZSTD_c_srcSizeHint,
-              .value = args->hint,
-              .name  = &sizeHint,
-          }))
-             .status;
-
-    return (set_src_hint_result) {
-        .status = rc,
-    };
-}
-
-typedef struct {
     ngx_int_t status;
 } configure_encoder_result;
 
@@ -1166,7 +1136,8 @@ typedef struct {
     ngx_int_t level;
     size_t    window_bits;
     /* What the encoder is about to be told to expect: the pledge when
-       the length is known, the hint when it is not. */
+       the length is known, zero otherwise - what an unguided response
+       has always sized against. */
     uint64_t expected;
 } derive_tables_args;
 
@@ -1230,7 +1201,7 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
         .window_bits = enc->conf.window_bits,
         .expected    = enc->conf.content_length >= 0
                            ? (uint64_t) enc->conf.content_length
-                           : (uint64_t) enc->conf.src_size_hint,
+                           : 0,
     });
 
     /* The one of these an operator is meant to tune: it trades CPU
@@ -1301,35 +1272,16 @@ ngx_http_pack_zstd_configure_encoder(encoder_t *const enc)
         }
     }
 
-    /* Writes the size into the frame header and sizes the
-       match-finder tables to the body rather than the window, which
-       is what bounds per-request memory at a high level. Nothing may
-       narrow content_length on the way: a body over 4 GiB through 32
-       bits becomes a pledge zstd rejects after compressing the
-       response. */
+    /* A known length is pledged - sizing tables to the body, not the
+       window, which is what bounds memory - and must not be
+       narrowed, or a body over 4 GiB through 32 bits becomes a
+       pledge zstd rejects after compressing. Unknown length skips
+       the pledge and stays at the 0 already sized against above. */
     if (enc->conf.content_length >= 0) {
         rc = ngx_http_pack_zstd_set_pledged_size(
                  &(set_pledged_size_args) {
                      .enc  = enc,
                      .size = enc->conf.content_length,
-                 })
-                 .status;
-
-        if (rc != NGX_OK) {
-            return (configure_encoder_result) {
-                .status = NGX_ERROR,
-            };
-        }
-    } else {
-        /* No length to pledge, so give the guess instead: a pledge is
-           "controlled at end of frame" (zstd.h) and would fail every
-           response not exactly that long. pack_zstd_hint defaults to
-           none, which is 0 - what libzstd reads as no hint - so this
-           path serves both without a branch. */
-        rc = ngx_http_pack_zstd_set_src_hint(
-                 &(set_src_hint_args) {
-                     .enc  = enc,
-                     .hint = (int32_t) enc->conf.src_size_hint,
                  })
                  .status;
 

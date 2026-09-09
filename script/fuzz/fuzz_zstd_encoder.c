@@ -70,7 +70,7 @@ typedef ngx_http_pack_zstd_encoder_conf_t conf_t;
    after checking whether build_plan needs to grow to cover what
    changed, then update it here alongside that fix. */
 _Static_assert(
-    sizeof(conf_t) == 48,
+    sizeof(conf_t) == 40,
     "ngx_http_pack_zstd_encoder_conf_t changed shape - see the "
     "comment above this assertion");
 
@@ -171,12 +171,6 @@ build_plan(cursor_t *c, plan_t *plan)
         NBUFFERS[next_range(c, 0, ARRAY_LEN(NBUFFERS) - 1)];
     plan->conf.buffer_size =
         BUFFER_SIZES[next_range(c, 0, ARRAY_LEN(BUFFER_SIZES) - 1)];
-    /* NGX_HTTP_PACK_ZSTD_HINT_MIN is 16k; 0 is "no hint", which is
-       what conf->hint defaults to when the directive is unset. */
-    plan->conf.src_size_hint = next_bit(c)
-                                   ? 0
-                                   : next_range(
-                                         c, 16 * 1024, 1024 * 1024);
 
     plan->nrounds = (ngx_uint_t) next_range(c, 1, MAX_ROUNDS);
 

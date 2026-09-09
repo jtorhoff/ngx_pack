@@ -179,22 +179,6 @@ memory, not compatibility - decoders accept far larger windows, but encoder
 memory scales with the window and a server pays that per request in flight.
 
 
-### `pack_zstd_hint`
-
-- **syntax**: `pack_zstd_hint <size>|none`
-- **default**: `none`
-- **context**: `http`, `server`, `location`
-
-Only consulted for a response whose length is still unknown once
-compression has to start - one of known length pledges its real size
-instead, and this is never consulted. Gives Zstandard a guess at the
-body's real size so it can size its match-finding tables down from what
-`pack_zstd_window` alone would ask for. `none` asks for no hint at all;
-a size below `16k` is refused, since an operator who wrote one that small
-most likely wanted none. See the notes below for when this can matter at
-all.
-
-
 ### `pack_zstd_buffers`
 
 - **syntax**: `pack_zstd_buffers <number> <size>`
@@ -296,14 +280,6 @@ bytes at the `16k` default, 349,923 / 312,513 at `32k`, 337,408 / 533,809
 at `64k`, 326,916 / 976,401 at `128k`, 326,170 / 1,107,473 at `256k`, and
 326,169 / 1,113,819 from `512k` on - ratio and memory both level off well
 before the ceiling.
-
-
-`pack_zstd_hint` only ever shrinks Zstandard's match-finding tables, never
-grows them past what `pack_zstd_window` already allows - so at `16k` and
-below, where `pack_zstd_hint`'s own floor already sits, there is nothing
-left for it to shrink, and it does nothing at all there. It only starts to
-matter once the window has been raised above `16k` for other traffic, but
-this particular response is known (or guessed) to be much smaller.
 
 
 `pack_zstd_buffers` only matters when the socket will not take output as

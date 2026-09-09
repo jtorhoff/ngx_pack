@@ -1207,7 +1207,7 @@ def frame_declares_size(data: bytes) -> bool:
 
     zstd writes one when, and only when, it was told the size before the
     frame was written, so from the outside this is what tells the pledged
-    path apart from the hinted one. RFC 8878 section 3.1.1.1.2: the size is
+    path apart from the unpledged one. RFC 8878 section 3.1.1.1.2: the size is
     present when Frame_Content_Size_flag is non-zero, and additionally when
     Single_Segment_flag is set, which forces a one-byte field.
     """
@@ -3490,60 +3490,6 @@ def test_level_bounds(ctx: Context, codec: Codec) -> None:
         )
 
 
-HINT_CASES = [
-    ("none", True),  # the word: no hint at all
-    ("16k", True),  # the floor itself
-    ("1m", True),
-    ("8k", False),  # under the floor
-    ("0", False),  # a size of zero is not the word, and is held to the floor
-    # Four characters, like "none", but not it - value->len == none.len is
-    # true and the strncmp still has to fail this one rather than match.
-    ("zero", False),
-    # Above NGX_MAX_INT32_VALUE: ZSTD_CCtx_setParameter takes the hint as
-    # a plain int, so anything wider is refused here rather than wrapped.
-    ("3000000000", False),
-]
-
-
-@test('pack_zstd_hint takes a size at or above its floor, or "none"', only=ZSTD)
-def test_hint_bounds(ctx: Context) -> None:
-    """The word and the floor are separate rules, and the point is that
-    they stay separate.
-
-    "none" means no hint rather than a small one, so it deliberately
-    does not pass through the floor - while "0", which is a size and not
-    the word, still does. Those two lines are one "else" apart in
-    ngx_http_pack_zstd_set_hint, and swapping them would be invisible
-    without this: a "none" clamped up to 16k and a "0" quietly accepted
-    both leave a server that runs."""
-    for size, want in HINT_CASES:
-        got, text = config_accepted(ctx, f"pack_zstd_hint {size};")
-        check(
-            got == want,
-            f"pack_zstd_hint {size}: expected "
-            f"{'accepted' if want else 'refused'}, got the opposite"
-            f"{'' if want else chr(10) + text}",
-        )
-
-    # Checked before the size/word split, the same way ngx_conf_set_size_slot
-    # itself refuses two sizes: the slot is still unset the second time
-    # around, so a second "none" has to be caught here instead.
-    accepted, text = config_accepted(ctx, "pack_zstd_hint 1m;\npack_zstd_hint 2m;")
-    check(not accepted, f"a duplicate pack_zstd_hint was accepted:\n{text}")
-    check(
-        "duplicate" in text,
-        f"a duplicate pack_zstd_hint was refused for the wrong reason:\n{text}",
-    )
-
-    # The refusal is the only place an operator who wanted no hint
-    # finds out the word exists.
-    _, text = config_accepted(ctx, "pack_zstd_hint 8k;")
-    check(
-        "none" in text,
-        f"a refused size did not mention the word:\n{text}",
-    )
-
-
 def parse_size(text: str) -> int:
     """ "16k" to 16384, the units ngx_parse_size accepts."""
     if text.endswith("k"):
@@ -4270,27 +4216,28 @@ def peak_encoder_bytes(ctx: Context, path: str) -> tuple[int, bytes]:
     only=ZSTD,
 )
 def test_stream_memory_ceiling(ctx: Context) -> None:
-    """Pins ZSTD_c_srcSizeHint, which nothing else here would notice.
+    """Pins the table sizing a response of unknown length gets by default.
 
     A known Content-Length reaches ZSTD_CCtx_setPledgedSrcSize, which sizes
     the encoder's match-finder tables to the body. Without it zstd sizes them
     for the worst case the window allows, and a response of unknown length
     used to pay for that: the same body cost 2.95 MB streamed against 1.07 MB
-    static at level 6, and 640.90 MB against 1.90 MB at level 22. The hint is
-    the non-binding form of the pledge and is what closes that.
+    static at level 6, and 640.90 MB against 1.90 MB at level 22. Passing 0 as
+    the "expected" size in that case - see ngx_http_pack_zstd_derive_tables -
+    is what closes the gap, and needs nothing configured to take effect.
 
-    The suite passed 51/51 both before and after the hint was added, so the
-    other memory tests here do not cover this. They check that allocations
-    balance and do not drift, which is a different property: a leak-free
-    encoder three times larger than it needs to be passes all of them.
+    The other memory tests here do not cover this: they check that
+    allocations balance and do not drift, which is a different property - a
+    leak-free encoder three times larger than it needs to be passes all of
+    them.
 
     Deliberately a ratio rather than a byte count. The absolute figures move
     with the libzstd in deps/zstd and with pack_zstd_level, but "a stream
     should not cost materially more than the same bytes with a length on
     them" holds across both. 1.5x leaves room for the two paths genuinely
-    differing - the hint is a guess where the pledge is exact, so they need
-    not land on the same tables - while a regression here is a 2.75x at the
-    level this suite runs.
+    differing - one sizes against 0, the other against the exact pledge, so
+    they need not land on the same tables - while a regression here is a
+    2.75x at the level this suite runs.
 
     Being a comparison, it would prove nothing if both sides quietly ended up
     on the same path - if /stream stopped being a stream, or if the pledge
@@ -4319,33 +4266,8 @@ def test_stream_memory_ceiling(ctx: Context) -> None:
         f"a streamed response peaked at {streamed / 1024:.0f} KB against "
         f"{known / 1024:.0f} KB for the same body with a known length "
         f"({streamed / known:.2f}x). The encoder is sizing its tables to the "
-        f"window rather than to the response - ZSTD_c_srcSizeHint is most "
-        f"likely no longer reaching it",
-    )
-
-
-@test("pack_zstd_hint reaches the encoder", needs_debug=True, only=ZSTD)
-def test_hint_directive_reaches_encoder(ctx: Context) -> None:
-    """/small-hint/ is /big-hint/ with pack_zstd_hint pulled to its floor.
-
-    Both take the same unknown-length path through the same upstream, so a
-    difference between them can only be the directive - unlike
-    test_stream_memory_ceiling, which shows the hint exists at all but not
-    that it is configurable.
-    """
-    default_peak, default_body = peak_encoder_bytes(ctx, "/big-hint/big.html")
-    small_peak, small_body = peak_encoder_bytes(ctx, "/small-hint/big.html")
-
-    check(
-        not frame_declares_size(default_body) and not frame_declares_size(small_body),
-        "one of the two took the pledge path rather than the hint path, so "
-        "this does not compare what it means to",
-    )
-    check(
-        small_peak < default_peak,
-        f"the smaller hint peaked at {small_peak / 1024:.0f} KB, not below "
-        f"the {default_peak / 1024:.0f} KB the compiled-in default peaked "
-        f"at - the directive is parsed but not reaching the encoder",
+        f"window rather than to the response - ngx_http_pack_zstd_derive_tables "
+        f"is most likely no longer passing 0 for the unknown-length case",
     )
 
 

@@ -31,20 +31,6 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
    delivery would fill it. */
 #define NGX_HTTP_PACK_ZSTD_HELD_INPUT (32 * 1024)
 
-/* Floor on pack_zstd_hint. Fixed rather than page-derived: a hint is
-   a compression parameter, not an allocation, so a config naming one
-   should not become invalid on a host with larger pages. It binds
-   sizes only - "none" asks for no hint at all, which is a different
-   thing from a small one. */
-#define NGX_HTTP_PACK_ZSTD_HINT_MIN (16 * 1024)
-
-/* No hint unless one is asked for. A hint only shrinks windowLog to
-   fit, and at the window default there is nothing left to shrink, so
-   all it still moves is zstd's choice of compression parameters -
-   which a directive describing the body's size has no business
-   steering. Worth setting where the window is configured wide. */
-#define NGX_HTTP_PACK_ZSTD_HINT_DEFAULT 0
-
 /* Applies to a response of unknown length too, once its end is in
    hand - the exception is a flush marker arriving first, which
    compresses whatever the size. See merge_conf for why 256. */
@@ -117,12 +103,6 @@ typedef struct {
        how big each of them is: the two parameters of
        pack_zstd_buffers, kept in the pair nginx parses them into. */
     ngx_bufs_t bufs;
-
-    /* pack_zstd_hint: what ZSTD_c_srcSizeHint is set to for a
-       response NGX_HTTP_PACK_ZSTD_HELD_INPUT gave up waiting on - see
-       the encoder's own ngx_http_pack_zstd_encoder_conf_t, which this
-       is copied into. */
-    size_t hint;
 } conf_t;
 
 /* What the body filter should do once ngx_http_pack_zstd_prepare
@@ -220,10 +200,6 @@ static ngx_int_t ngx_http_pack_zstd_init(ngx_conf_t *cf);
 
 static char *ngx_http_pack_zstd_parse_window(
     ngx_conf_t *cf, void *post, void *data);
-static char *
-ngx_http_pack_zstd_check_hint(ngx_conf_t *cf, void *post, void *data);
-static char *ngx_http_pack_zstd_set_hint(
-    ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_http_pack_zstd_set_buffers(
     ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
@@ -243,9 +219,6 @@ static ngx_conf_post_handler_pt const
     ngx_http_pack_zstd_parse_window_p =
         ngx_http_pack_zstd_parse_window;
 
-static ngx_conf_post_handler_pt const
-    ngx_http_pack_zstd_check_hint_p = ngx_http_pack_zstd_check_hint;
-
 static ngx_command_t const ngx_http_pack_zstd_commands[] = {
     {
         ngx_string("pack_zstd_level"),
@@ -264,15 +237,6 @@ static ngx_command_t const ngx_http_pack_zstd_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(conf_t, window_bits),
         (void *) &ngx_http_pack_zstd_parse_window_p,
-    },
-    {
-        ngx_string("pack_zstd_hint"),
-        NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-            NGX_CONF_TAKE1,
-        ngx_http_pack_zstd_set_hint,
-        NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(conf_t, hint),
-        (void *) &ngx_http_pack_zstd_check_hint_p,
     },
     {
         ngx_string("pack_zstd_buffers"),
@@ -899,7 +863,6 @@ ngx_http_pack_zstd_ensure_encoder(ctx_t *const ctx)
             .nbuffers       = conf->bufs.num,
             .buffer_size    = conf->bufs.size,
             .content_length = ctx->content_length,
-            .src_size_hint  = conf->hint,
         });
 
     if (ctx->encoder == NULL) {
@@ -1063,7 +1026,6 @@ ngx_http_pack_zstd_create_conf(ngx_conf_t *const cf)
 
     conf->level       = NGX_CONF_UNSET;
     conf->window_bits = NGX_CONF_UNSET_SIZE;
-    conf->hint        = NGX_CONF_UNSET_SIZE;
     conf->min_length  = NGX_CONF_UNSET;
 
     return conf;
@@ -1095,13 +1057,6 @@ ngx_http_pack_zstd_merge_conf(
         conf->window_bits,
         prev->window_bits,
         NGX_HTTP_PACK_ZSTD_WINDOW_BITS_DEFAULT);
-
-    /* See the constant block for why the default is none. Both bounds
-       belong to the post handler - a floor of this module's own, and
-       the ceiling libzstd imposes - and neither is consulted for
-       none, which is the absence of a size rather than one. */
-    ngx_conf_merge_size_value(
-        conf->hint, prev->hint, NGX_HTTP_PACK_ZSTD_HINT_DEFAULT);
 
     /* One buffer already spans a whole block at the window default;
        the other three are run-ahead, so a stalled write costs the
@@ -1161,87 +1116,6 @@ ngx_http_pack_zstd_parse_window(
     }
 
     return "must be 4k, 8k, 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
-}
-
-/* Checks pack_zstd_hint's parsed size: a floor, and the one ceiling
-   that is not this module's to set. NGX_MAX_INT32_VALUE rather than
-   letting the value overflow silently: it travels to
-   ZSTD_CCtx_setParameter as a plain int, so anything wider must be
-   refused here, not wrapped at request time. */
-static char *
-ngx_http_pack_zstd_check_hint(
-    ngx_conf_t *const cf, void *const post, void *const data)
-{
-    size_t   *hint;
-    ngx_str_t limit;
-
-    hint = data;
-
-    if (*hint < NGX_HTTP_PACK_ZSTD_HINT_MIN) {
-        limit = ngx_http_pack_format_size(
-            cf->pool, NGX_HTTP_PACK_ZSTD_HINT_MIN);
-
-        /* Naming the word here as well: an operator who wrote a size
-           below the floor may have wanted no hint rather than a
-           small one, and this refusal is where that is discoverable.
-         */
-        ngx_conf_log_error(
-            NGX_LOG_EMERG,
-            cf,
-            0,
-            "must be at least %V, or \"none\"",
-            &limit);
-
-        return NGX_CONF_ERROR;
-    }
-
-    if (*hint > NGX_MAX_INT32_VALUE) {
-        limit = ngx_http_pack_format_size(
-            cf->pool, NGX_MAX_INT32_VALUE);
-
-        ngx_conf_log_error(
-            NGX_LOG_EMERG, cf, 0, "must not exceed %V", &limit);
-
-        return NGX_CONF_ERROR;
-    }
-
-    return NGX_CONF_OK;
-}
-
-/* Parses pack_zstd_hint, which takes a size or the word "none".
-   ngx_conf_set_size_slot cannot spell the second, so the word is
-   handled here and everything else handed to it unchanged. "none"
-   deliberately skips the floor: clamping it up would grant the
-   opposite of what was written. */
-static char *
-ngx_http_pack_zstd_set_hint(
-    ngx_conf_t *const cf, ngx_command_t *const cmd, void *const conf)
-{
-    static ngx_str_t const none = ngx_string("none");
-
-    size_t    *hint;
-    ngx_str_t *value;
-
-    hint = (size_t *) ((char *) conf + cmd->offset);
-
-    /* Checked before the word is, so "none" twice is refused the way
-       two sizes would be. ngx_conf_set_size_slot repeats this for the
-       size path, where the slot is still unset by the time it runs.
-     */
-    if (*hint != NGX_CONF_UNSET_SIZE) {
-        return "is duplicate";
-    }
-
-    /* Cast before the arithmetic: "elts" is void *, so adding to it
-       directly would step one byte rather than one ngx_str_t. */
-    value = ((ngx_str_t *) cf->args->elts) + 1;
-    if (value->len == none.len &&
-        !ngx_strncmp(value->data, none.data, none.len)) {
-        *hint = NGX_HTTP_PACK_ZSTD_HINT_DEFAULT;
-        return NGX_CONF_OK;
-    }
-
-    return ngx_conf_set_size_slot(cf, cmd, conf);
 }
 
 /* Parses pack_zstd_buffers and checks both parameters. The slot

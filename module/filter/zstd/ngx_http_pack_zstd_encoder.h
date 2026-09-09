@@ -49,7 +49,7 @@ typedef enum {
    rather than read from the location configuration, so nothing here
    has to know nginx has directives at all. "window_bits" is a
    windowLog, not a size; "nbuffers" a ceiling, not an allocation;
-   "content_length" -1 when unknown, which chooses pledge or hint.
+   "content_length" -1 when unknown, in which case nothing is pledged.
  */
 typedef struct {
     ngx_int_t level;
@@ -57,7 +57,6 @@ typedef struct {
     ngx_int_t nbuffers;
     size_t    buffer_size;
     off_t     content_length;
-    size_t    src_size_hint;
 } ngx_http_pack_zstd_encoder_conf_t;
 
 
