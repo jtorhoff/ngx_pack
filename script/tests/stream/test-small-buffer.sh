@@ -25,10 +25,11 @@
 # bytes) is held by the write filter until more arrives; if the
 # encoder cannot refill in the meantime, neither side moves and the
 # response hangs. The output buffers carry "recycled" to prevent
-# exactly that. Since pack_brotli_window's floor rose to 16k no
-# configuration can produce blocks that small any more, so a 64-byte
-# buffer here is what still reaches the condition - drop "recycled"
-# and this run hangs where the ordinary suite passes.
+# exactly that. Even at pack_brotli_window's 4k floor no configuration
+# reaches that on its own any more - see
+# test_small_window_does_not_deadlock, which measured as much - so a
+# 64-byte buffer here is what still reaches the condition: drop
+# "recycled" and this run hangs where the ordinary suite passes.
 #
 # Note that it does NOT check the compressed bytes against those of a
 # normal build. They are not stable enough to compare: a streamed

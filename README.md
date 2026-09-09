@@ -85,6 +85,13 @@ following charts.
   <img src="./script/bench/codec-memory-light.svg">
 </picture>
 
+Note that the window size can be lowered further. Both `8k` or `4k` are
+valid settings and cut memory consumption per request further. For
+example, peak memory consumption with the window set to `4k` is below
+`64k` for both codecs. High-traffic websites with many concurrent
+connections might find those settings to be more practical than the
+default window of `16k`.
+
 ## Configuration directives
 
 ### `pack`
@@ -166,10 +173,10 @@ from `1` to `6`. Zstandard's negative levels, and its higher levels up to
 - **default**: `16k`
 - **context**: `http`, `server`, `location`
 
-Sets the Zstandard compression window `size`. Acceptable values are `16k`,
-`32k`, `64k`, `128k`, `256k`, `512k` and `1m`. The ceiling is memory, not
-compatibility - decoders accept far larger windows, but encoder memory
-scales with the window and a server pays that per request in flight.
+Sets the Zstandard compression window `size`. Acceptable values are `4k`,
+`8k`, `16k`, `32k`, `64k`, `128k`, `256k`, `512k` and `1m`. The ceiling is
+memory, not compatibility - decoders accept far larger windows, but encoder
+memory scales with the window and a server pays that per request in flight.
 
 
 ### `pack_zstd_hint`
@@ -239,7 +246,7 @@ notes below.
 - **context**: `http`, `server`, `location`
 
 Sets the Brotli compression window `size`. Acceptable values are the same
-seven sizes `pack_zstd_window` takes, `16k` through `1m`. Unlike
+nine sizes `pack_zstd_window` takes, `4k` through `1m`. Unlike
 Zstandard's, this is what the encoder gets to work with regardless of the
 response's own size - Brotli bounds its own buffers by the input it is
 actually given, so naming a wide window for a small body costs nothing
@@ -292,11 +299,11 @@ before the ceiling.
 
 
 `pack_zstd_hint` only ever shrinks Zstandard's match-finding tables, never
-grows them past what `pack_zstd_window` already allows - so at the `16k`
-window floor there is nothing left for it to shrink, and it does nothing
-at all there. It only starts to matter once the window has been raised
-above its floor for other traffic, but this particular response is known
-(or guessed) to be much smaller.
+grows them past what `pack_zstd_window` already allows - so at `16k` and
+below, where `pack_zstd_hint`'s own floor already sits, there is nothing
+left for it to shrink, and it does nothing at all there. It only starts to
+matter once the window has been raised above `16k` for other traffic, but
+this particular response is known (or guessed) to be much smaller.
 
 
 `pack_zstd_buffers` only matters when the socket will not take output as

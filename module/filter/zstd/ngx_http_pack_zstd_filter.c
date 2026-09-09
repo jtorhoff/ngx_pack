@@ -52,7 +52,7 @@ static ngx_str_t const ENCODING = ngx_string("zstd");
 
 /* The ceiling is memory - encoder memory scales
    with the window, paid per request in flight. */
-#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 14
+#define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MIN 12
 #define NGX_HTTP_PACK_ZSTD_WINDOW_BITS_MAX 20
 
 /* The floor, chosen for memory rather than ratio: the window is very
@@ -1160,7 +1160,7 @@ ngx_http_pack_zstd_parse_window(
         }
     }
 
-    return "must be 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
+    return "must be 4k, 8k, 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
 }
 
 /* Checks pack_zstd_hint's parsed size: a floor, and the one ceiling

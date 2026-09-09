@@ -53,7 +53,7 @@ static ngx_str_t const ENCODING = ngx_string("br");
    what the encoder gets: Brotli bounds its own buffers by the input
    it is given, so naming a smaller window for a small body changes
    nothing it had not already worked out. */
-#define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MIN 14
+#define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MIN 12
 #define NGX_HTTP_PACK_BROTLI_WINDOW_BITS_MAX 20
 
 /* The floor the directive allows, and the same default
@@ -948,7 +948,7 @@ ngx_http_pack_brotli_parse_window(
         }
     }
 
-    return "must be 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
+    return "must be 4k, 8k, 16k, 32k, 64k, 128k, 256k, 512k, or 1m";
 }
 
 

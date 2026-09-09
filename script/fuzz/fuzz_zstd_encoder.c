@@ -116,8 +116,9 @@ next_bit(cursor_t *c)
     return next_byte(c) & 1;
 }
 
-static ngx_int_t const LEVELS[]       = {1, 2, 3, 4, 5, 6};
-static size_t const    WINDOW_BITS[]  = {14, 15, 16, 17, 18, 19, 20};
+static ngx_int_t const LEVELS[]      = {1, 2, 3, 4, 5, 6};
+static size_t const    WINDOW_BITS[] = {
+    12, 13, 14, 15, 16, 17, 18, 19, 20};
 static size_t const    BUFFER_SIZES[] = {64, 256, 1024, 4096, 16384};
 static ngx_int_t const NBUFFERS[]     = {1, 2, 4, 8};
 

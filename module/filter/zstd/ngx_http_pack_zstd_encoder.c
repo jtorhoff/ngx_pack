@@ -1187,7 +1187,7 @@ ngx_http_pack_zstd_derive_tables(derive_tables_args *const args)
     ZSTD_compressionParameters cparams;
     uint32_t                   cap;
 
-    /* pack_zstd_window's floor is 14, so this never approaches
+    /* pack_zstd_window's floor is 12, so this never approaches
        ZSTD_HASHLOG_MIN. */
     cap     = (uint32_t) args->window_bits - 1;
     cparams = ZSTD_getCParams(

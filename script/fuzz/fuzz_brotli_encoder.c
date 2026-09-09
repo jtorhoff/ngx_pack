@@ -123,7 +123,8 @@ next_bit(cursor_t *c)
    quality directive is bounded to exactly this range (see
    ngx_http_pack_brotli_level_bounds), and there are few enough
    settings that every one of them is worth reaching directly. */
-static size_t const    WINDOW_BITS[]  = {14, 15, 16, 17, 18, 19, 20};
+static size_t const WINDOW_BITS[] = {
+    12, 13, 14, 15, 16, 17, 18, 19, 20};
 static size_t const    BUFFER_SIZES[] = {64, 256, 1024, 4096, 16384};
 static ngx_int_t const NBUFFERS[]     = {1, 2, 4, 8};
 

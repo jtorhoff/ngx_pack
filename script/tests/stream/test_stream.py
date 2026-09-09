@@ -4171,20 +4171,21 @@ def test_small_window_does_not_deadlock(ctx: Context, codec: Codec) -> None:
     whose only output buffer was that buffer could not produce the bytes
     being waited for. Neither side moved again: the worker sat at 0.0%
     CPU and the client timed out. Every corpus file hung at 1k and four
-    of five at 4k.
+    of five at 4k, back when either window size was still configurable.
 
     What keeps it away is the "recycled" flag on the output buffers,
     which tells the write filter the memory has to come back rather
     than be sat on.
 
-    Be clear about what this test does and does not prove. Since
-    pack_brotli_window's floor rose to 16k, no configuration can
-    produce a block short enough to reach the condition - dropping
-    "recycled" was measured here and every response still completed.
-    So this is a smallest-window smoke test, and the real cover for
-    the deadlock is script/tests/stream/test-small-buffer.sh, where a 64-byte
-    buffer does reach it: dropping the flag there hangs a plain static
-    response while zstd carries on unaffected.
+    Be clear about what this test does and does not prove. pack_brotli_
+    window's floor is 4k now, matching where most of the corpus once
+    hung - but "recycled" dropped and rebuilt against this same fixture
+    at that floor still completed every response rather than
+    reproducing it, so whatever changed since does not turn on here
+    either. This remains a smallest-window smoke test, and the real
+    cover for the deadlock is script/tests/stream/test-small-buffer.sh,
+    where a 64-byte buffer does reach it: dropping the flag there hangs
+    a plain static response while zstd carries on unaffected.
 
     Still worth running for both codecs. An encoder that cannot finish
     a response at its own smallest window is a bug whichever library
@@ -4194,11 +4195,10 @@ def test_small_window_does_not_deadlock(ctx: Context, codec: Codec) -> None:
     The whole body is checked, not just the arrival of a response: a
     deadlock that merely truncated would otherwise read as a pass.
 
-    The fixture is load-bearing. What has to be true is that a block's
-    worth of output lands under postpone_output, and since the window
-    floor rose to 16k that only holds for a body which compresses
-    hard - big.html manages about 130x, where dense.html would come
-    out far too big to reach the condition at all.
+    big.html is served rather than a less compressible fixture because
+    it is this suite's best shot at the condition - a block's worth of
+    output landing under postpone_output - at roughly 130x compression;
+    dense.html would come out far too big to have any chance of it.
     """
     path = codec.path("tiny-window", "big.html")
     try:
