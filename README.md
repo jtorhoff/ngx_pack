@@ -1,55 +1,95 @@
-# ngx_zstd
+# ngx_pack
 
-[Zstandard](https://facebook.github.io/zstd/) is a lossless compression
-algorithm combining a modern LZ77 match finder with finite state entropy coding.
-It reaches compression ratios in the range of deflate and better, at a fraction
-of the encoder cost: measured level for level against
-[zlib-ng](https://github.com/zlib-ng/zlib-ng) over `script/corpus`, it produces
-output of the same size or smaller for roughly half the CPU.
+ngx_pack is an nginx module for compressing HTTP responses, built around
+two codecs: [Zstandard](https://facebook.github.io/zstd/), a modern
+LZ77-and-entropy-coding design that reaches deflate-class ratios or
+better at a fraction of the CPU, and
+[Brotli](https://github.com/google/brotli), a similar LZ77-and-entropy-coding
+design that adds context modeling - choosing an entropy table from the bytes
+just seen - and a built-in static dictionary of common web strings, trading
+some of that speed for a tighter ratio at its higher quality levels.
 
-ngx_zstd is a set of two nginx modules:
+It ships as two nginx modules: a **filter module** that compresses
+responses as they are produced, streaming or not, and a **static
+module** that instead serves an already-compressed sibling file
+straight from disk whenever one exists, skipping the encoder
+altogether. Both codecs are compiled into the filter module at all
+times; the `pack` directive documented below is what decides, per
+location, which codec a request actually gets and in what order of
+preference - Zstandard first with Brotli as an always-on fallback being
+the combination this module is built around.
 
-- filter module - compresses responses on-the-fly, with
-  [Brotli](https://github.com/google/brotli) compiled in alongside
-  Zstandard as a widely-supported fallback for clients that do not speak
-  Zstandard,
-- static module - serves pre-compressed files from disk in place of the
-  original.
+## TL;DR configuration recommended for production
 
-These modules are based on my fork of
-[Brotli modules for nginx by Google](https://github.com/jtorhoff/ngx_brotli).
-The Brotli fork was refactored with the help of Claude Code and the modules in
-this repo follow the general structure of that fork. This is why the original
-license is kept (BSD-2-Clause) with the attributions to Igor Sysoev,
-Nginx, Inc., and Google Inc.
+The default settings have been optimized for low latency and minimal
+peak memory consumption while still maintaining a good compression
+ratio. Tests on `script/corpus` show that zstd is superior to brotli
+at dynamic compression while brotli offers better compression ratio at
+its maximum settings, making it an ideal choice for static content.
+This makes zstd the obvious choice for dynamic content compression
+with brotli being the fallback for older browsers or clients that do
+not support zstd (yet). Therefore, the following config
+is recommended for production environments:
 
-This work adapts and extends the original test harness of the Brotli fork
-including CI that compiles the modules with both GCC and Clang. The tests are
-executed against the latest stable branch of nginx
-(1.30.x at the time of writing).
+```nginx
+pack zstd br=always; # serves zstd if supported by the browser,
+                     # brotli (unconditionally) otherwise.
 
+# Put pack_static config to the location
+# from where you serve static, pre-compressed
+# files (with brotli for best results).
+pack_static always;
+pack_static_encodings br; # zstd and gzip files also supported.
 
-## Filter module
+# nginx looks up a static, pre-compressed file on each request,
+# which translates to a syscall (open) on each request.
+# To cache those lookups, add the following directives to your
+# config.
+open_file_cache        max=1000 inactive=60s;
+open_file_cache_errors on; # without this the miss is never cached
 
-Compresses responses as they are produced, labelling them
-`Content-Encoding: zstd` or `Content-Encoding: br`. Both codecs are always
-compiled in; which one (or two, in what order) a location may serve is
-decided by the `pack` directive alone. The filter handles both responses of
-known length and responses that are still being streamed, and creates one
-encoder per request that it releases as soon as the stream closes.
+pack_types
+    application/eot application/font application/font-sfnt
+    application/font-woff application/geo+json application/graphql+json
+    application/javascript application/javascript-binast application/json
+    application/ld+json application/manifest+json application/opentype
+    application/otf application/rss+xml application/truetype application/ttf
+    application/vnd.api+json application/vnd.ms-fontobject application/wasm
+    application/x-httpd-cgi application/x-javascript application/x-opentype
+    application/x-otf application/x-perl application/x-protobuf application/x-ttf
+    application/xhtml+xml application/xml font/otf font/ttf font/x-woff
+    image/svg+xml image/vnd.microsoft.icon image/x-icon multipart/bag
+    multipart/mixed text/css text/javascript text/js text/plain text/richtext
+    text/x-component text/x-java-source text/x-markdown text/x-script text/xml;
+```
 
-Responses of any status are compressed, with the exception of those that carry
-no body (`1xx`, `204`, `304`) or whose body is a byte range (`206`), since
-labelling those with a `Content-Encoding` would corrupt the response. Requests
-below HTTP/1.1 are never compressed, matching the `gzip_http_version` default;
-`Vary: Accept-Encoding` is still advertised to them so a cache in front keeps
-the two answers apart.
+With this configuration you don't need to enable gzip for ancient clients. Brotli will be served unconditionally if zstd is not
+supported. As of today, this config covers all modern browsers as every major browser supports brotli, but not zstd. Everything else is covered by the default settings with each directive described below.
 
+The rationale to use the minimal compression level (quality setting
+for brotli) with a window size of `16k` can be described by the
+following charts.
+
+#### Compression ratio at various compression levels
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./script/bench/codec-ratio-dark.svg">
+  <img src="./script/bench/codec-ratio-light.svg">
+</picture>
+
+#### Peak memory consumption at various compression levels
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./script/bench/codec-memory-dark.svg">
+  <img src="./script/bench/codec-memory-light.svg">
+</picture>
+
+## Configuration directives
 
 ### `pack`
 
-- **syntax**: `pack off;` or `pack <codec> [=always];` or
-  `pack <codec> <codec> [=always];`, where `<codec>` is `zstd` or `br`
+- **syntax**: `pack off;` or `pack <codec>[=always];` or
+  `pack <codec> <codec>[=always];`, where `<codec>` is `zstd` or `br`
 - **default**: `off`
 - **context**: `http`, `server`, `location`, `if in location`
 
@@ -57,22 +97,28 @@ Chooses which codec(s) this location may serve, and the order client
 preference is checked in. Naming one codec enables that codec alone. Naming
 two ranks the first ahead of the second: a client that accepts the first
 codec is always given it, and the second is only ever reached once the
-first has declined - whether because the client did not name it, or named
-it with an explicit zero weight.
+first has declined.
 
 Appending `=always` to the codec named **last** turns it into an
 unconditional fallback: once every codec ranked ahead of it has declined,
-it is served regardless of what `Accept-Encoding` says, including an
-explicit refusal. `=always` on the first of two codecs is refused outright,
-since the second would then never be reached at all - only the last codec
-named may carry it.
+it is served regardless of what `Accept-Encoding` says.
+
+Examples:
 
 ```nginx
-pack zstd;            # Zstandard only
-pack br;               # Brotli only
-pack zstd br;          # Zstandard preferred, Brotli negotiated as a fallback
-pack zstd br=always;   # Zstandard if the client takes it, Brotli unconditionally otherwise
-pack off;              # no compression
+pack zstd;           # zstd only.
+
+pack br;             # brotli only.
+
+pack zstd=always;    # zstd regardless whether the client
+                     # lists it in Accept-Encoding.
+
+pack zstd br;        # zstd preferred over brotli.
+
+pack zstd br=always; # zstd preferred, brotli
+                     # unconditionally otherwise.
+
+pack off;            # no compression.
 ```
 
 
