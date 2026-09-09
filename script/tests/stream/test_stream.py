@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression harness for the ngx_zstd filter module.
+"""Regression harness for the ngx_pack filter module.
 
 Covers Accept-Encoding parsing, static file serving, and the areas a
 plain curl-and-cmp suite cannot reach:
