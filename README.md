@@ -23,7 +23,7 @@ the combination this module is built around.
 
 The default settings have been optimized for low latency and minimal
 peak memory consumption while still maintaining a good compression
-ratio. Tests on `script/corpus` show that zstd is superior to brotli
+ratio. Tests on `script/corpus` (check [PROVENANCE.md](./script/corpus/PROVENANCE.md)) show that zstd is superior to brotli
 at dynamic compression while brotli offers better compression ratio at
 its maximum settings, making it an ideal choice for static content.
 This makes zstd the obvious choice for dynamic content compression
