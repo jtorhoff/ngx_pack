@@ -88,9 +88,9 @@ following charts.
 Note that the window size can be lowered further. Both `8k` or `4k` are
 valid settings and cut memory consumption per request further. For
 example, peak memory consumption with the window set to `4k` is below
-`64k` for both codecs. High-traffic websites with many concurrent
-connections might find those settings to be more practical than the
-default window of `16k`.
+`64k` for both codecs. However, lower window settings increase latency.
+Always measure both latency and memory consumption when tweaking the
+settings of both encoders.
 
 ## Configuration directives
 
