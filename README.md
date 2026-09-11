@@ -5,8 +5,7 @@ two codecs: [Zstandard](https://facebook.github.io/zstd/), a modern
 LZ77-and-entropy-coding design that reaches deflate-class ratios or
 better at a fraction of the CPU, and
 [Brotli](https://github.com/google/brotli), a similar LZ77-and-entropy-coding
-design that adds context modeling - choosing an entropy table from the bytes
-just seen - and a built-in static dictionary of common web strings, trading
+design that adds 2nd order context modeling, trading
 some of that speed for a tighter ratio at its higher quality levels.
 
 It ships as two nginx modules: a **filter module** that compresses
@@ -16,8 +15,11 @@ straight from disk whenever one exists, skipping the encoder
 altogether. Both codecs are compiled into the filter module at all
 times; the `pack` directive documented below is what decides, per
 location, which codec a request actually gets and in what order of
-preference - Zstandard first with Brotli as an always-on fallback being
-the combination this module is built around.
+preference.
+
+This project is based on [ngx_brotli](https://github.com/google/ngx_brotli) and thus retains the
+copyright notice by Igor Sysoev, Nginx, Inc., Google Inc. and
+inherits the BSD-2-Clause license.
 
 ## TL;DR configuration recommended for production
 
@@ -85,12 +87,13 @@ following charts.
   <img src="./script/bench/codec-memory-light.svg">
 </picture>
 
-Note that the window size can be lowered further. Both `8k` or `4k` are
+Note that the window size can be lowered further. Both `8k` and `4k` are
 valid settings and cut memory consumption per request further. For
 example, peak memory consumption with the window set to `4k` is below
-`64k` for both codecs. However, lower window settings increase latency.
-Always measure both latency and memory consumption when tweaking the
-settings of both encoders.
+64k per request for both codecs. However, somewhat counterintuitively, lower window settings may increase latency. When tuning either the
+compression level or the window size make sure to measure both latency
+and peak memory consumption.
+
 
 ## Configuration directives
 
