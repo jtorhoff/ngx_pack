@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import gzip
 import http.client
 import os
 import random
@@ -256,7 +255,7 @@ def test(
     decoder skips the test.
 
     "label" tags a test that is about neither filter - "static" for the
-    pack_static ones, which serve pre-compressed siblings for all three
+    pack_static ones, which serve pre-compressed siblings for both
     encodings and share no code with the encoders.
 
     Every tag is a bracketed prefix, so a run sorts and scans by what
@@ -440,7 +439,6 @@ SIBLING_ENCODINGS: list[
     tuple[str, str, Callable[[], Callable[[bytes], bytes] | None]]
 ] = [
     ("br", ".br", lambda: encode_with_command(["brotli", "-c", "-q", "5"])),
-    ("gzip", ".gz", lambda: (lambda data: gzip.compress(data))),
     ("zstd", ".zst", locate_encoder),
 ]
 
@@ -640,12 +638,10 @@ def build_fixtures(work: str) -> dict[str, bytes]:
     # and the /static/ location leaves it at that, so these exercise the
     # shipped default rather than a narrowed set.
     body = f"<html><body>{make_text(3000, 7)}</body></html>".encode()
-    # All three siblings: which one comes back pins the probe order.
-    fixtures.update(write_siblings(html, "multi.html", body, ("br", "zstd", "gzip")))
-    # Only the last candidate in probe order exists, so the two ahead of it
-    # have to miss and be stepped over.
-    fixtures.update(write_siblings(html, "gz_only.html", body, ("gzip",)))
-    # Only the middle one.
+    # Both siblings: which one comes back pins the probe order.
+    fixtures.update(write_siblings(html, "multi.html", body, ("br", "zstd")))
+    # Only the last candidate in probe order exists, so the one ahead of it
+    # has to miss and be stepped over.
     fixtures.update(write_siblings(html, "zst_only.html", body, ("zstd",)))
 
     # Siblings that exist but cannot be served. Each must be stepped over
@@ -1813,37 +1809,34 @@ SIBLING_EXTS = {name: ext for name, ext, _ in SIBLING_ENCODINGS}
 
 @test("pack_static serves every encoding the default config allows", label="static")
 def test_static_all_encodings(ctx: Context) -> None:
-    """The default pack_static_encodings is br, gzip and zstd together, and
-    the /static/ location does not narrow it. A client naming exactly one of
+    """The default pack_static_encodings is br and zstd together, and the
+    /static/ location does not narrow it. A client naming exactly one of
     them must get that one."""
-    for encoding in ("br", "zstd", "gzip"):
+    for encoding in ("br", "zstd"):
         check_sibling_served(ctx, "multi.html", encoding, encoding)
 
 
 @test("pack_static probes in the order pack_static_encodings named", label="static")
 def test_static_directive_order(ctx: Context) -> None:
-    """Two locations list the same three encodings in opposite orders. A
-    client offering all three gets the first one the directive named, so the
+    """Two locations list the same two encodings in opposite orders. A
+    client offering both gets the first one the directive named, so the
     same request is answered differently by each - which is only possible if
     the order the admin wrote survives into the probe.
 
     This is what a bitmask could not do: ngx_conf_set_bitmask_slot ORs the
     values together and the order is gone by the time the handler runs."""
-    for prefix, expected in [("order-bgz", "br"), ("order-zgb", "zstd")]:
-        for accept in ["br, gzip, zstd", "zstd, gzip, br", "gzip, br, zstd"]:
+    for prefix, expected in [("order-bz", "br"), ("order-zb", "zstd")]:
+        for accept in ["br, zstd", "zstd, br"]:
             check_sibling_served(ctx, "multi.html", accept, expected, prefix=prefix)
 
 
 @test("the client's own order does not override the directive's", label="static")
 def test_static_client_order_ignored(ctx: Context) -> None:
     """Accept-Encoding is read as a set of what the client will take, not as
-    a ranking. Whatever order it lists them in, the directive decides."""
-    # The same two encodings offered in either order. br is not among
-    # them, so each location falls to the first of the two its own
-    # directive named: gzip for "br gzip zstd", zstd for "zstd gzip br".
-    for accept in ["gzip, zstd", "zstd, gzip"]:
-        check_sibling_served(ctx, "multi.html", accept, "gzip", prefix="order-bgz")
-        check_sibling_served(ctx, "multi.html", accept, "zstd", prefix="order-zgb")
+    a ranking. Even when the client lists its non-preferred encoding first,
+    the directive decides."""
+    check_sibling_served(ctx, "multi.html", "zstd, br", "br", prefix="order-bz")
+    check_sibling_served(ctx, "multi.html", "br, zstd", "zstd", prefix="order-zb")
 
 
 @test("pack_static serves only the encodings the directive named", label="static")
@@ -1851,24 +1844,23 @@ def test_static_directive_subset(ctx: Context) -> None:
     """A narrowed list still keeps its order, and an encoding left out of it
     is not served even when the client asks for it and the sibling is on
     disk."""
-    check_sibling_served(ctx, "multi.html", "br, gzip, zstd", "zstd", prefix="order-zg")
-    check_sibling_served(ctx, "multi.html", "gzip, zstd", "zstd", prefix="order-zg")
-    check_sibling_served(ctx, "multi.html", "gzip", "gzip", prefix="order-zg")
+    check_sibling_served(ctx, "multi.html", "br, zstd", "zstd", prefix="order-z")
+    check_sibling_served(ctx, "multi.html", "zstd", "zstd", prefix="order-z")
     # br is on disk and the client wants it, but the directive omits it.
-    check_sibling_served(ctx, "multi.html", "br", None, prefix="order-zg")
+    check_sibling_served(ctx, "multi.html", "br", None, prefix="order-z")
 
 
 @test("pack_static defaults to every encoding it knows, in table order", label="static")
 def test_static_default_order(ctx: Context) -> None:
     """/static/ leaves pack_static_encodings unwritten, so the default
-    stands: all three, in the order the module's table lists them."""
+    stands: both, in the order the module's table lists them."""
     for accept, expected in [
-        ("br, gzip, zstd", "br"),
-        ("gzip, zstd", "gzip"),
+        ("br, zstd", "br"),
         ("zstd", "zstd"),
-        ("br, gzip", "br"),
         ("zstd, br", "br"),
-        # A browser's real header, in the order browsers send it.
+        ("br", "br"),
+        # A browser's real header, in the order browsers send it. gzip and
+        # deflate are unknown to pack_static, so they are simply ignored.
         ("gzip, deflate, br, zstd", "br"),
     ]:
         check_sibling_served(ctx, "multi.html", accept, expected)
@@ -1876,29 +1868,26 @@ def test_static_default_order(ctx: Context) -> None:
 
 @test("pack_static steps over the candidates that have no sibling", label="static")
 def test_static_probe_fallthrough(ctx: Context) -> None:
-    """Only one sibling exists, and the client accepts all three, so the
-    module has to miss on the candidates ahead of it and keep going rather
-    than decline at the first ENOENT."""
-    check_sibling_served(ctx, "gz_only.html", "br, gzip, zstd", "gzip")
-    check_sibling_served(ctx, "zst_only.html", "br, gzip, zstd", "zstd")
-    # And with the one that does exist left out of Accept-Encoding, every
-    # candidate misses and the plain file is served.
-    check_sibling_served(ctx, "gz_only.html", "br, zstd", None)
-    check_sibling_served(ctx, "zst_only.html", "br, gzip", None)
+    """Only the zstd sibling exists, and the client accepts both, so the
+    module has to miss on br ahead of it and keep going rather than decline
+    at the first ENOENT."""
+    check_sibling_served(ctx, "zst_only.html", "br, zstd", "zstd")
+    # And with the one that does exist left out of Accept-Encoding, the
+    # candidate ahead of it misses too and the plain file is served.
+    check_sibling_served(ctx, "zst_only.html", "br", None)
 
 
 @test("pack_static skips an encoding the client refused with q=0", label="static")
 def test_static_zero_weight(ctx: Context) -> None:
     """A zero weight takes that encoding out of the running without taking
     the request with it: the probe carries on to the next candidate."""
-    check_sibling_served(ctx, "multi.html", "br;q=0, gzip, zstd", "gzip")
-    check_sibling_served(ctx, "multi.html", "br;q=0, gzip;q=0, zstd", "zstd")
-    check_sibling_served(ctx, "multi.html", "br;q=0, zstd;q=0, gzip;q=0", None)
+    check_sibling_served(ctx, "multi.html", "br;q=0, zstd", "zstd")
+    check_sibling_served(ctx, "multi.html", "br;q=0, zstd;q=0", None)
 
 
 @test("pack_static ignores encodings it does not know", label="static")
 def test_static_unknown_encodings(ctx: Context) -> None:
-    for accept in ["deflate", "compress", "identity", "*", "x-gzip", "brotli"]:
+    for accept in ["deflate", "compress", "identity", "*", "gzip", "x-gzip", "brotli"]:
         check_sibling_served(ctx, "multi.html", accept, None)
 
 
@@ -1906,12 +1895,12 @@ def test_static_unknown_encodings(ctx: Context) -> None:
     "every sibling is served byte for byte and cached by its own name", label="static"
 )
 def test_static_siblings_distinct(ctx: Context) -> None:
-    """Each encoding names a different file, and the three differ in length,
+    """Each encoding names a different file, and the two differ in length,
     so this also covers the constructed path being hashed over the right
     length: open_file_cache is on for this location, and ".br" and ".zst"
     are not the same number of characters."""
     seen: dict[str, bytes] = {}
-    for encoding in ("br", "zstd", "gzip"):
+    for encoding in ("br", "zstd"):
         # Twice, so the second answer comes from open_file_cache.
         for _ in range(2):
             check_sibling_served(ctx, "multi.html", encoding, encoding)
@@ -1919,7 +1908,7 @@ def test_static_siblings_distinct(ctx: Context) -> None:
 
     check(
         len(set(seen.values())) == len(seen),
-        f"the three siblings are not distinct, so serving the wrong one "
+        f"the two siblings are not distinct, so serving the wrong one "
         f"would not be visible: { {k: len(v) for k, v in seen.items()} }",
     )
 
@@ -1975,7 +1964,7 @@ def test_static_subrequest_declined(ctx: Context) -> None:
     through ngx_http_pack_claim_request, which turns a subrequest away
     before preflight's check would matter. Pointing this at an "on"
     location would pass whether or not that check exists."""
-    status, headers, body = fetch(ctx.port, "/ssi/include.shtml", "br, gzip, zstd")
+    status, headers, body = fetch(ctx.port, "/ssi/include.shtml", "br, zstd")
     check(status == 200, f"/ssi/include.shtml: expected 200, got {status}")
 
     want = b"BEGIN" + ctx.fixtures["multi.html"] + b"END"
@@ -2024,14 +2013,14 @@ def ambiguity_warnings(ctx: Context, http_block: str) -> int:
 AMBIGUITY_CASES = [
     (
         "both directives at http{}",
-        """http { pack_static always; pack_static_encodings br gzip;
+        """http { pack_static always; pack_static_encodings br zstd;
              server { listen 127.0.0.1:8999; location /a/ { } } }""",
         1,
     ),
     (
         "both at server{}",
         """http { server { listen 127.0.0.1:8999;
-             pack_static always; pack_static_encodings br gzip;
+             pack_static always; pack_static_encodings br zstd;
              location /a/ { } } }""",
         1,
     ),
@@ -2039,11 +2028,11 @@ AMBIGUITY_CASES = [
         "both at location{}",
         """http { server { listen 127.0.0.1:8999;
              location /a/ { pack_static always;
-                            pack_static_encodings br gzip; } } }""",
+                            pack_static_encodings br zstd; } } }""",
         1,
     ),
     (
-        # No list written, so the default of all three applies and the
+        # No list written, so the default of both applies and the
         # combination only becomes ambiguous once the merge fills it in.
         "always at http{}, encodings defaulted",
         """http { pack_static always;
@@ -2054,7 +2043,7 @@ AMBIGUITY_CASES = [
         # Six merges see the same ambiguous parent. Still one warning:
         # the setting was written once.
         "http{} inherited by four locations across two servers",
-        """http { pack_static always; pack_static_encodings br gzip;
+        """http { pack_static always; pack_static_encodings br zstd;
              server { listen 127.0.0.1:8999;
                location /a/ { } location /b/ { } location /c/ { } }
              server { listen 127.0.0.1:8998; location /d/ { } } }""",
@@ -2062,9 +2051,9 @@ AMBIGUITY_CASES = [
     ),
     (
         "http{} and server{} both write it",
-        """http { pack_static always; pack_static_encodings br gzip;
+        """http { pack_static always; pack_static_encodings br zstd;
              server { listen 127.0.0.1:8999;
-               pack_static always; pack_static_encodings br gzip;
+               pack_static always; pack_static_encodings br zstd;
                location /a/ { } } }""",
         1,
     ),
@@ -2076,8 +2065,8 @@ AMBIGUITY_CASES = [
         0,
     ),
     (
-        "on with several encodings",
-        """http { pack_static on; pack_static_encodings br gzip;
+        "on with more than one encoding",
+        """http { pack_static on; pack_static_encodings br zstd;
              server { listen 127.0.0.1:8999; location /a/ { } } }""",
         0,
     ),
@@ -2085,13 +2074,13 @@ AMBIGUITY_CASES = [
         "one ambiguous location beside a plain one",
         """http { server { listen 127.0.0.1:8999; pack_static on;
              location /a/ { pack_static always;
-                            pack_static_encodings br gzip; }
+                            pack_static_encodings br zstd; }
              location /b/ { } } }""",
         1,
     ),
     (
         "a nested location narrows it to on",
-        """http { pack_static always; pack_static_encodings br gzip;
+        """http { pack_static always; pack_static_encodings br zstd;
              server { listen 127.0.0.1:8999;
                location /a/ { pack_static on;
                  location /a/n/ { } } } }""",
@@ -2125,11 +2114,11 @@ def test_static_ambiguity_recreated(ctx: Context) -> None:
     The control below is the same shape with an http{} that was never
     ambiguous, so only the innermost block is - if both answer 1, the
     suppression is keying on the wrong thing."""
-    recreated = """http { pack_static always; pack_static_encodings br gzip;
+    recreated = """http { pack_static always; pack_static_encodings br zstd;
       server { listen 127.0.0.1:8999;
         location /a/ { pack_static on;
           location /a/n/ { pack_static always; } } } }"""
-    control = """http { pack_static on; pack_static_encodings br gzip;
+    control = """http { pack_static on; pack_static_encodings br zstd;
       server { listen 127.0.0.1:8999;
         location /a/ { pack_static on;
           location /a/n/ { pack_static always; } } } }"""
@@ -2147,7 +2136,7 @@ def test_static_encodings_duplicate_directive(ctx: Context) -> None:
     the first call's count and refuses the second - the "is duplicate" nginx
     reports back is this module's own string, not core's."""
     accepted, text = config_accepted(
-        ctx, "pack_static_encodings br;\n  pack_static_encodings gzip;"
+        ctx, "pack_static_encodings br;\n  pack_static_encodings zstd;"
     )
     check(not accepted, f"a directive repeated in one block was accepted:\n{text}")
     check(
@@ -2156,7 +2145,7 @@ def test_static_encodings_duplicate_directive(ctx: Context) -> None:
     )
 
 
-@test("pack_static_encodings refuses a name none of the three rows carry", label="static")
+@test("pack_static_encodings refuses a name none of the two rows carry", label="static")
 def test_static_encodings_unknown_value(ctx: Context) -> None:
     accepted, text = config_accepted(ctx, "pack_static_encodings bogus;")
     check(not accepted, f"an unknown encoding was accepted:\n{text}")

@@ -32,10 +32,6 @@ static encoding_t const ngx_http_pack_static_encodings[] = {
         .ext  = ngx_string(".br"),
     },
     {
-        .name = ngx_string("gzip"),
-        .ext  = ngx_string(".gz"),
-    },
-    {
         .name = ngx_string("zstd"),
         .ext  = ngx_string(".zst"),
     },

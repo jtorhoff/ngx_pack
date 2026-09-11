@@ -359,11 +359,11 @@ client receives the same bytes.
 ### `pack_static_encodings`
 
 - **syntax**: `pack_static_encodings <encoding> [..]`
-- **default**: `br gzip zstd`
+- **default**: `br zstd`
 - **context**: `http`, `server`, `location`
 
 Which pre-compressed siblings to look for, and in what order to probe for
-them - `br` for a `.br` sibling, `gzip` for `.gz`, `zstd` for `.zst`. Only
+them - `br` for a `.br` sibling, `zstd` for `.zst`. Only
 the encodings a request's own `Accept-Encoding` accepts are ever probed, so
 a client that negotiates none of them costs no filesystem lookup at all.
 Naming an encoding twice is a warning, and the repeat is ignored; naming
