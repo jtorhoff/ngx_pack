@@ -69,13 +69,22 @@ SANS = ("IBM Plex Sans, ui-sans-serif, system-ui, -apple-system, Segoe UI, "
         "Helvetica, Arial, sans-serif")
 MONO = "IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
 
+# Every colour is rgba, never a solid hex, and the canvas itself is never
+# painted. "light" tints toward black and "dark" toward white, so a region
+# reads as darker-than or lighter-than-its-surroundings instead of assuming
+# what those surroundings are - the file works on any page background of the
+# matching theme, not just the one exact shade it was designed against.
 THEMES = {
-    "light": dict(panel="#ffffff", ink="#131a21", ink_soft="#45535f", muted="#6b7c8a",
-                  rule="#d7dee4", grid="#e4eaef", band="#f1f3f5",
-                  zstd="#1f6f8b", brotli="#c0602a"),
-    "dark":  dict(panel="#151d23", ink="#e6edf2", ink_soft="#b0c0cc", muted="#8095a4",
-                  rule="#26333c", grid="#1f2b33", band="#1b242b",
-                  zstd="#56b6d4", brotli="#f0904f"),
+    "light": dict(ink="rgba(10,16,20,0.90)", ink_soft="rgba(10,16,20,0.72)",
+                  muted="rgba(10,16,20,0.52)", rule="rgba(10,16,20,0.30)",
+                  grid="rgba(10,16,20,0.12)", band="rgba(10,16,20,0.05)",
+                  ring="rgba(10,16,20,0.35)",
+                  zstd="rgba(31,111,139,0.92)", brotli="rgba(192,96,42,0.92)"),
+    "dark":  dict(ink="rgba(245,249,252,0.94)", ink_soft="rgba(245,249,252,0.78)",
+                  muted="rgba(245,249,252,0.58)", rule="rgba(245,249,252,0.32)",
+                  grid="rgba(245,249,252,0.14)", band="rgba(245,249,252,0.07)",
+                  ring="rgba(245,249,252,0.40)",
+                  zstd="rgba(86,182,212,0.94)", brotli="rgba(240,144,79,0.94)"),
 }
 
 # Which levels each filter ships with, so the chart can ring them. Read from
@@ -237,8 +246,6 @@ def build(
     a(f'  <desc>Latency for the whole corpus on the horizontal axis, compression level on '
       f'the vertical. {m["desc"]} A vertical rule at {baseline:.2f} ms marks the same '
       f'server with compression switched off.</desc>')
-    a(f'  <rect width="{W}" height="{H}" fill="{c["panel"]}"/>')
-
     a(f'  <rect x="{L}" y="{T}" width="{x(baseline) - L:.1f}" height="{B - T}" '
       f'fill="{c["band"]}"/>')
     for ms in range(0, MS_MAX + 1, 5):
@@ -280,7 +287,7 @@ def build(
             r = m["radius"](d)
             cx, cy = x(d[2]), y_lev(d[1])
             a(f'  <circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.2f}" fill="{col}" '
-              f'fill-opacity="0.85" stroke="{c["panel"]}" stroke-width="1.5"/>')
+              f'stroke="{c["ring"]}" stroke-width="1.5"/>')
             a(f'  <text x="{cx:.1f}" y="{cy - r - 8:.1f}" text-anchor="middle" '
               f'font-family="{esc(MONO)}" font-size="11.5" font-weight="500" '
               f'fill="{col}">{m["label"](d)}</text>')
