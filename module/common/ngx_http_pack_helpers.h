@@ -87,4 +87,22 @@ ngx_http_pack_transform_allowed(ngx_http_request_t *const r)
     return NGX_OK;
 }
 
+/* Marks every buffer of a chain as consumed without sending any of
+   it on. Whoever produced the buffers is waiting for exactly that:
+   ngx_chain_update_chains keeps a buffer busy while it has bytes
+   left, so merely dropping the links would leave the producer holding
+   memory it believes is still in flight. */
+static void
+ngx_http_pack_discard_chain(ngx_chain_t *in)
+{
+    ngx_buf_t *buf;
+
+    for (/* void */; in != NULL; in = in->next) {
+        buf = in->buf;
+
+        buf->pos      = buf->last;
+        buf->file_pos = buf->file_last;
+    }
+}
+
 #endif /* NGX_HTTP_PACK_HELPERS_H_INCLUDED_ */

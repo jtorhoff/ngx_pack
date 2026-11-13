@@ -553,7 +553,12 @@ ngx_http_pack_brotli_advance_input(advance_input_args *const args)
         return;
     }
 
-    args->from->pos += args->consumed;
+    /* Guarded, not for tidiness: a special buffer carries no memory,
+       so pos is NULL, and advancing a null pointer by zero is
+       undefined. */
+    if (args->consumed > 0) {
+        args->from->pos += args->consumed;
+    }
 
     if (args->operation == BROTLI_OPERATION_PROCESS) {
         /* Adds to the block being built, a folded flush included -
@@ -729,10 +734,36 @@ ngx_http_pack_brotli_encoder_step(
         return NGX_HTTP_PACK_BROTLI_STEP_DONE;
     }
 
+    /* The length has to come from the same place as the source
+       pointer: ngx_buf_size() reports the file range for a
+       file-backed buffer, which paired with buf->pos describes
+       nothing. One with no memory at all should never arrive - the
+       header filter sets main_filter_need_in_memory. */
+    if (mode.from != NULL && mode.from->in_file &&
+        !ngx_buf_in_memory(mode.from)) {
+        ngx_log_error(
+            NGX_LOG_ALERT,
+            enc->request->connection->log,
+            0,
+            "brotli got a buffer with file bytes and none in memory");
+
+        return NGX_HTTP_PACK_BROTLI_STEP_FAILED;
+    }
+
+    /* "last > pos" as well as the in-memory test: the subtraction is
+       unsigned, so an inverted buffer would become an enormous length
+       and read far past the allocation. Taken as empty instead. */
+    if (mode.from != NULL && ngx_buf_in_memory(mode.from) &&
+        mode.from->last > mode.from->pos) {
+        input_size = (size_t) (mode.from->last - mode.from->pos);
+    } else {
+        input_size = 0;
+    }
+
     /* An empty buffer carries nothing to compress, but one marked
        last or flush still has to reach Brotli to close the stream or
        the block. Anything else is dropped without a round. */
-    if (mode.from != NULL && ngx_buf_size(mode.from) == 0 &&
+    if (mode.from != NULL && input_size == 0 &&
         !mode.from->last_buf && !mode.from->flush) {
         *in = ngx_http_pack_brotli_discard_head_buf(
                   &(discard_head_buf_args) {
@@ -759,7 +790,6 @@ ngx_http_pack_brotli_encoder_step(
 
     buf = got.buf;
 
-    input_size   = mode.from != NULL ? ngx_buf_size(mode.from) : 0;
     available_in = input_size;
     next_in = mode.from != NULL ? (uint8_t const *) mode.from->pos
                                 : NULL;

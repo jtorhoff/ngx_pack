@@ -134,7 +134,9 @@ typedef enum {
     /* Settled, uncompressed: too small to be worth it, so the held
        input already went to the filters below untouched. "rc" is what
        that call returned; no "Content-Encoding" of ours, so gzip may
-       still take it. */
+       still take it. Also what a response that turned out to have no
+       body at all answers, its held input retired unsent and "rc"
+       NGX_OK. */
     NGX_HTTP_PACK_BROTLI_PASS,
 
     /* Settled, and failed: the encoder is closed and "rc" is
@@ -304,6 +306,11 @@ ngx_http_pack_brotli_close(ctx_t *const ctx)
 {
     ctx->state.closed = 1;
 
+    /* Closed means this instance owes the connection nothing, so the
+       bit goes with it - left set it tells nginx output is still
+       pending from a filter that has stopped producing any. */
+    ctx->request->connection->buffered &= ~MASK_BUFFERED;
+
     if (ctx->encoder != NULL) {
         ngx_http_pack_brotli_encoder_close(ctx->encoder);
         ctx->encoder = NULL;
@@ -455,8 +462,17 @@ ngx_http_pack_brotli_header_filter(ngx_http_request_t *const r)
        committing the headers here would settle the question for good.
        Hold them: the body filter sends them once it has seen enough
        to decide, which takes min_length bytes, not the whole
-       response. */
-    if (ctx->content_length < 0) {
+       response.
+
+       Never for HEAD. nginx only learns a HEAD response has no body
+       when its last header filter sets r->header_only, and content
+       handlers read that flag straight after ngx_http_send_header()
+       to decide whether to produce one. Held headers mean that filter
+       has not run, the flag is still clear, and the handler writes a
+       body behind the headers of a response that must not have one.
+       So a HEAD is committed now, as accepted - what gzip answers a
+       HEAD with too. */
+    if (ctx->content_length < 0 && r->method != NGX_HTTP_HEAD) {
         return NGX_OK;
     }
 
@@ -478,7 +494,10 @@ typedef struct {
 } pending_input_result;
 
 /* Totals the unconsumed input, reporting whether the chain closes the
-   response and whether anything in it is waiting on a push. */
+   response and whether anything in it is waiting on a push. Counts
+   only what is in memory, which is what the encoder will take:
+   ngx_buf_size would report a file range instead, or a negative
+   length for a buffer whose pointers are inverted. */
 static pending_input_result
 ngx_http_pack_brotli_pending_input(ngx_chain_t *in)
 {
@@ -487,13 +506,18 @@ ngx_http_pack_brotli_pending_input(ngx_chain_t *in)
         .complete = 0,
         .urgent   = 0,
     };
+    ngx_buf_t *buf;
 
     for (;;) {
         if (in == NULL) {
             break;
         }
 
-        result.pending += ngx_buf_size(in->buf);
+        buf = in->buf;
+
+        if (ngx_buf_in_memory(buf) && buf->last > buf->pos) {
+            result.pending += (size_t) (buf->last - buf->pos);
+        }
 
         if (in->buf->last_buf) {
             result.complete = 1;
@@ -579,6 +603,22 @@ ngx_http_pack_brotli_prepare(prepare_args *const args)
             ngx_http_pack_brotli_close(ctx);
             *args->rc = NGX_ERROR;
             return NGX_HTTP_PACK_BROTLI_ERROR;
+        }
+
+        /* The headers just sent say there is no body. The header
+           filter never holds a HEAD's, so nothing known reaches this
+           - but r->header_only is only settled by the filters below,
+           and the input held here was produced by a handler that had
+           no way to see it. Sending it on, compressed or not, would
+           put a body behind a response that has none. Retire it
+           instead. */
+        if (r->header_only) {
+            ngx_http_pack_discard_chain(ctx->in);
+            ctx->in = NULL;
+
+            ngx_http_pack_brotli_close(ctx);
+            *args->rc = NGX_OK;
+            return NGX_HTTP_PACK_BROTLI_PASS;
         }
 
         if (!ctx->state.accepted_for_compression) {

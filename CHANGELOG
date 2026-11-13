@@ -1,2 +1,13 @@
+v0.1.1 (2026, November 13th)
+    * Fix: a HEAD request for a response of unknown length was
+      answered with a body behind its headers, desynchronising a
+      keep-alive connection. The filters no longer hold a HEAD's
+      headers back.
+    * Fix: a zero weight behind another parameter ("br;x=1;q=0") is
+      honoured.
+    * Hardening: the Brotli encoder bounds its input the way the zstd
+      one does, and closing the Brotli filter clears the connection's
+      buffered bit.
+
 v0.1.0 (2026, September 11th)
     * First release.

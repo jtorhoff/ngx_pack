@@ -2662,6 +2662,10 @@ def test_q_zero(ctx: Context, codec: Codec) -> None:
         f"{tok} ; q = 0.00",
         f"{tok}\t;\tq\t=\t0",
         f"gzip, {tok};q=0",
+        # The weight is the only parameter RFC 9110 gives a coding, but
+        # one hiding behind another is still a refusal.
+        f"{tok};x=1;q=0",
+        f"{tok} ; qx=1 ; Q=0.0, gzip",
     ]:
         _, headers, _ = fetch(ctx.port, codec.file("big.html"), accept_encoding=value)
         check(
@@ -3320,6 +3324,43 @@ def test_head(ctx: Context, codec: Codec) -> None:
     )
     check(status == 200, f"expected 200, got {status}")
     check(body == b"", f"HEAD returned a {len(body)} byte body")
+
+
+@test("HEAD on a response of unknown length sends no body", codecs=CODECS)
+def test_head_unknown_length(ctx: Context, codec: Codec) -> None:
+    """A listing has no Content-Length, so the filter would hold its
+    headers back - and autoindex, like every handler, reads
+    r->header_only straight after sending them to decide whether to
+    write a body. Read off the socket rather than through http.client,
+    which knows a HEAD has no body and would never look for one.
+    """
+    path = codec.path("head-index")
+    request = (
+        f"HEAD {path} HTTP/1.1\r\n"
+        f"Host: localhost\r\n"
+        f"Accept-Encoding: {codec.token}\r\n"
+        f"Connection: close\r\n\r\n"
+    )
+    with socket.create_connection(("127.0.0.1", ctx.port), timeout=30) as conn:
+        conn.sendall(request.encode())
+        raw = b""
+        while True:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+
+    head, _, rest = raw.partition(b"\r\n\r\n")
+    check(head.startswith(b"HTTP/1.1 200"), f"expected 200, got {head[:40]!r}")
+    check(rest == b"", f"HEAD was followed by {len(rest)} bytes: {rest[:24]!r}")
+
+    # The same request as a GET must still be compressed, or the
+    # check above passes for a location the filter never touched.
+    _, headers, _ = fetch(ctx.port, path, codec.token)
+    check(
+        headers.get("content-encoding") == codec.token,
+        f"GET of the listing was not served {codec.token}: {headers!r}",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -122,7 +122,9 @@ typedef enum {
     /* Settled, uncompressed: too small to be worth it, so the held
        input already went to the filters below untouched. "rc" is
        what that call returned; no "Content-Encoding" of ours, so
-       gzip may still take it. */
+       gzip may still take it. Also what a response that turned out
+       to have no body at all answers, its held input retired unsent
+       and "rc" NGX_OK. */
     NGX_HTTP_PACK_ZSTD_PASS,
 
     /* Settled, and failed: the encoder is closed and "rc" is
@@ -512,8 +514,17 @@ ngx_http_pack_zstd_header_filter(ngx_http_request_t *const r)
 
     /* When the length is unknown there is nothing yet to compare
        against pack_zstd_min_length, and committing the headers here
-       would settle the question for good. Hold them instead. */
-    if (ctx->content_length < 0) {
+       would settle the question for good. Hold them instead.
+
+       Never for HEAD. nginx only learns a HEAD response has no body
+       when its last header filter sets r->header_only, and content
+       handlers read that flag straight after ngx_http_send_header()
+       to decide whether to produce one. Held headers mean that filter
+       has not run, the flag is still clear, and the handler writes a
+       body behind the headers of a response that must not have one.
+       So a HEAD is committed now, as accepted - what gzip answers a
+       HEAD with too. */
+    if (ctx->content_length < 0 && r->method != NGX_HTTP_HEAD) {
         return NGX_OK;
     }
 
@@ -635,6 +646,24 @@ ngx_http_pack_zstd_commit_headers(commit_headers_args *const args)
         return (commit_headers_result) {
             .verdict = NGX_HTTP_PACK_ZSTD_ERROR,
             .rc      = NGX_ERROR,
+        };
+    }
+
+    /* The headers just sent say there is no body. The header filter
+       never holds a HEAD's, so nothing known reaches this - but
+       r->header_only is only settled by the filters below, and the
+       input held here was produced by a handler that had no way to
+       see it. Sending it on, compressed or not, would put a body
+       behind a response that has none. Retire it instead. */
+    if (ctx->request->header_only) {
+        ngx_http_pack_discard_chain(ctx->in);
+        ctx->in = NULL;
+
+        ngx_http_pack_zstd_close(ctx);
+
+        return (commit_headers_result) {
+            .verdict = NGX_HTTP_PACK_ZSTD_PASS,
+            .rc      = NGX_OK,
         };
     }
 
