@@ -1,3 +1,6 @@
+v0.1.2 (2026, November 13th)
+    * Update the vendored Brotli from v1.2.0 to v1.2.1.
+
 v0.1.1 (2026, November 13th)
     * Fix: a HEAD request for a response of unknown length was
       answered with a body behind its headers, desynchronising a
