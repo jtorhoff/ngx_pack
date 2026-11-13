@@ -1,3 +1,8 @@
+v0.1.3 (2026, November 13th)
+    * Revert: a zero weight is again read only when it is the first
+      parameter after the token, as before v0.1.1 ("br;x=1;q=0" is
+      taken as acceptable).
+
 v0.1.2 (2026, November 13th)
     * Update the vendored Brotli from v1.2.0 to v1.2.1.
 

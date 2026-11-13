@@ -2662,10 +2662,6 @@ def test_q_zero(ctx: Context, codec: Codec) -> None:
         f"{tok} ; q = 0.00",
         f"{tok}\t;\tq\t=\t0",
         f"gzip, {tok};q=0",
-        # The weight is the only parameter RFC 9110 gives a coding, but
-        # one hiding behind another is still a refusal.
-        f"{tok};x=1;q=0",
-        f"{tok} ; qx=1 ; Q=0.0, gzip",
     ]:
         _, headers, _ = fetch(ctx.port, codec.file("big.html"), accept_encoding=value)
         check(

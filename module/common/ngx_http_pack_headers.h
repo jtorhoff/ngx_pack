@@ -36,17 +36,37 @@ ngx_http_pack_skip_whitespace(u_char *const cursor, u_char *const end)
     return pos;
 }
 
-/* Given the text following "q=", reports whether the weight is zero,
-   i.e. "0", "0.", "0.0", "0.00" or "0.000". Anything else counts as
-   non-zero. */
+/* Given the text following an encoding token, reports whether its
+   parameters set the quality to zero, i.e. ";q=0", ";q=0.0",
+   ";q=0.00" or ";q=0.000". Anything else - a different weight, an
+   unrecognised parameter, no parameters at all - counts as
+   acceptable. */
 static ngx_uint_t
-ngx_http_pack_is_zero_weight(u_char *const cursor, u_char *const end)
+ngx_http_pack_is_zero_weighted(
+    u_char *const cursor, u_char *const end)
 {
     u_char    *pos;
     ngx_uint_t digits;
 
-    /* Any weight not starting with "0" is non-zero. */
     pos = cursor;
+    pos = ngx_http_pack_skip_whitespace(pos, end);
+    if (pos == end || *pos++ != ';') {
+        return 0;
+    }
+
+    pos = ngx_http_pack_skip_whitespace(pos, end);
+    if (pos == end || (*pos != 'q' && *pos != 'Q')) {
+        return 0;
+    }
+
+    pos++;
+    pos = ngx_http_pack_skip_whitespace(pos, end);
+    if (pos == end || *pos++ != '=') {
+        return 0;
+    }
+
+    /* Any weight not starting with "0" is non-zero. */
+    pos = ngx_http_pack_skip_whitespace(pos, end);
     if (pos == end || *pos++ != '0') {
         return 0;
     }
@@ -75,50 +95,6 @@ ngx_http_pack_is_zero_weight(u_char *const cursor, u_char *const end)
     }
 
     return 1;
-}
-
-/* Given the text following an encoding token, reports whether its
-   parameters set the quality to zero, i.e. ";q=0", ";q=0.0",
-   ";q=0.00" or ";q=0.000". Anything else - a different weight, no
-   weight among the parameters, no parameters at all - counts as
-   acceptable.
-
-   Every parameter of the list element is walked, not only the first:
-   RFC 9110 gives a coding nothing but a weight, but a client that
-   writes "br;x=1;q=0" has still refused the coding, and reading the
-   weight only when it comes first would serve it anyway. */
-static ngx_uint_t
-ngx_http_pack_is_zero_weighted(
-    u_char *const cursor, u_char *const end)
-{
-    u_char *pos;
-    u_char *value;
-
-    pos = cursor;
-    for (;;) {
-        /* Each turn consumes one ";", so the walk ends with the list
-           element or the header, whichever comes first. */
-        pos = ngx_http_pack_skip_whitespace(pos, end);
-        if (pos == end || *pos++ != ';') {
-            return 0;
-        }
-
-        pos = ngx_http_pack_skip_whitespace(pos, end);
-        if (pos != end && (*pos == 'q' || *pos == 'Q')) {
-            value = ngx_http_pack_skip_whitespace(pos + 1, end);
-            if (value != end && *value == '=') {
-                value = ngx_http_pack_skip_whitespace(value + 1, end);
-                return ngx_http_pack_is_zero_weight(value, end);
-            }
-        }
-
-        /* Some other parameter - "qx=1" included, which starts like
-           the weight and is not it. Step over it to the next one, or
-           to the "," that ends this element. */
-        while (pos != end && *pos != ';' && *pos != ',') {
-            pos++;
-        }
-    }
 }
 
 /* Decides whether the client will accept a given "encoding", reading
